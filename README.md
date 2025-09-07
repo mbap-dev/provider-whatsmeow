@@ -1,7 +1,7 @@
 # WhatsMeow Adapter (Provider UNOAPI Cloud)
 
 Microserviço **Go** que:
-- consome mensagens **AMQP/RabbitMQ** (rota `provider.whatsmeow.*`);
+- consome mensagens **AMQP/RabbitMQ** (rota `provider.whatsmeow.*`, fila `provider.whatsmeow` criada automaticamente);
 - envia via **WhatsMeow** (WhatsApp MD);
 - publica **webhooks** (Cloud-like) se `WEBHOOK_BASE` estiver definido;
 - expõe HTTP para gerenciar sessões e health checks.

@@ -10,6 +10,7 @@ services:
       AMQP_URL: "${AMQP_URL}"
       AMQP_EXCHANGE: "${AMQP_EXCHANGE:-unoapi.outgoing}"
       AMQP_BINDING: "${AMQP_BINDING:-provider.whatsmeow.*}"
+      AMQP_QUEUE: "${AMQP_QUEUE:-provider.whatsmeow}"
       WEBHOOK_BASE: "${WEBHOOK_BASE:-}"       # opcional
       SESSION_STORE: "/var/lib/whatsmeow"
       HTTP_ADDR: ":8080"

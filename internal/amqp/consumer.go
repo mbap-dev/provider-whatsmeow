@@ -80,10 +80,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 
 	queue, err := ch.QueueDeclare(
-		"",
+		c.cfg.AMQPQueue,
 		true,  // durable
 		false, // autoDelete
-		true,  // exclusive
+		false, // exclusive
 		false, // noWait
 		nil,
 	)
@@ -93,7 +93,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	c.queue = queue
 
 	if err := ch.QueueBind(
-		queue.Name,
+		c.cfg.AMQPQueue,
 		c.cfg.AMQPBinding,
 		c.cfg.AMQPExchange,
 		false,
@@ -103,7 +103,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 
 	deliveries, err := ch.Consume(
-		queue.Name,
+		c.cfg.AMQPQueue,
 		"",
 		true,  // auto-ack
 		false, // exclusive

@@ -16,6 +16,10 @@ type Config struct {
 	// queue.  It is set to "provider.whatsmeow.*" to receive all
 	// messages destined for this provider.
 	AMQPBinding string
+	// AMQPQueue is the name of the queue that will be declared and
+	// consumed by this service.  If empty, a server-generated name is
+	// used.
+	AMQPQueue string
 	// WebhookBase is the base URL to which webhook payloads should be
 	// delivered.  If left empty the service will not emit webhooks.
 	WebhookBase string
@@ -37,6 +41,7 @@ func NewConfig() *Config {
 	cfg.AMQPURL = getEnv("AMQP_URL", "amqp://user_test:123456@localhost:5672/EnvolveNEXT")
 	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
 	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
+	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "provider.whatsmeow")
 	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://localhost/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")

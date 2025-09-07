@@ -30,10 +30,15 @@ func main() {
 	// message consumer.
 	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase)
 
+	// Ensure the exchange and durable queue exist so that publishers can
+	// send messages even if the adapter is temporarily offline.
+	if err := amqpconsumer.InitExchange(cfg); err != nil {
+		log.Fatalf("failed to initialize AMQP exchange: %v", err)
+	}
+
 	// Initialize the AMQP consumer.  The consumer will connect to the
-	// broker, bind a temporary queue to the configured exchange and
-	// routing key and then dispatch all incoming messages to the
-	// provider send function.
+	// broker, bind the configured queue to the exchange and routing key and
+	// then dispatch all incoming messages to the provider send function.
 	consumer, err := amqpconsumer.NewConsumer(cfg, clientManager)
 	if err != nil {
 		log.Fatalf("failed to initialise AMQP consumer: %v", err)

@@ -8,23 +8,46 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository }} # ghcr.io/<owner>/<repo>
+  GO_VERSION: 1.24.6
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  build-and-push:
+  meta:
     runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+    steps:
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            # latest apenas em master
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/heads/master') }}
 
+  build-amd64:
+    runs-on: ubuntu-latest
+    needs: [meta]
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      ref: ${{ steps.vars.outputs.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Multi-arch (amd64 + arm64); remova o QEMU se quiser apenas amd64
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Set vars
+        id: vars
+        run: echo "ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:amd64-${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -36,32 +59,92 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Gera tags e labels automaticamente:
-      # - branch: ghcr.io/<owner>/<repo>:<branch>
-      # - sha: ghcr.io/<owner>/<repo>:<shortsha>
-      # - tag semver: ghcr.io/<owner>/<repo>:vX.Y.Z (quando marcar tag)
-      # - latest: apenas para main
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=sha
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/heads/main') }}
-
-      - name: Build & Push
+      - name: Build & Push (amd64)
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.vars.outputs.ref }}
+          labels: ${{ needs.meta.outputs.labels }}
           build-args: |
-            GO_VERSION=1.24.6
+            GO_VERSION=${{ env.GO_VERSION }}
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
+
+  build-arm64:
+    runs-on: ubuntu-latest
+    needs: [meta]
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      ref: ${{ steps.vars.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set vars
+        id: vars
+        run: echo "ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:arm64-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push (arm64)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.vars.outputs.ref }}
+          labels: ${{ needs.meta.outputs.labels }}
+          build-args: |
+            GO_VERSION=${{ env.GO_VERSION }}
+          cache-from: type=gha,scope=arm64
+          cache-to: type=gha,mode=max,scope=arm64
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: [meta, build-amd64, build-arm64]
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest with all final tags
+        run: |
+          # Junte as duas imagens temporárias em cada tag final do meta
+          # Ex.: ghcr.io/owner/repo:latest, :master, :<sha>, :vX.Y.Z...
+          IFS=',' read -ra TAGS <<< "${{ needs.meta.outputs.tags }}"
+          for TAG in "${TAGS[@]}"; do
+            TAG_TRIM=$(echo "$TAG" | xargs)
+            if [ -z "$TAG_TRIM" ]; then continue; fi
+            docker buildx imagetools create \
+              -t "$TAG_TRIM" \
+              "${{ needs.build-amd64.outputs.ref }}" \
+              "${{ needs.build-arm64.outputs.ref }}"
+          done
+
+      - name: Inspect (debug)
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ needs.meta.outputs.tags }}"
+          for TAG in "${TAGS[@]}"; do
+            TAG_TRIM=$(echo "$TAG" | xargs)
+            if [ -z "$TAG_TRIM" ]; then continue; fi
+            echo "== $TAG_TRIM =="
+            docker buildx imagetools inspect "$TAG_TRIM" || true
+          done

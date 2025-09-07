@@ -17,12 +17,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TextContent representa {"text":{"body":"..."}} no padrão Cloud API.
+// TextContent representa {"text":{"body":"..."}}
 type TextContent struct {
 	Body string `json:"body"`
 }
 
-// Estruturas das mídias, conforme UNOAPI Cloud: {"image":{"link": "...", "caption": "..."}}, etc.
 type ImageContent struct {
 	Link    string `json:"link"`
 	Caption string `json:"caption,omitempty"`
@@ -37,15 +36,14 @@ type DocumentContent struct {
 type AudioContent struct {
 	Link    string  `json:"link"`
 	Caption string  `json:"caption,omitempty"`
-	PTT     *bool   `json:"ptt,omitempty"`     // força nota de voz
-	Seconds *uint32 `json:"seconds,omitempty"` // duração opcional
+	PTT     *bool   `json:"ptt,omitempty"`
+	Seconds *uint32 `json:"seconds,omitempty"`
 }
 
 type StickerContent struct {
 	Link string `json:"link"`
 }
 
-// MessageContext agrega campos de reply/quote e menções, compatível com UNOAPI e wuzapi.
 type MessageContext struct {
 	ID           string   `json:"id,omitempty"`
 	MessageID    string   `json:"message_id,omitempty"`
@@ -57,28 +55,26 @@ type MessageContext struct {
 	Mentions     []string `json:"mentions,omitempty"`
 }
 
-// OutgoingMessage, consumido via AMQP; aceita campos aninhados (Cloud API) e legados (body/media_url).
 type OutgoingMessage struct {
-	Type      string           `json:"type"`
-	To        string           `json:"to"`
-	Body      string           `json:"body,omitempty"`
-	Text      *TextContent     `json:"text,omitempty"`
-	Image     *ImageContent    `json:"image,omitempty"`
-	Document  *DocumentContent `json:"document,omitempty"`
-	Audio     *AudioContent    `json:"audio,omitempty"`
-	Sticker   *StickerContent  `json:"sticker,omitempty"`
-	MediaURL  string           `json:"media_url,omitempty"`
-	Caption   string           `json:"caption,omitempty"`
-	SessionID string           `json:"session_id"`
-	MessageID string           `json:"message_id,omitempty"`
-	Context   *MessageContext  `json:"context,omitempty"`
-	Mentions  []string         `json:"mentions,omitempty"`
+	MessagingProduct string           `json:"messaging_product,omitempty"`
+	Type             string           `json:"type"`
+	To               string           `json:"to"`
+	Body             string           `json:"body,omitempty"`
+	Text             *TextContent     `json:"text,omitempty"`
+	Image            *ImageContent    `json:"image,omitempty"`
+	Document         *DocumentContent `json:"document,omitempty"`
+	Audio            *AudioContent    `json:"audio,omitempty"`
+	Sticker          *StickerContent  `json:"sticker,omitempty"`
+	MediaURL         string           `json:"media_url,omitempty"`
+	Caption          string           `json:"caption,omitempty"`
+	SessionID        string           `json:"session_id"`
+	MessageID        string           `json:"message_id,omitempty"`
+	Context          *MessageContext  `json:"context,omitempty"`
+	Mentions         []string         `json:"mentions,omitempty"`
 }
 
-// Send envia a mensagem via cliente WhatsMeow, suportando texto, imagem, documento, áudio e sticker.
-// ADAPTADO: resolve a sessão a partir do contexto (CtxKeyPhoneNumberID) ou do msg.SessionID.
+// Send envia a mensagem; sessão vem do contexto (routing key) ou do payload.
 func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
-	// Resolve sessionID: contexto (routing key) tem precedência; fallback no campo do payload.
 	sessionID := strings.TrimSpace(msg.SessionID)
 	if v := ctx.Value(CtxKeyPhoneNumberID); v != nil {
 		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -100,7 +96,6 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
 
-	// Constrói o ContextInfo (reply/mentions) apenas uma vez.
 	var ctxInfo *goE2E.ContextInfo
 	if msg.Context != nil || len(msg.Mentions) > 0 {
 		var stanzaID string
@@ -137,14 +132,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			ci := &goE2E.ContextInfo{}
 			if stanzaID != "" {
 				ci.StanzaID = proto.String(stanzaID)
-				var partJID string
 				if msg.Context != nil && msg.Context.Participant != "" {
 					if pj, err := toUserJID(msg.Context.Participant); err == nil {
-						partJID = pj.String()
+						ci.Participant = proto.String(pj.String())
 					}
-				}
-				if partJID != "" {
-					ci.Participant = proto.String(partJID)
 				}
 				qt := ""
 				if msg.Context != nil {
@@ -177,9 +168,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				},
 			}
 		} else {
-			wire = &goE2E.Message{
-				Conversation: proto.String(body),
-			}
+			wire = &goE2E.Message{Conversation: proto.String(body)}
 		}
 		resp, err := cli.SendMessage(ctx, jid, wire)
 		if err != nil {
@@ -190,7 +179,6 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return nil
 
 	case "image":
-		// Determina link e caption (nested Cloud API ou legados)
 		var link, caption string
 		if msg.Image != nil {
 			link = strings.TrimSpace(msg.Image.Link)
@@ -229,8 +217,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			imgMsg.ContextInfo = ctxInfo
 		}
-		wire := &goE2E.Message{ImageMessage: imgMsg}
-		resp, err := cli.SendMessage(ctx, jid, wire)
+		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{ImageMessage: imgMsg})
 		if err != nil {
 			entry.Error("send image failed: %v", err)
 			return err
@@ -283,8 +270,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			docMsg.ContextInfo = ctxInfo
 		}
-		wire := &goE2E.Message{DocumentMessage: docMsg}
-		resp, err := cli.SendMessage(ctx, jid, wire)
+		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{DocumentMessage: docMsg})
 		if err != nil {
 			entry.Error("send document failed: %v", err)
 			return err
@@ -308,21 +294,16 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return fmt.Errorf("audio requires a link or media_url")
 		}
 
-		data, mime, hdr, err := downloadBytesWithHeader(ctx, link) // helper abaixo
+		data, mime, hdr, err := downloadBytesWithHeader(ctx, link)
 		if err != nil {
 			return fmt.Errorf("failed to download media: %w", err)
 		}
 
-		// Heurística: OGG/Opus => PTT por padrão
 		ptt := shouldSendAsPTT(link, mime)
 		if forcePTT != nil {
 			ptt = *forcePTT
 		}
-
-		// Corrige MIME problemáticos e força opus quando PTT
 		mime = normalizeAudioMime(link, mime, ptt)
-
-		// Seconds: payload > headers > fallback
 		secs := pickSeconds(seconds, hdr, ptt)
 
 		entry.Info("audio meta (pre-upload): link=%s mime=%s bytes=%d ptt=%v seconds=%d dest=%s",
@@ -350,33 +331,11 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			audioMsg.ContextInfo = ctxInfo
 		}
-		// gera um waveform simples (opcional)
 		if wf := makeWaveform(secs); len(wf) > 0 {
 			audioMsg.Waveform = wf
 		}
 
-		// Log com campos concretos (desreferenciados)
-		url := ""
-		if audioMsg.URL != nil {
-			url = *audioMsg.URL
-		}
-		mime2 := ""
-		if audioMsg.Mimetype != nil {
-			mime2 = *audioMsg.Mimetype
-		}
-		length := uint64(0)
-		if audioMsg.FileLength != nil {
-			length = *audioMsg.FileLength
-		}
-		pttVal := false
-		if audioMsg.PTT != nil {
-			pttVal = *audioMsg.PTT
-		}
-		entry.Info("audio meta (post-upload): url=%s mime=%s bytes=%d ptt=%v seconds=%d dest=%s",
-			url, mime2, length, pttVal, secs, jid.String())
-
-		wire := &goE2E.Message{AudioMessage: audioMsg}
-		resp, err := cli.SendMessage(ctx, jid, wire)
+		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{AudioMessage: audioMsg})
 		if err != nil {
 			entry.Error("send audio failed: %v", err)
 			return err
@@ -416,8 +375,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			stickerMsg.ContextInfo = ctxInfo
 		}
-		wire := &goE2E.Message{StickerMessage: stickerMsg}
-		resp, err := cli.SendMessage(ctx, jid, wire)
+		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{StickerMessage: stickerMsg})
 		if err != nil {
 			entry.Error("send sticker failed: %v", err)
 			return err
@@ -431,15 +389,12 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 }
 
 func makeWaveform(seconds uint32) []byte {
-	const n = 32 // 32 “barrinhas”
+	const n = 32
 	wf := make([]byte, n)
-	// amplitude entre 6 e 31, só pra ficar visível (0 produz barras vazias)
 	minA, maxA := 6.0, 31.0
 	for i := 0; i < n; i++ {
-		// seno em [0..1]
 		phase := 2.0 * math.Pi * float64(i) / float64(n)
 		s := (math.Sin(phase) + 1.0) / 2.0
-		// mapeia para [minA..maxA]
 		v := minA + s*(maxA-minA)
 		if v < 0 {
 			v = 0
@@ -456,7 +411,6 @@ func pickSeconds(payload *uint32, hdr http.Header, ptt bool) uint32 {
 	if payload != nil && *payload > 0 {
 		return *payload
 	}
-	// alguns backends/sdks enviam uma dessas chaves:
 	tryKeys := []string{"X-Duration-Seconds", "X-Content-Duration", "Content-Duration", "X-Audio-Duration"}
 	for _, k := range tryKeys {
 		if s := hdr.Get(k); s != "" {
@@ -466,12 +420,11 @@ func pickSeconds(payload *uint32, hdr http.Header, ptt bool) uint32 {
 		}
 	}
 	if ptt {
-		return 0 // evita bubble “invisível” em alguns clientes
+		return 0
 	}
 	return 0
 }
 
-// toUserJID normaliza um MSISDN/E.164 (ou JID parcial) para um JID de usuário.
 func toUserJID(to string) (types.JID, error) {
 	to = strings.TrimSpace(to)
 	if to == "" {
@@ -494,7 +447,6 @@ func toUserJID(to string) (types.JID, error) {
 	return types.NewJID(digits, types.DefaultUserServer), nil
 }
 
-// toJID normaliza destinatário como JID de usuário ou grupo.
 func toJID(to string) (types.JID, error) {
 	to = strings.TrimSpace(to)
 	if to == "" {
@@ -530,7 +482,6 @@ func downloadBytesWithHeader(ctx context.Context, url string) ([]byte, string, h
 	return data, mime, resp.Header, nil
 }
 
-// decide PTT por extensão/mime (OGG/Opus → PTT)
 func shouldSendAsPTT(link, mime string) bool {
 	l := strings.ToLower(link)
 	m := strings.ToLower(mime)
@@ -543,7 +494,6 @@ func shouldSendAsPTT(link, mime string) bool {
 	return false
 }
 
-// corrige mimes problemáticos (ex.: audio/mpga → audio/mpeg) e força opus correto
 func normalizeAudioMime(link, mime string, ptt bool) string {
 	m := strings.ToLower(mime)
 	if strings.Contains(m, "mpga") {
@@ -555,7 +505,6 @@ func normalizeAudioMime(link, mime string, ptt bool) string {
 	return mime
 }
 
-// digitsOnly remove caracteres não numéricos.
 func digitsOnly(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -566,7 +515,6 @@ func digitsOnly(s string) string {
 	return b.String()
 }
 
-// downloadBytes baixa o conteúdo da URL e retorna os bytes e o MIME detectado.
 func downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

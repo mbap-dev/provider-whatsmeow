@@ -176,7 +176,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("text sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
-		return nil
+		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "image":
 		var link, caption string
@@ -223,7 +223,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("image sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
-		return nil
+		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "document":
 		var link, caption, filename string
@@ -276,7 +276,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("document sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
-		return nil
+		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "audio":
 		var link string
@@ -341,7 +341,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("audio sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
-		return nil
+		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "sticker":
 		var link string
@@ -381,7 +381,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("sticker sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
-		return nil
+		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	default:
 		return fmt.Errorf("unsupported message type: %s", msg.Type)

@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	_ "time"
+	"time"
 
 	"your.org/provider-whatsmeow/internal/log"
 
@@ -241,6 +241,23 @@ func (m *ClientManager) emitCloudReceipt(sessionID string, client *whatsmeow.Cli
 
 	log.WithSession(sessionID).Info("evt=receipt cloud payload ready type=%s ids=%v", e.Type, e.MessageIDs)
 
+	return m.deliverWebhook(sessionID, payload)
+}
+
+func (m *ClientManager) emitCloudSent(sessionID string, to types.JID, id types.MessageID) error {
+	phone := normalizePhone(sessionID)
+	recipient := jidToPhoneNumberIfUser(to)
+	st := map[string]any{
+		"id":           id,
+		"recipient_id": strings.ReplaceAll(recipient, "+", ""),
+		"status":       "sent",
+		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
+		"conversation": map[string]any{"id": to.String()},
+	}
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["statuses"] = []any{st}
+	log.WithSession(sessionID).WithMessageID(id).Info("evt=sent cloud payload ready id=%s", id)
 	return m.deliverWebhook(sessionID, payload)
 }
 

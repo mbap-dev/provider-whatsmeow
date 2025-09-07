@@ -1,17 +1,16 @@
 # ---- builder ----
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.24.6
 FROM golang:${GO_VERSION}-bookworm AS builder
 
 WORKDIR /src
 
-# Dependências primeiro (cache de camadas)
+# evita toolchain auto-download dentro do container
+ENV GOTOOLCHAIN=local
+
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Código
 COPY . .
-
-# Build estático (sem CGO); ajuste GOARCH se necessário
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -o /out/whatsmeow-adapter ./cmd/whatsmeow-adapter
 

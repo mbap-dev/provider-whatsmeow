@@ -73,6 +73,13 @@ type OutgoingMessage struct {
 	Mentions         []string         `json:"mentions,omitempty"`
 }
 
+func sendWithID(ctx context.Context, cli *whatsmeow.Client, jid types.JID, msg *goE2E.Message, id string) (whatsmeow.SendResponse, error) {
+	if strings.TrimSpace(id) != "" {
+		return cli.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{ID: types.MessageID(id)})
+	}
+	return cli.SendMessage(ctx, jid, msg)
+}
+
 // Send envia a mensagem; sessão vem do contexto (routing key) ou do payload.
 func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	sessionID := strings.TrimSpace(msg.SessionID)
@@ -170,7 +177,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		} else {
 			wire = &goE2E.Message{Conversation: proto.String(body)}
 		}
-		resp, err := cli.SendMessage(ctx, jid, wire)
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send text failed: %v", err)
 			return err
@@ -217,7 +224,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			imgMsg.ContextInfo = ctxInfo
 		}
-		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{ImageMessage: imgMsg})
+		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{ImageMessage: imgMsg}, msg.MessageID)
 		if err != nil {
 			entry.Error("send image failed: %v", err)
 			return err
@@ -270,7 +277,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			docMsg.ContextInfo = ctxInfo
 		}
-		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{DocumentMessage: docMsg})
+		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{DocumentMessage: docMsg}, msg.MessageID)
 		if err != nil {
 			entry.Error("send document failed: %v", err)
 			return err
@@ -335,7 +342,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			audioMsg.Waveform = wf
 		}
 
-		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{AudioMessage: audioMsg})
+		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{AudioMessage: audioMsg}, msg.MessageID)
 		if err != nil {
 			entry.Error("send audio failed: %v", err)
 			return err
@@ -375,7 +382,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			stickerMsg.ContextInfo = ctxInfo
 		}
-		resp, err := cli.SendMessage(ctx, jid, &goE2E.Message{StickerMessage: stickerMsg})
+		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{StickerMessage: stickerMsg}, msg.MessageID)
 		if err != nil {
 			entry.Error("send sticker failed: %v", err)
 			return err

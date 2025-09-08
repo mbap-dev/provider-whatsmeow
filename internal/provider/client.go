@@ -30,13 +30,15 @@ type ClientManager struct {
 	clients      map[string]*clientEntry
 	sessionStore string
 	webhookBase  string
+	storage      *Storage
 }
 
-func NewClientManager(sessionStore, webhookBase string) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, storage *Storage) *ClientManager {
 	return &ClientManager{
 		clients:      make(map[string]*clientEntry),
 		sessionStore: sessionStore,
 		webhookBase:  webhookBase,
+		storage:      storage,
 	}
 }
 

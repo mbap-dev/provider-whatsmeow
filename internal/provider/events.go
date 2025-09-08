@@ -110,9 +110,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":    b64(im.GetFileSHA256()),
 			"id":        e.Info.ID,
 		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			image["link"] = url
-		} else {
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		wireMsg["image"] = image
@@ -129,9 +127,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":    b64(d.GetFileSHA256()),
 			"id":        e.Info.ID,
 		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			document["link"] = url
-		} else {
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		wireMsg["document"] = document
@@ -147,9 +143,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":    b64(v.GetFileSHA256()),
 			"id":        e.Info.ID,
 		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			video["link"] = url
-		} else {
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		wireMsg["video"] = video
@@ -164,14 +158,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":    b64(a.GetFileSHA256()),
 			"id":        e.Info.ID,
 		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			audio["link"] = url
-		} else {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			audio["link"] = url
-		} else {
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		if a.Seconds != nil {
@@ -196,9 +183,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":    b64(s.GetFileSHA256()),
 			"id":        e.Info.ID,
 		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			sticker["link"] = url
-		} else {
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		wireMsg["sticker"] = sticker

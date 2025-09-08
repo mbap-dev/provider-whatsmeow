@@ -1,6 +1,7 @@
 package config
 
 import "os"
+import "strconv"
 
 // Config holds all configurable settings for the adapter.  Each field
 // corresponds to an environment variable.  Defaults are applied where
@@ -16,6 +17,10 @@ type Config struct {
 	// queue.  It is set to "provider.whatsmeow.*" to receive all
 	// messages destined for this provider.
 	AMQPBinding string
+	// AMQPQueue is the name of the queue that will be declared and
+	// consumed by this service.  If empty, a server-generated name is
+	// used.
+	AMQPQueue string
 	// WebhookBase is the base URL to which webhook payloads should be
 	// delivered.  If left empty the service will not emit webhooks.
 	WebhookBase string
@@ -27,6 +32,14 @@ type Config struct {
 	// health checks.  The default is ":8080" which listens on all
 	// interfaces.
 	HTTPAddr string
+
+	// S3/MinIO settings for media storage
+	S3Endpoint  string
+	S3Region    string
+	S3AccessKey string
+	S3SecretKey string
+	S3Bucket    string
+	S3UseSSL    bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -37,9 +50,17 @@ func NewConfig() *Config {
 	cfg.AMQPURL = getEnv("AMQP_URL", "amqp://user_test:123456@localhost:5672/EnvolveNEXT")
 	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
 	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
+	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "provider.whatsmeow")
 	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://localhost/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
+
+	cfg.S3Endpoint = getEnv("S3_ENDPOINT", "")
+	cfg.S3Region = getEnv("S3_REGION", "")
+	cfg.S3AccessKey = getEnv("S3_ACCESS_KEY", "")
+	cfg.S3SecretKey = getEnv("S3_SECRET_KEY", "")
+	cfg.S3Bucket = getEnv("S3_BUCKET", "")
+	cfg.S3UseSSL = getEnvBool("S3_USE_SSL", false)
 	return cfg
 }
 
@@ -48,6 +69,15 @@ func NewConfig() *Config {
 func getEnv(key string, defaultVal string) string {
 	if val, ok := os.LookupEnv(key); ok && val != "" {
 		return val
+	}
+	return defaultVal
+}
+
+func getEnvBool(key string, defaultVal bool) bool {
+	if val, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(val); err == nil {
+			return b
+		}
 	}
 	return defaultVal
 }

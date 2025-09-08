@@ -5,6 +5,7 @@ Microserviço **Go** que:
 - envia via **WhatsMeow** (WhatsApp MD);
 - publica **webhooks** (Cloud-like) se `WEBHOOK_BASE` estiver definido;
 - expõe HTTP para gerenciar sessões e health checks.
+- envia mídias recebidas para **S3/MinIO** e retorna URL assinada se `S3_ENDPOINT` estiver configurado.
 
 > Este provider integra com [unoapi-cloud](https://github.com/mbap-dev/unoapi-cloud) usando o padrão Cloud/Graph-like de payloads.
 

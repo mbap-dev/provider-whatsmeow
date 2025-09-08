@@ -3,7 +3,10 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/url"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -52,6 +55,18 @@ func (s *Storage) Upload(ctx context.Context, objectName string, data []byte, co
 		return "", err
 	}
 	u, err := s.client.PresignedGetObject(ctx, s.bucket, objectName, s.expiry, url.Values{})
+	if err != nil {
+		return "", err
+	}
+	// store a metadata JSON under v13.0/<id> so clients expecting the
+	// WhatsApp Cloud API can resolve the downloadable URL by ID.
+	id := strings.TrimSuffix(path.Base(objectName), path.Ext(objectName))
+	metaObj := path.Join("v13.0", id)
+	meta := map[string]string{"url": u.String()}
+	buf, err := json.Marshal(meta)
+	if err == nil {
+		_, err = s.client.PutObject(ctx, s.bucket, metaObj, bytes.NewReader(buf), int64(len(buf)), minio.PutObjectOptions{ContentType: "application/json"})
+	}
 	if err != nil {
 		return "", err
 	}

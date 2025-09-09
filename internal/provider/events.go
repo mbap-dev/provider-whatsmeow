@@ -32,6 +32,16 @@ const CtxKeyPhoneNumberID ctxKey = "phone_number_id"
 
 // =========== Registro de handlers ===========
 
+// cloudMediaID compõe o ID de mídia no formato esperado pelo consumidor:
+// "<phone_number_id>/<message_uuid>"
+func cloudMediaID(phone, msgID string) string {
+	p := strings.ReplaceAll(phone, "+", "")
+	if p == "" || msgID == "" {
+		return msgID
+	}
+	return p + "/" + msgID
+}
+
 func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionID string) {
 	if client == nil {
 		return
@@ -108,7 +118,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"caption":   im.GetCaption(),
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(im.GetFileSHA256()),
-			"id":        e.Info.ID,
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
 		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
 			image["link"] = url
@@ -127,7 +137,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"filename":  firstNonEmpty(d.GetFileName(), d.GetTitle()),
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(d.GetFileSHA256()),
-			"id":        e.Info.ID,
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
 		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
 			document["link"] = url
@@ -145,7 +155,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"caption":   v.GetCaption(),
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(v.GetFileSHA256()),
-			"id":        e.Info.ID,
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
 		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
 			video["link"] = url
@@ -162,12 +172,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		audio := map[string]any{
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(a.GetFileSHA256()),
-			"id":        e.Info.ID,
-		}
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
-			audio["link"] = url
-		} else {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
 		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
 			audio["link"] = url
@@ -194,7 +199,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		sticker := map[string]any{
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(s.GetFileSHA256()),
-			"id":        e.Info.ID,
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
 		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err == nil {
 			sticker["link"] = url

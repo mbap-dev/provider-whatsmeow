@@ -177,8 +177,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		s := msg.GetStickerMessage()
 		wireMsg["type"] = "sticker"
 		mimeType := s.GetMimetype()
-		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		ext := extensionByMime(mimeType)
+		objName := mediaKey(phone, e.Info.ID) + ext
+		filename := e.Info.ID + ext
 		sticker := map[string]any{
+			"filename":  filename,
 			"mime_type": splitMime(mimeType),
 			"sha256":    b64(s.GetFileSHA256()),
 			"id":        e.Info.ID,

@@ -4,6 +4,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,16 @@ const CtxKeyPhoneNumberID ctxKey = "phone_number_id"
 
 // =========== Registro de handlers ===========
 
+// cloudMediaID compõe o ID de mídia no formato esperado pelo consumidor:
+// "<phone_number_id>/<message_uuid>"
+func cloudMediaID(phone, msgID string) string {
+	p := strings.ReplaceAll(phone, "+", "")
+	if p == "" || msgID == "" {
+		return msgID
+	}
+	return p + "/" + msgID
+}
+
 func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionID string) {
 	if client == nil {
 		return
@@ -40,7 +51,7 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		switch e := evt.(type) {
 		case *events.Message:
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
-				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook message error: %v", err)
+				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
 			}
 		case *events.Receipt:
 			if err := m.emitCloudReceipt(sessionID, client, e); err != nil {
@@ -52,52 +63,42 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 	})
 }
 
-// =========== Emissão de mensagens no formato Webhook simples ==========
+// =========== Emissão de mensagens no formato Cloud ===========
 
 func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Client, e *events.Message) error {
-	phone := normalizePhone(sessionID)
+	phone := normalizePhone(sessionID) // Uno usa “phone” como id/metadata.* sem "+"
 	msg := e.Message
 	if msg == nil {
 		return nil
 	}
 
+	// Calcula contrapartes
+	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
-	fromMe := e.Info.IsFromMe
 
-	direction := "in"
-	fromField := jidToPhoneNumberIfUser(senderJID)
-	toField := phone
-	if fromMe {
-		direction = "out"
-		fromField = phone
-		toField = jidToPhoneNumberIfUser(chatJID)
+	contactPhone := jidToPhoneNumberIfUser(chatJID)    // quem aparece em contacts.wa_id
+	if isGroupJID(chatJID) && (senderJID.User != "") { // em grupos, “from” é quem falou
+		contactPhone = jidToPhoneNumberIfUser(senderJID) // ainda mantemos contacts.wa_id do chat; group_id vai junto
+	}
+	fromField := phone
+	if !fromMe {
+		fromField = jidToPhoneNumberIfUser(senderJID)
 	}
 
+	// Monta “message” no padrão Cloud
 	wireMsg := map[string]any{
+		"from":      strings.ReplaceAll(fromField, "+", ""),
 		"id":        e.Info.ID,
-		"from":      digitsOnly(fromField),
-		"to":        digitsOnly(toField),
-		"timestamp": e.Info.Timestamp.Unix(),
-	}
-	if wireMsg["timestamp"].(int64) == 0 {
-		wireMsg["timestamp"] = time.Now().Unix()
+		"timestamp": strconv.FormatInt(e.Info.Timestamp.Unix(), 10),
 	}
 
+	// Context (reply/quote) se houver
 	if ctx := messageContextInfo(msg); ctx != nil {
 		wireMsg["context"] = ctx
 	}
 
-	if isGroupJID(chatJID) {
-		grp := map[string]any{"id": chatJID.String()}
-		if gi, err := client.GetGroupInfo(chatJID); err == nil && gi.GroupName.Name != "" {
-			grp["subject"] = gi.GroupName.Name
-		}
-		wireMsg["group"] = grp
-	}
-
-	wireMsg["profile"] = map[string]any{"name": digitsOnly(fromField)}
-
+	// Tipo de conteúdo
 	switch {
 	case msg.GetConversation() != "":
 		wireMsg["type"] = "text"
@@ -112,23 +113,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		im := msg.GetImageMessage()
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
-		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
+		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		image := map[string]any{
+			"caption":   im.GetCaption(),
+			"mime_type": splitMime(mimeType),
+			"sha256":    b64(im.GetFileSHA256()),
+			"id":        cloudMediaID(phone, e.Info.ID),
+		}
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
-		}
-		image := map[string]any{"link": link}
-		if cap := strings.TrimSpace(im.GetCaption()); cap != "" {
-			image["caption"] = cap
-		}
-		if ext != "" {
-			image["filename"] = e.Info.ID + ext
-		}
-		if mimeType != "" {
-			image["mimetype"] = mimeType
 		}
 		wireMsg["image"] = image
 
@@ -136,25 +129,16 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		d := msg.GetDocumentMessage()
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
-		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
+		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		document := map[string]any{
+			"caption":   d.GetCaption(),
+			"filename":  firstNonEmpty(d.GetFileName(), d.GetTitle()),
+			"mime_type": splitMime(mimeType),
+			"sha256":    b64(d.GetFileSHA256()),
+			"id":        cloudMediaID(phone, e.Info.ID),
+		}
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
-		}
-		document := map[string]any{"link": link}
-		if fn := firstNonEmpty(d.GetFileName(), d.GetTitle()); fn != "" {
-			document["filename"] = fn
-		} else if ext != "" {
-			document["filename"] = e.Info.ID + ext
-		}
-		if cap := strings.TrimSpace(d.GetCaption()); cap != "" {
-			document["caption"] = cap
-		}
-		if mimeType != "" {
-			document["mimetype"] = mimeType
 		}
 		wireMsg["document"] = document
 
@@ -162,23 +146,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		v := msg.GetVideoMessage()
 		wireMsg["type"] = "video"
 		mimeType := v.GetMimetype()
-		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
+		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		video := map[string]any{
+			"caption":   v.GetCaption(),
+			"mime_type": splitMime(mimeType),
+			"sha256":    b64(v.GetFileSHA256()),
+			"id":        cloudMediaID(phone, e.Info.ID),
+		}
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
-		}
-		video := map[string]any{"link": link}
-		if cap := strings.TrimSpace(v.GetCaption()); cap != "" {
-			video["caption"] = cap
-		}
-		if ext != "" {
-			video["filename"] = e.Info.ID + ext
-		}
-		if mimeType != "" {
-			video["mimetype"] = mimeType
 		}
 		wireMsg["video"] = video
 
@@ -186,26 +162,24 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		a := msg.GetAudioMessage()
 		wireMsg["type"] = "audio"
 		mimeType := a.GetMimetype()
-		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
+		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		audio := map[string]any{
+			"mime_type": splitMime(mimeType),
+			"sha256":    b64(a.GetFileSHA256()),
+			"id":        cloudMediaID(phone, e.Info.ID),
+		}
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
 		}
-		audio := map[string]any{"link": link}
-		if ext != "" {
-			audio["filename"] = e.Info.ID + ext
+		if a.Seconds != nil {
+			audio["seconds"] = a.GetSeconds()
 		}
-		mtype := mimeType
-		if strings.HasSuffix(strings.ToLower(ext), ".ogg") {
-			if mtype == "" || mtype == "audio/ogg" {
-				mtype = "audio/ogg; codecs=opus"
-			}
+		if a.PTT != nil {
+			audio["ptt"] = a.GetPTT()
 		}
-		if mtype != "" {
-			audio["mimetype"] = mtype
+		// inclui waveform se existir
+		if len(a.GetWaveform()) > 0 {
+			audio["waveform"] = base64.StdEncoding.EncodeToString(a.GetWaveform())
 		}
 		wireMsg["audio"] = audio
 
@@ -215,38 +189,17 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		mimeType := s.GetMimetype()
 		ext := extensionByMime(mimeType)
 		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
+		filename := e.Info.ID + ext
+		sticker := map[string]any{
+			"filename":  filename,
+			"mime_type": splitMime(mimeType),
+			"sha256":    b64(s.GetFileSHA256()),
+			"id":        cloudMediaID(phone, e.Info.ID),
 		}
-		sticker := map[string]any{"link": link}
-		if mimeType != "" {
-			sticker["mimetype"] = mimeType
+		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
 		}
 		wireMsg["sticker"] = sticker
-
-	case msg.GetPtvMessage() != nil:
-		v := msg.GetPtvMessage()
-		wireMsg["type"] = "ptv"
-		mimeType := v.GetMimetype()
-		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
-		link := ""
-		if url, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
-		} else {
-			link = url
-		}
-		ptv := map[string]any{"link": link}
-		if mimeType != "" {
-			ptv["mimetype"] = mimeType
-		}
-		if ext != "" {
-			ptv["filename"] = e.Info.ID + ext
-		}
-		wireMsg["ptv"] = ptv
 
 	case msg.GetLocationMessage() != nil:
 		l := msg.GetLocationMessage()
@@ -257,23 +210,32 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 
 	default:
+		// fallback: se nada identificado mas tem algo, tenta extrair caption/text
 		if cap := extractAnyCaption(msg); cap != "" {
 			wireMsg["type"] = "text"
 			wireMsg["text"] = map[string]any{"body": cap}
 		} else {
+			// ignora tipos não suportados
 			return nil
 		}
 	}
 
-	payload := map[string]any{
-		"provider":  "whatsmeow",
-		"session":   phone,
-		"direction": direction,
-		"message":   wireMsg,
+	// Contatos (inclui group_id quando for grupo)
+	contactObj := map[string]any{
+		"profile": map[string]any{"name": contactPhone},
+		"wa_id":   contactPhone,
+	}
+	if isGroupJID(chatJID) {
+		contactObj["group_id"] = chatJID.String()
 	}
 
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["contacts"] = []any{contactObj}
+	val["messages"] = []any{wireMsg}
+
 	log.WithSession(sessionID).WithMessageID(e.Info.ID).
-		Info("evt=message payload ready type=%s", wireMsg["type"])
+		Info("evt=message cloud payload ready type=%s", wireMsg["type"])
 
 	return m.deliverWebhook(sessionID, payload)
 }
@@ -403,6 +365,13 @@ func splitMime(m string) string {
 	return strings.SplitN(m, ";", 2)[0]
 }
 
+func b64(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}
+
 func mediaKey(phone, waMsgID string) string {
 	return fmt.Sprintf("%s/%s", strings.ReplaceAll(phone, "+", ""), waMsgID)
 }
@@ -448,6 +417,7 @@ func extractAnyCaption(m *waE2E.Message) string {
 }
 
 func messageContextInfo(m *waE2E.Message) map[string]any {
+	// tenta extrair stanzaId e participant de qualquer ContextInfo disponível
 	var ci *waE2E.ContextInfo
 	switch {
 	case m.GetExtendedTextMessage() != nil:
@@ -467,10 +437,20 @@ func messageContextInfo(m *waE2E.Message) map[string]any {
 		return nil
 	}
 	stanzaID := strings.TrimSpace(ci.GetStanzaID())
+	if stanzaID == "" && ci.GetQuotedMessage() != nil {
+		// se veio quotedMessage mas sem stanzaId, ainda assim envia context pra compat
+		return map[string]any{
+			"message_id": stanzaID,
+			"id":         stanzaID,
+		}
+	}
 	if stanzaID == "" {
 		return nil
 	}
-	return map[string]any{"quoted_message_id": stanzaID}
+	return map[string]any{
+		"message_id": stanzaID,
+		"id":         stanzaID,
+	}
 }
 
 func mapReceiptStatus(t events.ReceiptType) string {

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -113,15 +112,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		im := msg.GetImageMessage()
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
-		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
+		imgExt := extensionByMime(mimeType)
 		image := map[string]any{
-			"caption":   im.GetCaption(),
-			"mime_type": splitMime(mimeType),
-			"sha256":    b64(im.GetFileSHA256()),
-			"id":        cloudMediaID(phone, e.Info.ID),
+			"caption":     im.GetCaption(),
+			"mime_type":   splitMime(mimeType),
+			"sha256":      b64(im.GetFileSHA256()),
+			"media_key":   b64(im.GetMediaKey()),
+			"direct_path": im.GetDirectPath(),
 		}
-		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+		if strings.TrimSpace(imgExt) != "" {
+			image["filename"] = e.Info.ID + imgExt
+		}
+		if im.FileLength != nil {
+			image["file_length"] = im.GetFileLength()
 		}
 		wireMsg["image"] = image
 
@@ -129,16 +132,16 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		d := msg.GetDocumentMessage()
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
-		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
 		document := map[string]any{
-			"caption":   d.GetCaption(),
-			"filename":  firstNonEmpty(d.GetFileName(), d.GetTitle()),
-			"mime_type": splitMime(mimeType),
-			"sha256":    b64(d.GetFileSHA256()),
-			"id":        cloudMediaID(phone, e.Info.ID),
+			"caption":     d.GetCaption(),
+			"filename":    firstNonEmpty(d.GetFileName(), d.GetTitle()),
+			"mime_type":   splitMime(mimeType),
+			"sha256":      b64(d.GetFileSHA256()),
+			"media_key":   b64(d.GetMediaKey()),
+			"direct_path": d.GetDirectPath(),
 		}
-		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+		if d.FileLength != nil {
+			document["file_length"] = d.GetFileLength()
 		}
 		wireMsg["document"] = document
 
@@ -146,15 +149,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		v := msg.GetVideoMessage()
 		wireMsg["type"] = "video"
 		mimeType := v.GetMimetype()
-		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
 		video := map[string]any{
-			"caption":   v.GetCaption(),
-			"mime_type": splitMime(mimeType),
-			"sha256":    b64(v.GetFileSHA256()),
-			"id":        cloudMediaID(phone, e.Info.ID),
+			"caption":     v.GetCaption(),
+			"mime_type":   splitMime(mimeType),
+			"sha256":      b64(v.GetFileSHA256()),
+			"media_key":   b64(v.GetMediaKey()),
+			"direct_path": v.GetDirectPath(),
 		}
-		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+		if v.FileLength != nil {
+			video["file_length"] = v.GetFileLength()
 		}
 		wireMsg["video"] = video
 
@@ -162,14 +165,14 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		a := msg.GetAudioMessage()
 		wireMsg["type"] = "audio"
 		mimeType := a.GetMimetype()
-		objName := mediaKey(phone, e.Info.ID) + extensionByMime(mimeType)
 		audio := map[string]any{
-			"mime_type": splitMime(mimeType),
-			"sha256":    b64(a.GetFileSHA256()),
-			"id":        cloudMediaID(phone, e.Info.ID),
+			"mime_type":   splitMime(mimeType),
+			"sha256":      b64(a.GetFileSHA256()),
+			"media_key":   b64(a.GetMediaKey()),
+			"direct_path": a.GetDirectPath(),
 		}
-		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+		if a.FileLength != nil {
+			audio["file_length"] = a.GetFileLength()
 		}
 		if a.Seconds != nil {
 			audio["seconds"] = a.GetSeconds()
@@ -188,16 +191,16 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		wireMsg["type"] = "sticker"
 		mimeType := s.GetMimetype()
 		ext := extensionByMime(mimeType)
-		objName := mediaKey(phone, e.Info.ID) + ext
 		filename := e.Info.ID + ext
 		sticker := map[string]any{
-			"filename":  filename,
-			"mime_type": splitMime(mimeType),
-			"sha256":    b64(s.GetFileSHA256()),
-			"id":        cloudMediaID(phone, e.Info.ID),
+			"filename":    filename,
+			"mime_type":   splitMime(mimeType),
+			"sha256":      b64(s.GetFileSHA256()),
+			"media_key":   b64(s.GetMediaKey()),
+			"direct_path": s.GetDirectPath(),
 		}
-		if _, err := m.storeMedia(context.Background(), client, msg, objName, mimeType); err != nil {
-			log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("media upload error: %v", err)
+		if s.FileLength != nil {
+			sticker["file_length"] = s.GetFileLength()
 		}
 		wireMsg["sticker"] = sticker
 
@@ -372,27 +375,12 @@ func b64(b []byte) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-func mediaKey(phone, waMsgID string) string {
-	return fmt.Sprintf("%s/%s", strings.ReplaceAll(phone, "+", ""), waMsgID)
-}
-
 func extensionByMime(m string) string {
 	exts, _ := mime.ExtensionsByType(splitMime(m))
 	if len(exts) > 0 {
 		return exts[0]
 	}
 	return ""
-}
-
-func (m *ClientManager) storeMedia(ctx context.Context, cli *whatsmeow.Client, msg *waE2E.Message, object, mimeType string) (string, error) {
-	if m.storage == nil {
-		return "", fmt.Errorf("storage not configured")
-	}
-	data, err := cli.DownloadAny(ctx, msg)
-	if err != nil {
-		return "", err
-	}
-	return m.storage.Upload(ctx, object, data, mimeType)
 }
 
 func firstNonEmpty(vals ...string) string {

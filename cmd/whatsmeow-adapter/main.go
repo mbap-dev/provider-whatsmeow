@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
 	"your.org/provider-whatsmeow/internal/config"
@@ -29,16 +28,7 @@ func main() {
 	// for bootstrapping new sessions, keeping track of connected clients
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
-	var storage *provider.Storage
-	if cfg.S3Endpoint != "" && cfg.S3Bucket != "" {
-		s, err := provider.NewStorage(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket, cfg.S3Region, cfg.S3UseSSL, time.Hour)
-		if err != nil {
-			log.Fatalf("failed to initialise storage: %v", err)
-		}
-		storage = s
-	}
-
-	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, storage)
+	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase)
 
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.

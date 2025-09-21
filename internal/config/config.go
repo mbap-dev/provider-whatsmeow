@@ -32,14 +32,6 @@ type Config struct {
 	// health checks.  The default is ":8080" which listens on all
 	// interfaces.
 	HTTPAddr string
-
-	// S3/MinIO settings for media storage
-	S3Endpoint  string
-	S3Region    string
-	S3AccessKey string
-	S3SecretKey string
-	S3Bucket    string
-	S3UseSSL    bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -51,16 +43,10 @@ func NewConfig() *Config {
 	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
 	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
 	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "provider.whatsmeow")
-	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://localhost/webhooks/whatsapp")
+	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://unoapi-testes.envolvenext.com.br/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
 
-	cfg.S3Endpoint = getEnv("S3_ENDPOINT", "")
-	cfg.S3Region = getEnv("S3_REGION", "")
-	cfg.S3AccessKey = getEnv("S3_ACCESS_KEY", "")
-	cfg.S3SecretKey = getEnv("S3_SECRET_KEY", "")
-	cfg.S3Bucket = getEnv("S3_BUCKET", "")
-	cfg.S3UseSSL = getEnvBool("S3_USE_SSL", false)
 	return cfg
 }
 

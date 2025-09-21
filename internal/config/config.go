@@ -32,6 +32,10 @@ type Config struct {
 	// health checks.  The default is ":8080" which listens on all
 	// interfaces.
 	HTTPAddr string
+
+	// AudioPTTDefault controls whether audio messages are sent as PTT by default.
+	// If not set, defaults to true.
+	AudioPTTDefault bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -46,6 +50,9 @@ func NewConfig() *Config {
 	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://unoapi-testes.envolvenext.com.br/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
+
+	// Default: send audio as PTT unless explicitly disabled
+	cfg.AudioPTTDefault = getEnvBool("AUDIO_PTT_DEFAULT", true)
 
 	return cfg
 }

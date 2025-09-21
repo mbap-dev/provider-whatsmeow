@@ -26,17 +26,19 @@ type clientEntry struct {
 
 // ClientManager mantém um registro de clientes por sessão
 type ClientManager struct {
-	mu           sync.RWMutex
-	clients      map[string]*clientEntry
-	sessionStore string
-	webhookBase  string
+	mu              sync.RWMutex
+	clients         map[string]*clientEntry
+	sessionStore    string
+	webhookBase     string
+	defaultAudioPTT bool
 }
 
-func NewClientManager(sessionStore, webhookBase string) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool) *ClientManager {
 	return &ClientManager{
-		clients:      make(map[string]*clientEntry),
-		sessionStore: sessionStore,
-		webhookBase:  webhookBase,
+		clients:         make(map[string]*clientEntry),
+		sessionStore:    sessionStore,
+		webhookBase:     webhookBase,
+		defaultAudioPTT: defaultAudioPTT,
 	}
 }
 

@@ -334,7 +334,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			waveform = buildWaveform(samples)
 		}
 
-		ptt := true
+		ptt := m.defaultAudioPTT
 		if msg.Audio != nil && msg.Audio.PTT != nil {
 			ptt = *msg.Audio.PTT
 		}

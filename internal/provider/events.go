@@ -99,6 +99,45 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 
 	// Tipo de conteúdo
 	switch {
+	case msg.GetProtocolMessage() != nil:
+		pm := msg.GetProtocolMessage()
+		if pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT && pm.GetEditedMessage() != nil {
+			edited := pm.GetEditedMessage()
+			// Build as a text reply to the original message that was edited
+			body := strings.TrimSpace(edited.GetConversation())
+			if body == "" && edited.GetExtendedTextMessage() != nil {
+				body = strings.TrimSpace(edited.GetExtendedTextMessage().GetText())
+			}
+			if body == "" {
+				// fallback to any caption-like text
+				body = strings.TrimSpace(extractAnyCaption(edited))
+			}
+			if body == "" {
+				// if we don't have a body, ignore
+				return nil
+			}
+			wireMsg["type"] = "text"
+			wireMsg["text"] = map[string]any{"body": body}
+			if pm.GetKey() != nil {
+				rid := strings.TrimSpace(pm.GetKey().GetId())
+				if rid != "" {
+					// Log edit detection with snippet
+					snippet := body
+					if len(snippet) > 120 {
+						snippet = snippet[:120]
+					}
+					log.WithSession(sessionID).WithMessageID(e.Info.ID).
+						Info("evt=message_edit reply_to=%s body_snippet=%q", rid, snippet)
+					wireMsg["context"] = map[string]any{
+						"message_id": rid,
+						"id":         rid,
+					}
+				}
+			}
+		} else {
+			// ignore other protocol messages
+			return nil
+		}
 	case msg.GetContactMessage() != nil:
 		c := msg.GetContactMessage()
 		wireMsg["type"] = "contacts"

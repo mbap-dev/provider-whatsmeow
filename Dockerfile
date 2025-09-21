@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -o /out/whatsmeow-adapter ./cmd/whatsmeow-adapter
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata wget su-exec
+RUN apk add --no-cache ca-certificates tzdata wget su-exec ffmpeg
 RUN adduser -D -u 10001 app
 
 WORKDIR /app

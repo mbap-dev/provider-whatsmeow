@@ -99,6 +99,25 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 
 	// Tipo de conteúdo
 	switch {
+	case msg.GetReactionMessage() != nil:
+		r := msg.GetReactionMessage()
+		emoji := strings.TrimSpace(r.GetText())
+		if emoji == "" {
+			// ignore empty reaction (removal)
+			return nil
+		}
+		wireMsg["type"] = "text"
+		wireMsg["text"] = map[string]any{"body": emoji}
+		// reply to the original message that was reacted
+		if rk := r.GetKey(); rk != nil {
+			rid := strings.TrimSpace(rk.GetId())
+			if rid != "" {
+				wireMsg["context"] = map[string]any{
+					"message_id": rid,
+					"id":         rid,
+				}
+			}
+		}
 	case msg.GetConversation() != "":
 		wireMsg["type"] = "text"
 		wireMsg["text"] = map[string]any{"body": msg.GetConversation()}

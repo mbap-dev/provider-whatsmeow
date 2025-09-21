@@ -46,6 +46,21 @@ type StickerContent struct {
 	Link string `json:"link"`
 }
 
+// Contacts payload (Cloud-compatible)
+type ContactName struct {
+	FormattedName string `json:"formatted_name"`
+}
+
+type ContactPhone struct {
+	Phone string `json:"phone"`
+	WAID  string `json:"wa_id,omitempty"`
+}
+
+type ContactEntry struct {
+	Name   ContactName    `json:"name"`
+	Phones []ContactPhone `json:"phones"`
+}
+
 type MessageContext struct {
 	ID           string   `json:"id,omitempty"`
 	MessageID    string   `json:"message_id,omitempty"`
@@ -67,6 +82,7 @@ type OutgoingMessage struct {
 	Document         *DocumentContent `json:"document,omitempty"`
 	Audio            *AudioContent    `json:"audio,omitempty"`
 	Sticker          *StickerContent  `json:"sticker,omitempty"`
+	Contacts         []ContactEntry   `json:"contacts,omitempty"`
 	MediaURL         string           `json:"media_url,omitempty"`
 	Caption          string           `json:"caption,omitempty"`
 	SessionID        string           `json:"session_id"`
@@ -414,6 +430,66 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("sticker sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+		return m.emitCloudSent(sessionID, jid, resp.ID)
+
+	case "contacts":
+		if len(msg.Contacts) == 0 {
+			return fmt.Errorf("contacts requires at least one contact entry")
+		}
+		// Build vCards
+		var displayName string
+		contactMsgs := make([]*goE2E.ContactMessage, 0, len(msg.Contacts))
+		for i, c := range msg.Contacts {
+			name := strings.TrimSpace(c.Name.FormattedName)
+			if name == "" {
+				name = "Contact"
+			}
+			if i == 0 {
+				displayName = name
+			}
+			// Build TEL lines
+			var telLines []string
+			for _, p := range c.Phones {
+				phone := strings.TrimSpace(p.Phone)
+				waid := strings.TrimSpace(p.WAID)
+				if phone == "" {
+					continue
+				}
+				if waid != "" {
+					telLines = append(telLines, fmt.Sprintf("TEL;type=CELL;type=VOICE;waid=%s:%s", waid, phone))
+				} else {
+					telLines = append(telLines, fmt.Sprintf("TEL;type=CELL;type=VOICE:%s", phone))
+				}
+			}
+			if len(telLines) == 0 {
+				continue
+			}
+			vcard := "BEGIN:VCARD\n" +
+				"VERSION:3.0\n" +
+				fmt.Sprintf("N:%s\n", name) +
+				strings.Join(telLines, "\n") + "\n" +
+				"END:VCARD"
+			contactMsgs = append(contactMsgs, &goE2E.ContactMessage{
+				DisplayName: proto.String(name),
+				Vcard:       proto.String(vcard),
+			})
+		}
+		if len(contactMsgs) == 0 {
+			return fmt.Errorf("contacts payload has no valid phone entries")
+		}
+		arr := &goE2E.ContactsArrayMessage{
+			DisplayName: proto.String(displayName),
+			Contacts:    contactMsgs,
+		}
+		if ctxInfo != nil {
+			// ContactsArrayMessage does not have ContextInfo; attach at Message level via future if supported.
+		}
+		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{ContactsArrayMessage: arr}, msg.MessageID)
+		if err != nil {
+			entry.Error("send contacts failed: %v", err)
+			return err
+		}
+		entry.Info("contacts sent to %s (wa_msg_id=%s) count=%d", jid.String(), resp.ID, len(contactMsgs))
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	default:

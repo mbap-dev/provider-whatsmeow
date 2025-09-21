@@ -99,6 +99,45 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 
 	// Tipo de conteúdo
 	switch {
+	case msg.GetContactMessage() != nil:
+		c := msg.GetContactMessage()
+		wireMsg["type"] = "contacts"
+		name, phones := parseVCard(c.GetVcard())
+		if name == "" {
+			name = strings.TrimSpace(c.GetDisplayName())
+		}
+		if len(phones) == 0 {
+			phones = []map[string]any{}
+		}
+		entryC := map[string]any{
+			"name":   map[string]any{"formatted_name": name},
+			"phones": phones,
+		}
+		wireMsg["contacts"] = []any{entryC}
+
+	case msg.GetContactsArrayMessage() != nil:
+		arr := msg.GetContactsArrayMessage()
+		wireMsg["type"] = "contacts"
+		var list []any
+		for _, cm := range arr.GetContacts() {
+			cn := strings.TrimSpace(cm.GetDisplayName())
+			name, phones := parseVCard(cm.GetVcard())
+			if name == "" {
+				name = cn
+			}
+			if len(phones) == 0 {
+				phones = []map[string]any{}
+			}
+			list = append(list, map[string]any{
+				"name":   map[string]any{"formatted_name": name},
+				"phones": phones,
+			})
+		}
+		if len(list) == 0 {
+			return nil
+		}
+		wireMsg["contacts"] = list
+
 	case msg.GetReactionMessage() != nil:
 		r := msg.GetReactionMessage()
 		emoji := strings.TrimSpace(r.GetText())
@@ -400,6 +439,59 @@ func extensionByMime(m string) string {
 		return exts[0]
 	}
 	return ""
+}
+
+// parseVCard extracts formatted name and phone entries from a vCard string.
+// It supports lines like:
+// N:John Doe
+// TEL;type=CELL;type=VOICE;waid=5511999999999:5511999999999
+// TEL;type=CELL;type=VOICE:+55 62 93300-0233
+func parseVCard(v string) (string, []map[string]any) {
+	if strings.TrimSpace(v) == "" {
+		return "", nil
+	}
+	var name string
+	var phones []map[string]any
+	lines := strings.Split(v, "\n")
+	for _, ln := range lines {
+		s := strings.TrimSpace(ln)
+		if s == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(s), "N:") {
+			name = strings.TrimSpace(s[2:])
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(s), "FN:") && name == "" {
+			name = strings.TrimSpace(s[3:])
+			continue
+		}
+		if strings.HasPrefix(strings.ToUpper(s), "TEL") {
+			// phone is after last ':'
+			c := strings.LastIndex(s, ":")
+			if c <= 0 || c+1 >= len(s) {
+				continue
+			}
+			phone := strings.TrimSpace(s[c+1:])
+			waid := ""
+			if i := strings.Index(strings.ToLower(s), "waid="); i >= 0 {
+				// take until next ';' or ':'
+				rest := s[i+5:]
+				j := strings.IndexAny(rest, ";:")
+				if j >= 0 {
+					waid = strings.TrimSpace(rest[:j])
+				} else {
+					waid = strings.TrimSpace(rest)
+				}
+			}
+			entry := map[string]any{"phone": phone}
+			if waid != "" {
+				entry["wa_id"] = waid
+			}
+			phones = append(phones, entry)
+		}
+	}
+	return name, phones
 }
 
 func firstNonEmpty(vals ...string) string {

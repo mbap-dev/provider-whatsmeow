@@ -1,2 +1,4 @@
 /state/
 /.idea/*
+/.gomodcache/
+/.gocache/

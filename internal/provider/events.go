@@ -450,7 +450,8 @@ func parseVCard(v string) (string, []map[string]any) {
 	if strings.TrimSpace(v) == "" {
 		return "", nil
 	}
-	var name string
+	var fn string
+	var nFormatted string
 	var phones []map[string]any
 	lines := strings.Split(v, "\n")
 	for _, ln := range lines {
@@ -459,11 +460,30 @@ func parseVCard(v string) (string, []map[string]any) {
 			continue
 		}
 		if strings.HasPrefix(strings.ToUpper(s), "N:") {
-			name = strings.TrimSpace(s[2:])
+			raw := strings.TrimSpace(s[2:])
+			// N: Family;Given;Additional;Prefix;Suffix
+			parts := strings.Split(raw, ";")
+			// Prefer Given + Family if present
+			var given, family string
+			if len(parts) > 1 {
+				family = strings.TrimSpace(parts[0])
+				given = strings.TrimSpace(parts[1])
+			} else if len(parts) == 1 {
+				given = strings.TrimSpace(parts[0])
+			}
+			if given != "" && family != "" {
+				nFormatted = strings.TrimSpace(given + " " + family)
+			} else if given != "" {
+				nFormatted = given
+			} else if family != "" {
+				nFormatted = family
+			} else {
+				nFormatted = raw
+			}
 			continue
 		}
-		if strings.HasPrefix(strings.ToUpper(s), "FN:") && name == "" {
-			name = strings.TrimSpace(s[3:])
+		if strings.HasPrefix(strings.ToUpper(s), "FN:") {
+			fn = strings.TrimSpace(s[3:])
 			continue
 		}
 		if strings.HasPrefix(strings.ToUpper(s), "TEL") {
@@ -490,6 +510,11 @@ func parseVCard(v string) (string, []map[string]any) {
 			}
 			phones = append(phones, entry)
 		}
+	}
+	// prefer FN if present, else formatted N
+	name := strings.TrimSpace(fn)
+	if name == "" {
+		name = strings.TrimSpace(nFormatted)
 	}
 	return name, phones
 }

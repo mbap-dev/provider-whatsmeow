@@ -8,6 +8,7 @@ Microserviço **Go** que:
 - para mensagens com mídia, não armazena mais em S3/MinIO; o webhook inclui `direct_path`, `media_key`, `mime_type`, `sha256` e `file_length` para que o serviço consumidor faça o download e a descriptografia.
  - envio de áudio: converte para OGG/Opus mono via `ffmpeg`, calcula `seconds` e `waveform` e envia como PTT por padrão.
    - controle de PTT por env: defina `AUDIO_PTT_DEFAULT=false` para desabilitar PTT por padrão (se ausente, é `true`). O campo `audio.ptt` no payload pode sobrescrever por mensagem.
+ - rejeita ligações recebidas automaticamente e, opcionalmente, envia uma mensagem de resposta ao chamador.
 
 > Este provider integra com [unoapi-cloud](https://github.com/mbap-dev/unoapi-cloud) usando o padrão Cloud/Graph-like de payloads.
 
@@ -30,3 +31,9 @@ curl -X POST http://localhost:8080/sessions/main/connect
 
 # Ler QR atual (base64)
 curl http://localhost:8080/sessions/main/qr
+## Ligações (auto-reject)
+
+- `REJECT_CALLS` (padrão `true`): quando uma ligação é recebida, ela é automaticamente rejeitada.
+- `REJECT_CALLS_MESSAGE` (opcional): texto de resposta enviado para quem ligou após a rejeição. Suporta `\n` para quebra de linha.
+  - Ex.: `REJECT_CALLS_MESSAGE="Não aceitamos ligações pelo WhatsApp.\nPor favor, envie uma mensagem."`
+  - Quando a mensagem é enviada, um webhook de `statuses` (status `sent`) é publicado para o UnoAPI informando o envio dessa resposta.

@@ -31,14 +31,18 @@ type ClientManager struct {
 	sessionStore    string
 	webhookBase     string
 	defaultAudioPTT bool
+	rejectCalls     bool
+	rejectMsg       string
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string) *ClientManager {
 	return &ClientManager{
 		clients:         make(map[string]*clientEntry),
 		sessionStore:    sessionStore,
 		webhookBase:     webhookBase,
 		defaultAudioPTT: defaultAudioPTT,
+		rejectCalls:     rejectCalls,
+		rejectMsg:       rejectMsg,
 	}
 }
 

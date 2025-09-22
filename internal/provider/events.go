@@ -19,7 +19,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	_ "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // Context key used to carry the wildcard suffix (e.g., phone_number_id)
@@ -48,6 +48,31 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 
 	client.AddEventHandler(func(evt interface{}) {
 		switch e := evt.(type) {
+		case *events.CallOffer:
+			// Auto-reject incoming calls and optionally send a reply text
+			if m.rejectCalls {
+				if err := client.RejectCall(e.CallCreator, e.CallID); err != nil {
+					log.WithSession(sessionID).Error("call reject error: %v", err)
+				} else {
+					log.WithSession(sessionID).Info("evt=call_reject from=%s call_id=%s", e.CallCreator.String(), e.CallID)
+				}
+				// Optionally send a message to the caller
+				msgText := strings.TrimSpace(m.rejectMsg)
+				if msgText != "" {
+					// Support literal \n already handled in config; just send
+					wire := &waE2E.Message{Conversation: proto.String(msgText)}
+					// Send to the caller JID (non-AD if applicable)
+					to := e.CallCreator
+					resp, err := client.SendMessage(context.Background(), to, wire)
+					if err != nil {
+						log.WithSession(sessionID).Error("call reply send error: %v", err)
+					} else {
+						// Emit webhook 'sent' status to UnoAPI
+						_ = m.emitCloudSent(sessionID, to, resp.ID)
+						log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
+					}
+				}
+			}
 		case *events.Message:
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)

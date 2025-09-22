@@ -2,6 +2,7 @@ package config
 
 import "os"
 import "strconv"
+import "strings"
 
 // Config holds all configurable settings for the adapter.  Each field
 // corresponds to an environment variable.  Defaults are applied where
@@ -36,6 +37,12 @@ type Config struct {
 	// AudioPTTDefault controls whether audio messages are sent as PTT by default.
 	// If not set, defaults to true.
 	AudioPTTDefault bool
+
+	// RejectCalls enables automatic rejection of incoming calls. Default: true.
+	RejectCalls bool
+	// RejectCallsMessage is the optional text sent to the caller after rejecting.
+	// Supports escaped newlines (\n) which are converted to real newlines.
+	RejectCallsMessage string
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -53,6 +60,14 @@ func NewConfig() *Config {
 
 	// Default: send audio as PTT unless explicitly disabled
 	cfg.AudioPTTDefault = getEnvBool("AUDIO_PTT_DEFAULT", true)
+
+	// Auto-reject incoming calls + optional reply message
+	cfg.RejectCalls = getEnvBool("REJECT_CALLS", true)
+	cfg.RejectCallsMessage = getEnv("REJECT_CALLS_MESSAGE", "")
+	// Allow escaped newlines in env var
+	if strings.Contains(cfg.RejectCallsMessage, "\\n") {
+		cfg.RejectCallsMessage = strings.ReplaceAll(cfg.RejectCallsMessage, "\\n", "\n")
+	}
 
 	return cfg
 }

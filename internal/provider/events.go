@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -103,18 +105,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
 
-	contactPhone := jidToPhoneNumberIfUser(chatJID)    // quem aparece em contacts.wa_id
-	if isGroupJID(chatJID) && (senderJID.User != "") { // em grupos, “from” é quem falou
-		contactPhone = jidToPhoneNumberIfUser(senderJID) // ainda mantemos contacts.wa_id do chat; group_id vai junto
+	// Resolve contato e "from" considerando JIDs LID
+	contactPhone := jidDisplayMaybeResolve(sessionID, client, chatJID) // quem aparece em contacts.wa_id
+	if isGroupJID(chatJID) && (senderJID.User != "") {                 // em grupos, “from” é quem falou
+		contactPhone = jidDisplayMaybeResolve(sessionID, client, senderJID) // mantém group_id no contactObj
 	}
 	fromField := phone
 	if !fromMe {
-		fromField = jidToPhoneNumberIfUser(senderJID)
+		fromField = jidDisplayMaybeResolve(sessionID, client, senderJID)
 	}
 
 	// Monta “message” no padrão Cloud
 	wireMsg := map[string]any{
-		"from":      strings.ReplaceAll(fromField, "+", ""),
+		"from":      normalizeFromField(fromField),
 		"id":        e.Info.ID,
 		"timestamp": strconv.FormatInt(e.Info.Timestamp.Unix(), 10),
 	}
@@ -522,6 +525,185 @@ func jidToPhoneNumberIfUser(j any) string {
 
 func isGroupJID(j types.JID) bool {
 	return strings.HasSuffix(j.Server, "g.us")
+}
+
+// isLIDJID reports whether a JID points to the Local ID (lid) server.
+func isLIDJID(j types.JID) bool {
+	return j.Server == "lid"
+}
+
+// normalizeFromField keeps "xxxxx@lid" as-is (for unresolved LID),
+// otherwise strips "+" as we do for phone digits.
+func normalizeFromField(s string) string {
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(s)), "@lid") {
+		return s
+	}
+	return strings.ReplaceAll(s, "+", "")
+}
+
+// jidDisplayMaybeResolve returns a displayable identifier for the given JID:
+// - for groups: the group id (jid.User)
+// - for user AD JIDs: digits-only phone
+// - for LID JIDs: best-effort resolve to AD via store/sync; if not resolved, returns "user@lid"
+func jidDisplayMaybeResolve(sessionID string, cli *whatsmeow.Client, j types.JID) string {
+	if isGroupJID(j) {
+		return j.User
+	}
+	if !isLIDJID(j) {
+		return digitsOnly(j.User)
+	}
+
+	// Try to resolve LID -> AD (s.whatsapp.net)
+	if resolved, ok := resolveLIDToADReflect(sessionID, cli, j, 3, 300*time.Millisecond); ok {
+		return digitsOnly(resolved.User)
+	}
+	// Fallback: include @lid so downstream sees it's unresolved
+	return fmt.Sprintf("%s@lid", j.User)
+}
+
+// resolveLIDToADReflect attempts to find an AD JID that corresponds to the given LID JID
+// by peeking the client's store via reflection and optionally forcing a contacts fetch.
+// This avoids compile-time coupling to whatsmeow's store internals while still providing
+// best-effort behavior. Returns (zero, false) if not resolved.
+func resolveLIDToADReflect(sessionID string, cli *whatsmeow.Client, lid types.JID, attempts int, delay time.Duration) (types.JID, bool) {
+	entry := log.WithSession(sessionID)
+
+	tryLookup := func() (types.JID, bool) {
+		if cli == nil {
+			return types.JID{}, false
+		}
+		v := reflect.ValueOf(cli)
+		if v.Kind() != reflect.Ptr || v.IsNil() {
+			return types.JID{}, false
+		}
+		sv := v.Elem().FieldByName("Store")
+		if !sv.IsValid() || sv.IsZero() {
+			return types.JID{}, false
+		}
+		// Deref Store pointer if needed
+		if sv.Kind() == reflect.Ptr {
+			if sv.IsNil() {
+				return types.JID{}, false
+			}
+			sv = sv.Elem()
+		}
+		// Find Contacts field on Store
+		contacts := sv.FieldByName("Contacts")
+		if !contacts.IsValid() || contacts.IsZero() {
+			return types.JID{}, false
+		}
+
+		// Helper: extract field JID named name from a contact-like struct
+		getContactJIDField := func(cv reflect.Value, name string) (types.JID, bool) {
+			// Deref pointer
+			if cv.Kind() == reflect.Ptr && !cv.IsNil() {
+				cv = cv.Elem()
+			}
+			if cv.Kind() != reflect.Struct {
+				return types.JID{}, false
+			}
+			f := cv.FieldByName(name)
+			if !f.IsValid() {
+				return types.JID{}, false
+			}
+			// Deref pointer fields
+			if f.Kind() == reflect.Ptr && !f.IsNil() {
+				f = f.Elem()
+			}
+			// f is expected to be a struct (types.JID) with fields User, Server
+			if f.Kind() != reflect.Struct {
+				return types.JID{}, false
+			}
+			userF := f.FieldByName("User")
+			serverF := f.FieldByName("Server")
+			if !userF.IsValid() || !serverF.IsValid() || userF.Kind() != reflect.String || serverF.Kind() != reflect.String {
+				return types.JID{}, false
+			}
+			return types.JID{User: userF.String(), Server: serverF.String()}, true
+		}
+
+		// 1) Try a direct GetContact(ctx, lid)
+		if m := contacts.MethodByName("GetContact"); m.IsValid() {
+			// Some implementations use (ctx, jid), others may use just (jid). Try both.
+			// Variant A: (context.Context, types.JID) (contact, error)
+			var argsA = []reflect.Value{reflect.ValueOf(context.Background()), reflect.ValueOf(lid)}
+			outs := m.Call(argsA)
+			if len(outs) >= 1 {
+				if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
+					return jid, true
+				}
+				if jid, ok := getContactJIDField(outs[0], "AD" /* in case field is named differently */); ok && !isLIDJID(jid) && jid.Server != "" {
+					return jid, true
+				}
+			}
+			// Variant B: (types.JID) (contact, error)
+			outs = m.Call([]reflect.Value{reflect.ValueOf(lid)})
+			if len(outs) >= 1 {
+				if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
+					return jid, true
+				}
+			}
+		}
+
+		// 2) Try GetAllContacts(ctx) and scan for contact where LID matches
+		if m := contacts.MethodByName("GetAllContacts"); m.IsValid() {
+			outs := m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+			if len(outs) >= 1 {
+				coll := outs[0]
+				// Support both map[...]contact and []contact
+				switch coll.Kind() {
+				case reflect.Map:
+					for _, k := range coll.MapKeys() {
+						cv := coll.MapIndex(k)
+						lidJ, _ := getContactJIDField(cv, "LID")
+						if lidJ.User == lid.User && lidJ.Server == lid.Server {
+							if ad, ok := getContactJIDField(cv, "JID"); ok && !isLIDJID(ad) {
+								return ad, true
+							}
+						}
+					}
+				case reflect.Slice:
+					for i := 0; i < coll.Len(); i++ {
+						cv := coll.Index(i)
+						lidJ, _ := getContactJIDField(cv, "LID")
+						if lidJ.User == lid.User && lidJ.Server == lid.Server {
+							if ad, ok := getContactJIDField(cv, "JID"); ok && !isLIDJID(ad) {
+								return ad, true
+							}
+						}
+					}
+				}
+			}
+		}
+
+		return types.JID{}, false
+	}
+
+	fetchContacts := func() {
+		if cli == nil {
+			return
+		}
+		if m := reflect.ValueOf(cli).MethodByName("FetchContacts"); m.IsValid() {
+			// Try (ctx) signature; ignore results
+			defer func() { _ = recover() }()
+			m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+		}
+	}
+
+	for i := 0; i < attempts; i++ {
+		if ad, ok := tryLookup(); ok {
+			entry.Info("lid_resolve success lid=%s -> %s", lid.String(), ad.String())
+			return ad, true
+		}
+		// On first failure, try forcing a contacts fetch
+		if i < attempts-1 {
+			entry.Info("lid_resolve fetch_contacts attempt=%d lid=%s", i+1, lid.String())
+			fetchContacts()
+			time.Sleep(delay)
+		}
+	}
+	entry.Info("lid_resolve failed lid=%s using_fallback", lid.String())
+	return types.JID{}, false
 }
 
 func splitMime(m string) string {

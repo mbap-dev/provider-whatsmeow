@@ -67,6 +67,8 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 					if err != nil {
 						log.WithSession(sessionID).Error("call reply send error: %v", err)
 					} else {
+						// Emit webhook 'message' (outgoing) to UnoAPI
+						_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
 						// Emit webhook 'sent' status to UnoAPI
 						_ = m.emitCloudSent(sessionID, to, resp.ID)
 						log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
@@ -428,6 +430,43 @@ func (m *ClientManager) emitCloudSent(sessionID string, to types.JID, id types.M
 	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
 	val["statuses"] = []any{st}
 	log.WithSession(sessionID).WithMessageID(id).Info("evt=sent cloud payload ready id=%s", id)
+	return m.deliverWebhook(sessionID, payload)
+}
+
+// emitCloudOutgoingText publishes an outgoing text message event in the same
+// Cloud-like format used for incoming messages, so downstreams can see the
+// content that was sent automatically (e.g., call rejection reply).
+func (m *ClientManager) emitCloudOutgoingText(sessionID string, to types.JID, id types.MessageID, body string) error {
+	phone := normalizePhone(sessionID)
+	recipient := jidToPhoneNumberIfUser(to)
+
+	// Build message payload (from = our phone)
+	wireMsg := map[string]any{
+		"from":      strings.ReplaceAll(phone, "+", ""),
+		"id":        id,
+		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"type":      "text",
+		"text":      map[string]any{"body": body},
+	}
+
+	// Contact entry for the recipient (group or user)
+	contactPhone := recipient
+	contactObj := map[string]any{
+		"profile": map[string]any{"name": contactPhone},
+		"wa_id":   contactPhone,
+	}
+	if isGroupJID(to) {
+		contactObj["group_id"] = to.String()
+	}
+
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["contacts"] = []any{contactObj}
+	val["messages"] = []any{wireMsg}
+
+	log.WithSession(sessionID).WithMessageID(string(id)).
+		Info("evt=message_out cloud payload ready type=text to=%s", to.String())
+
 	return m.deliverWebhook(sessionID, payload)
 }
 

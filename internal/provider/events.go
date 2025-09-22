@@ -321,8 +321,10 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 
 	// Contatos (inclui group_id quando for grupo)
+	// For group messages, set profile.name to the sender phone
+	profileName := contactPhone
 	contactObj := map[string]any{
-		"profile": map[string]any{"name": contactPhone},
+		"profile": map[string]any{"name": profileName},
 		"wa_id":   contactPhone,
 	}
 	if isGroupJID(chatJID) {

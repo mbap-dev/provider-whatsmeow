@@ -103,20 +103,29 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
-	// Preferir JIDs alternativos (AD) quando mensagem vier endereçada por LID
-	// Em whatsmeow recentes, MessageInfo.Source pode preencher *Alt com AD JIDs
-	if e.Info.SenderAlt != (types.JID{}) {
+	// Preferir JID alternativo (AD) quando a lib expõe SenderAlt não‑LID
+	if e.Info.SenderAlt != (types.JID{}) && !isLIDJID(e.Info.SenderAlt) && e.Info.SenderAlt.Server != "" {
 		senderJID = e.Info.SenderAlt
 	}
 
-	// Resolve contato e "from" considerando JIDs LID
-	contactPhone := jidDisplayMaybeResolve(sessionID, client, chatJID) // quem aparece em contacts.wa_id
-	if isGroupJID(chatJID) && (senderJID.User != "") {                 // em grupos, “from” é quem falou
-		contactPhone = jidDisplayMaybeResolve(sessionID, client, senderJID) // mantém group_id no contactObj
+	// Resolve contato e "from" considerando JIDs LID (memoize para evitar resolver duas vezes)
+	resolvedMemo := map[string]string{}
+	resolveDisplay := func(j types.JID) string {
+		key := j.String()
+		if v, ok := resolvedMemo[key]; ok {
+			return v
+		}
+		v := jidDisplayMaybeResolve(sessionID, client, j)
+		resolvedMemo[key] = v
+		return v
+	}
+	contactPhone := resolveDisplay(chatJID)
+	if isGroupJID(chatJID) && (senderJID.User != "") {
+		contactPhone = resolveDisplay(senderJID)
 	}
 	fromField := phone
 	if !fromMe {
-		fromField = jidDisplayMaybeResolve(sessionID, client, senderJID)
+		fromField = resolveDisplay(senderJID)
 	}
 
 	// Monta “message” no padrão Cloud

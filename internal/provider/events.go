@@ -103,6 +103,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
+	// Preferir JIDs alternativos (AD) quando mensagem vier endereçada por LID
+	// Em whatsmeow recentes, MessageInfo.Source pode preencher *Alt com AD JIDs
+	if e.Info.SenderAlt != (types.JID{}) {
+		senderJID = e.Info.SenderAlt
+	}
 
 	// Resolve contato e "from" considerando JIDs LID
 	contactPhone := jidDisplayMaybeResolve(sessionID, client, chatJID) // quem aparece em contacts.wa_id

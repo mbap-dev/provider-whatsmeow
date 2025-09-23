@@ -8,7 +8,8 @@ Microserviço **Go** que:
 - para mensagens com mídia, não armazena mais em S3/MinIO; o webhook inclui `direct_path`, `media_key`, `mime_type`, `sha256` e `file_length` para que o serviço consumidor faça o download e a descriptografia.
  - envio de áudio: converte para OGG/Opus mono via `ffmpeg`, calcula `seconds` e `waveform` e envia como PTT por padrão.
    - controle de PTT por env: defina `AUDIO_PTT_DEFAULT=false` para desabilitar PTT por padrão (se ausente, é `true`). O campo `audio.ptt` no payload pode sobrescrever por mensagem.
- - rejeita ligações recebidas automaticamente e, opcionalmente, envia uma mensagem de resposta ao chamador.
+- rejeita ligações recebidas automaticamente e, opcionalmente, envia uma mensagem de resposta ao chamador.
+
 
 > Este provider integra com [unoapi-cloud](https://github.com/mbap-dev/unoapi-cloud) usando o padrão Cloud/Graph-like de payloads.
 

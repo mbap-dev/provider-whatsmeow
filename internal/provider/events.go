@@ -350,10 +350,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 	}
 
-	// Contatos (inclui group_id quando for grupo)
-	// For group messages, set profile.name to the sender phone
+	// Contato com nome amigável: 1:1 usa PushName; grupo usa nome do grupo
+	dispName := strings.TrimSpace(e.Info.PushName)
+	if isGroupJID(chatJID) {
+		if gname, ok := safeGetGroupName(client, chatJID); ok && strings.TrimSpace(gname) != "" {
+			dispName = gname
+		} else {
+			dispName = chatJID.User
+		}
+	} else if dispName == "" {
+		dispName = contactPhone
+	}
 	contactObj := map[string]any{
-		"profile": map[string]any{"name": contactPhone},
+		"profile": map[string]any{"name": dispName},
 		"wa_id":   contactPhone,
 	}
 	if isGroupJID(chatJID) {
@@ -621,32 +630,43 @@ func resolveLIDToADReflect(sessionID string, cli *whatsmeow.Client, lid types.JI
 			return types.JID{User: userF.String(), Server: serverF.String()}, true
 		}
 
-		// 1) Try a direct GetContact(ctx, lid)
+		// 1) Try a direct GetContact with signature guard
 		if m := contacts.MethodByName("GetContact"); m.IsValid() {
-			// Some implementations use (ctx, jid), others may use just (jid). Try both.
-			// Variant A: (context.Context, types.JID) (contact, error)
-			var argsA = []reflect.Value{reflect.ValueOf(context.Background()), reflect.ValueOf(lid)}
-			outs := m.Call(argsA)
-			if len(outs) >= 1 {
-				if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
-					return jid, true
-				}
-				if jid, ok := getContactJIDField(outs[0], "AD" /* in case field is named differently */); ok && !isLIDJID(jid) && jid.Server != "" {
-					return jid, true
+			mt := m.Type()
+			// Variant A: (context.Context, types.JID)
+			if mt.NumIn() == 2 && mt.In(0).Kind() == reflect.Interface && mt.In(0).String() == "context.Context" && mt.In(1) == reflect.TypeOf(types.JID{}) {
+				outs := m.Call([]reflect.Value{reflect.ValueOf(context.Background()), reflect.ValueOf(lid)})
+				if len(outs) >= 1 {
+					if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
+						return jid, true
+					}
+					if jid, ok := getContactJIDField(outs[0], "AD"); ok && !isLIDJID(jid) && jid.Server != "" {
+						return jid, true
+					}
 				}
 			}
-			// Variant B: (types.JID) (contact, error)
-			outs = m.Call([]reflect.Value{reflect.ValueOf(lid)})
-			if len(outs) >= 1 {
-				if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
-					return jid, true
+			// Variant B: (types.JID)
+			if mt.NumIn() == 1 && mt.In(0) == reflect.TypeOf(types.JID{}) {
+				outs := m.Call([]reflect.Value{reflect.ValueOf(lid)})
+				if len(outs) >= 1 {
+					if jid, ok := getContactJIDField(outs[0], "JID"); ok && !isLIDJID(jid) && jid.Server != "" {
+						return jid, true
+					}
 				}
 			}
 		}
 
-		// 2) Try GetAllContacts(ctx) and scan for contact where LID matches
+		// 2) Try GetAllContacts (ctx?) and scan for contact where LID matches
 		if m := contacts.MethodByName("GetAllContacts"); m.IsValid() {
-			outs := m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+			mt := m.Type()
+			var outs []reflect.Value
+			if mt.NumIn() == 1 && mt.In(0).Kind() == reflect.Interface && mt.In(0).String() == "context.Context" {
+				outs = m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+			} else if mt.NumIn() == 0 {
+				outs = m.Call(nil)
+			} else {
+				outs = nil
+			}
 			if len(outs) >= 1 {
 				coll := outs[0]
 				// Support both map[...]contact and []contact
@@ -683,9 +703,14 @@ func resolveLIDToADReflect(sessionID string, cli *whatsmeow.Client, lid types.JI
 			return
 		}
 		if m := reflect.ValueOf(cli).MethodByName("FetchContacts"); m.IsValid() {
-			// Try (ctx) signature; ignore results
+			mt := m.Type()
+			// Try (ctx) or 0-arg
 			defer func() { _ = recover() }()
-			m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+			if mt.NumIn() == 1 && mt.In(0).Kind() == reflect.Interface && mt.In(0).String() == "context.Context" {
+				m.Call([]reflect.Value{reflect.ValueOf(context.Background())})
+			} else if mt.NumIn() == 0 {
+				m.Call(nil)
+			}
 		}
 	}
 
@@ -876,6 +901,52 @@ func mapReceiptStatus(t events.ReceiptType) string {
 	default:
 		return ""
 	}
+}
+
+// safeGetGroupName chama Client.GetGroupInfo com reflexão, suportando (ctx,jid) e (jid).
+func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
+	defer func() { _ = recover() }()
+	if cli == nil {
+		return "", false
+	}
+	v := reflect.ValueOf(cli)
+	m := v.MethodByName("GetGroupInfo")
+	if !m.IsValid() {
+		return "", false
+	}
+	mt := m.Type()
+	var outs []reflect.Value
+	if mt.NumIn() == 2 && mt.In(0).Kind() == reflect.Interface && mt.In(0).String() == "context.Context" && mt.In(1) == reflect.TypeOf(types.JID{}) {
+		outs = m.Call([]reflect.Value{reflect.ValueOf(context.Background()), reflect.ValueOf(gid)})
+	} else if mt.NumIn() == 1 && mt.In(0) == reflect.TypeOf(types.JID{}) {
+		outs = m.Call([]reflect.Value{reflect.ValueOf(gid)})
+	} else {
+		return "", false
+	}
+	if len(outs) == 0 {
+		return "", false
+	}
+	rv := outs[0]
+	if rv.Kind() == reflect.Ptr && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.IsValid() && rv.Kind() == reflect.Struct {
+		for _, field := range []string{"Name", "Subject", "Title"} {
+			f := rv.FieldByName(field)
+			if f.IsValid() {
+				if f.Kind() == reflect.Ptr && !f.IsNil() {
+					f = f.Elem()
+				}
+				if f.Kind() == reflect.String {
+					s := strings.TrimSpace(f.String())
+					if s != "" {
+						return s, true
+					}
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 // =========== Entrega HTTP (mantida) ===========

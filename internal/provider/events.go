@@ -354,16 +354,26 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 	}
 
-	// Contato com nome amigável: 1:1 usa PushName; grupo usa nome do grupo
-	dispName := strings.TrimSpace(e.Info.PushName)
+	// Contato com nome amigável:
+	// - Grupo: usar nome do grupo
+	// - 1:1: se a mensagem é minha (fromMe), não usar PushName; usar o número (contactPhone)
+	//         se não é minha, usar PushName (fallback: número)
+	var dispName string
 	if isGroupJID(chatJID) {
 		if gname, ok := safeGetGroupName(client, chatJID); ok && strings.TrimSpace(gname) != "" {
 			dispName = gname
 		} else {
 			dispName = chatJID.User
 		}
-	} else if dispName == "" {
-		dispName = contactPhone
+	} else {
+		if fromMe {
+			dispName = contactPhone
+		} else {
+			dispName = strings.TrimSpace(e.Info.PushName)
+			if dispName == "" {
+				dispName = contactPhone
+			}
+		}
 	}
 	contactObj := map[string]any{
 		"profile": map[string]any{"name": dispName},

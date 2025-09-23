@@ -38,3 +38,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// Use the GitHub mirror for whatsmeow while keeping the canonical import path.
+replace go.mau.fi/whatsmeow => github.com/tulir/whatsmeow v0.0.0-20250905121447-8d6da61ecbfa

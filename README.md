@@ -9,6 +9,7 @@ Microserviço **Go** que:
  - envio de áudio: converte para OGG/Opus mono via `ffmpeg`, calcula `seconds` e `waveform` e envia como PTT por padrão.
    - controle de PTT por env: defina `AUDIO_PTT_DEFAULT=false` para desabilitar PTT por padrão (se ausente, é `true`). O campo `audio.ptt` no payload pode sobrescrever por mensagem.
 - rejeita ligações recebidas automaticamente e, opcionalmente, envia uma mensagem de resposta ao chamador.
+- opção para marcar como lidas as conversas assim que uma mensagem é recebida (`MARK_READ_ON_MESSAGE=true`).
 
 
 > Este provider integra com [unoapi-cloud](https://github.com/mbap-dev/unoapi-cloud) usando o padrão Cloud/Graph-like de payloads.

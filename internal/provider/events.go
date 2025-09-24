@@ -80,6 +80,9 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
 			}
+			if m.autoMarkRead {
+				go m.markReadEvent(sessionID, client, e)
+			}
 		case *events.Receipt:
 			if err := m.emitCloudReceipt(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).Error("webhook cloud receipt error: %v", err)
@@ -836,6 +839,38 @@ func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// markReadEvent marks the given message as read when configured to do so.
+func (m *ClientManager) markReadEvent(sessionID string, client *whatsmeow.Client, e *events.Message) {
+	if client == nil || e == nil || e.Info.IsFromMe {
+		return
+	}
+	chat := e.Info.Chat
+	sender := e.Info.Sender
+	if e.Info.SenderAlt != (types.JID{}) && !isLIDJID(e.Info.SenderAlt) && e.Info.SenderAlt.Server != "" {
+		sender = e.Info.SenderAlt
+	}
+	// Best-effort resolve LID to AD
+	if isLIDJID(chat) {
+		if r, ok := resolveLIDToAD(sessionID, client, chat, 2, 200*time.Millisecond); ok {
+			chat = r
+		}
+	}
+	if isLIDJID(sender) {
+		if r, ok := resolveLIDToAD(sessionID, client, sender, 2, 200*time.Millisecond); ok {
+			sender = r
+		}
+	}
+	// Send read receipt
+	// Pequeno atraso para permitir que o consumidor processe o webhook primeiro
+	time.Sleep(200 * time.Millisecond)
+	ids := []types.MessageID{types.MessageID(e.Info.ID)}
+	if err := client.MarkRead(ids, time.Now(), chat, sender); err != nil {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("mark_read error: %v", err)
+	} else {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("mark_read success chat=%s sender=%s", chat.String(), sender.String())
+	}
 }
 
 // =========== Entrega HTTP (mantida) ===========

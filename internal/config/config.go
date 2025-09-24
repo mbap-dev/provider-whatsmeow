@@ -43,6 +43,9 @@ type Config struct {
 	// RejectCallsMessage is the optional text sent to the caller after rejecting.
 	// Supports escaped newlines (\n) which are converted to real newlines.
 	RejectCallsMessage string
+
+	// AutoMarkReadOnMessage, when true, marks chats as read upon receiving messages.
+	AutoMarkReadOnMessage bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -68,6 +71,9 @@ func NewConfig() *Config {
 	if strings.Contains(cfg.RejectCallsMessage, "\\n") {
 		cfg.RejectCallsMessage = strings.ReplaceAll(cfg.RejectCallsMessage, "\\n", "\n")
 	}
+
+	// Mark chat as read automatically on inbound messages (default: false)
+	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
 
 	return cfg
 }

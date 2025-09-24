@@ -384,8 +384,18 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			}
 		}
 	}
+	// Monta profile com name e, se disponível, avatar (Cloud-like)
+	profile := map[string]any{"name": dispName}
+	if av, ok := getAvatarURL(client, func() types.JID {
+		if isGroupJID(chatJID) {
+			return chatJID // avatar do grupo
+		}
+		return chatJID // 1:1: avatar do contato (chat)
+	}()); ok && strings.TrimSpace(av) != "" {
+		profile["avatar"] = av
+	}
 	contactObj := map[string]any{
-		"profile": map[string]any{"name": dispName},
+		"profile": profile,
 		"wa_id":   contactPhone,
 	}
 	if isGroupJID(chatJID) {
@@ -805,6 +815,25 @@ func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 	}
 	if strings.TrimSpace(info.Name) != "" {
 		return info.Name, true
+	}
+	return "", false
+}
+
+// getAvatarURL tenta obter a URL da foto de perfil (contato ou grupo).
+// Usa a API pública do whatsmeow; se não disponível/erro, retorna false.
+func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
+	if cli == nil || jid == (types.JID{}) {
+		return "", false
+	}
+	// First try without params
+	if info, err := cli.GetProfilePictureInfo(jid, nil); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
+		return info.URL, true
+	}
+	// For communities, retried with IsCommunity=true to avoid 401 (best effort)
+	if isGroupJID(jid) {
+		if info, err := cli.GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{IsCommunity: true}); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
+			return info.URL, true
+		}
 	}
 	return "", false
 }

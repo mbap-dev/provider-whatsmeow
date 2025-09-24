@@ -1,13 +1,14 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,11 @@ import (
 	goE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/hajimehoshi/go-mp3"
+	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
+	"layeh.com/gopus"
 )
 
 // TextContent representa {"text":{"body":"..."}}
@@ -304,7 +310,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "audio":
-		// Mirror Evolution API: convert URL content to ogg/opus mono via ffmpeg; set PTT and include seconds + waveform.
+		// Mirror Evolution API: fetch URL content and convert PTT voice notes to ogg/opus with metadata.
 		var src string
 		if msg.Audio != nil {
 			src = strings.TrimSpace(msg.Audio.Link)
@@ -330,35 +336,55 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			defer httpResp.Body.Close()
 			return fmt.Errorf("failed to fetch audio: %s", httpResp.Status)
 		}
-		reader := httpResp.Body
-		defer reader.Close()
+		defer httpResp.Body.Close()
 
-		conv, err := convertToOggOpus(ctx, reader)
+		original, err := io.ReadAll(httpResp.Body)
 		if err != nil {
-			entry.Error("ffmpeg convert error: %v", err)
-			return fmt.Errorf("audio conversion failed: %w", err)
-		}
-
-		samples, sampleRate, err := extractPCM(ctx, conv)
-		if err != nil {
-			entry.Error("ffmpeg pcm error: %v", err)
-		}
-		var secs uint32
-		var waveform []byte
-		if sampleRate > 0 && len(samples) > 0 {
-			secs = uint32(math.Round(float64(len(samples)) / float64(sampleRate)))
-			waveform = buildWaveform(samples)
+			return fmt.Errorf("reading audio content: %w", err)
 		}
 
 		ptt := m.defaultAudioPTT
 		if msg.Audio != nil && msg.Audio.PTT != nil {
 			ptt = *msg.Audio.PTT
 		}
-		mime := "audio/ogg; codecs=opus"
 
-		entry.Info("audio meta (pre-upload): bytes=%d secs=%d ptt=%v dest=%s", len(conv), secs, ptt, jid.String())
+		var (
+			uploadBytes []byte
+			secs        uint32
+			waveform    []byte
+		)
 
-		uploaded, err := cli.Upload(ctx, conv, whatsmeow.MediaAudio)
+		if ptt {
+			uploadBytes, secs, waveform, err = convertMP3ToOGG(original)
+			if err != nil {
+				entry.Error("audio convert error: %v", err)
+				return fmt.Errorf("audio conversion failed: %w", err)
+			}
+		} else {
+			uploadBytes = original
+		}
+
+		if secs == 0 {
+			var payloadSeconds *uint32
+			if msg.Audio != nil {
+				payloadSeconds = msg.Audio.Seconds
+			}
+			secs = pickSeconds(payloadSeconds, httpResp.Header, ptt)
+		}
+
+		mime := httpResp.Header.Get("Content-Type")
+		if ptt {
+			mime = "audio/ogg; codecs=opus"
+		} else {
+			if mime == "" || mime == "application/octet-stream" {
+				mime = http.DetectContentType(uploadBytes)
+			}
+			mime = normalizeAudioMime(src, mime, ptt)
+		}
+
+		entry.Info("audio meta (pre-upload): bytes=%d secs=%d ptt=%v dest=%s", len(uploadBytes), secs, ptt, jid.String())
+
+		uploaded, err := cli.Upload(ctx, uploadBytes, whatsmeow.MediaAudio)
 		if err != nil {
 			entry.Error("audio upload failed: %v", err)
 			return err
@@ -370,14 +396,14 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			MediaKey:      uploaded.MediaKey,
 			FileEncSHA256: uploaded.FileEncSHA256,
 			FileSHA256:    uploaded.FileSHA256,
-			FileLength:    proto.Uint64(uint64(len(conv))),
+			FileLength:    proto.Uint64(uint64(len(uploadBytes))),
 			Mimetype:      proto.String(mime),
 			PTT:           &ptt,
 		}
 		if secs > 0 {
 			audioMsg.Seconds = proto.Uint32(secs)
 		}
-		if len(waveform) == 32 {
+		if len(waveform) > 0 {
 			audioMsg.Waveform = waveform
 		}
 		if ctxInfo != nil {
@@ -516,72 +542,112 @@ func makeWaveform(seconds uint32) []byte {
 	return wf
 }
 
-// convertToOggOpus converts arbitrary audio stream into ogg/opus mono using ffmpeg piping
-func convertToOggOpus(ctx context.Context, r io.Reader) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-i", "pipe:0", "-f", "ogg", "-c:a", "libopus", "-ac", "1", "-vn", "-avoid_negative_ts", "make_zero", "-map", "a:0", "pipe:1")
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr, _ := cmd.StderrPipe()
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	go func() {
-		defer stdin.Close()
-		io.Copy(stdin, r)
-	}()
-	out, err := io.ReadAll(stdout)
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Wait(); err != nil {
-		b, _ := io.ReadAll(stderr)
-		return nil, fmt.Errorf("ffmpeg: %v, %s", err, string(b))
-	}
-	return out, nil
-}
+const (
+	targetSampleRate = 16000
+	opusFrameMs      = 20
+	opusFrameSamples = targetSampleRate * opusFrameMs / 1000
+)
 
-// extractPCM decodes ogg/opus bytes to PCM s16le mono at 16000 Hz using ffmpeg piping
-func extractPCM(ctx context.Context, ogg []byte) ([]int16, int, error) {
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-i", "pipe:0", "-f", "s16le", "-ac", "1", "-ar", "16000", "-vn", "pipe:1")
-	stdin, err := cmd.StdinPipe()
+// convertMP3ToOGG decodes MP3 bytes, converts them to mono Opus-in-OGG and returns the encoded audio.
+// It also returns the audio duration in seconds and a WhatsApp-style waveform derived from the PCM data.
+func convertMP3ToOGG(data []byte) ([]byte, uint32, []byte, error) {
+	if len(data) == 0 {
+		return nil, 0, nil, errors.New("empty audio payload")
+	}
+
+	dec, err := mp3.NewDecoder(bytes.NewReader(data))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, fmt.Errorf("mp3 decoder: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	srcRate := dec.SampleRate()
+	if srcRate <= 0 {
+		return nil, 0, nil, errors.New("invalid mp3 sample rate")
+	}
+
+	var pcmBuf bytes.Buffer
+	if _, err := io.Copy(&pcmBuf, dec); err != nil {
+		return nil, 0, nil, fmt.Errorf("mp3 decode: %w", err)
+	}
+	pcmBytes := pcmBuf.Bytes()
+	if len(pcmBytes) < 2 {
+		return nil, 0, nil, errors.New("decoded audio too short")
+	}
+
+	channels := 1
+	if len(pcmBytes)%4 == 0 {
+		channels = 2
+	}
+
+	samples := bytesToInt16(pcmBytes)
+	if channels == 2 {
+		samples = downmixStereoToMono(samples)
+	}
+	if len(samples) == 0 {
+		return nil, 0, nil, errors.New("no pcm samples")
+	}
+
+	pcm16k := resampleLinearInt16(samples, srcRate, targetSampleRate)
+	if len(pcm16k) < opusFrameSamples {
+		pcm16k = padZeros(pcm16k, opusFrameSamples)
+	}
+
+	secs := uint32(int(math.Round(float64(len(pcm16k)) / float64(targetSampleRate))))
+	if secs == 0 {
+		secs = 1
+	}
+	waveform := buildWaveform(pcm16k)
+
+	var oggBuf bytes.Buffer
+	ogg, err := oggwriter.NewWith(&oggBuf, uint32(targetSampleRate), 1)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, fmt.Errorf("oggwriter: %w", err)
 	}
-	stderr, _ := cmd.StderrPipe()
-	if err := cmd.Start(); err != nil {
-		return nil, 0, err
-	}
-	go func() {
-		defer stdin.Close()
-		stdin.Write(ogg)
-	}()
-	raw, err := io.ReadAll(stdout)
+	enc, err := gopus.NewEncoder(targetSampleRate, 1, gopus.Voip)
 	if err != nil {
-		return nil, 0, err
+		ogg.Close()
+		return nil, 0, nil, fmt.Errorf("opus encoder: %w", err)
 	}
-	if err := cmd.Wait(); err != nil {
-		b, _ := io.ReadAll(stderr)
-		return nil, 0, fmt.Errorf("ffmpeg pcm: %v, %s", err, string(b))
+
+	const maxOpusPacketSize = 4000
+	sequence := uint16(0)
+	timestamp := uint32(opusFrameSamples)
+	for off := 0; off < len(pcm16k); off += opusFrameSamples {
+		end := off + opusFrameSamples
+		if end > len(pcm16k) {
+			end = len(pcm16k)
+		}
+		frame := pcm16k[off:end]
+		if len(frame) < opusFrameSamples {
+			frame = padZeros(frame, opusFrameSamples)
+		}
+		pkt, err := enc.Encode(frame, opusFrameSamples, maxOpusPacketSize)
+		if err != nil {
+			ogg.Close()
+			return nil, 0, nil, fmt.Errorf("opus encode: %w", err)
+		}
+		rtpPkt := &rtp.Packet{
+			Header: rtp.Header{
+				SequenceNumber: sequence,
+				Timestamp:      timestamp,
+				PayloadType:    111,
+				Version:        2,
+			},
+			Payload: pkt,
+		}
+		if err := ogg.WriteRTP(rtpPkt); err != nil {
+			ogg.Close()
+			return nil, 0, nil, fmt.Errorf("ogg write: %w", err)
+		}
+		sequence++
+		timestamp += uint32(opusFrameSamples)
 	}
-	if len(raw)%2 != 0 {
-		raw = raw[:len(raw)-1]
+	if err := ogg.Close(); err != nil {
+		return nil, 0, nil, fmt.Errorf("ogg close: %w", err)
 	}
-	n := len(raw) / 2
-	samples := make([]int16, n)
-	for i := 0; i < n; i++ {
-		samples[i] = int16(binary.LittleEndian.Uint16(raw[2*i:]))
-	}
-	return samples, 16000, nil
+
+	out := make([]byte, oggBuf.Len())
+	copy(out, oggBuf.Bytes())
+	return out, secs, waveform, nil
 }
 
 // buildWaveform computes a 32-bar WhatsApp waveform (0..31) from PCM samples
@@ -625,6 +691,91 @@ func buildWaveform(samples []int16) []byte {
 		wf[i] = byte(level)
 	}
 	return wf
+}
+
+// bytesToInt16 converts little-endian bytes into int16 samples.
+func bytesToInt16(b []byte) []int16 {
+	if len(b)%2 != 0 {
+		b = b[:len(b)-1]
+	}
+	n := len(b) / 2
+	out := make([]int16, n)
+	for i := 0; i < n; i++ {
+		out[i] = int16(binary.LittleEndian.Uint16(b[2*i:]))
+	}
+	return out
+}
+
+// downmixStereoToMono averages left/right channels to produce mono audio.
+func downmixStereoToMono(stereo []int16) []int16 {
+	if len(stereo) < 2 {
+		return stereo
+	}
+	mono := make([]int16, 0, len(stereo)/2)
+	for i := 0; i+1 < len(stereo); i += 2 {
+		m := int(stereo[i])/2 + int(stereo[i+1])/2
+		if m > math.MaxInt16 {
+			m = math.MaxInt16
+		}
+		if m < math.MinInt16 {
+			m = math.MinInt16
+		}
+		mono = append(mono, int16(m))
+	}
+	return mono
+}
+
+// resampleLinearInt16 performs simple linear interpolation resampling between arbitrary sample rates.
+func resampleLinearInt16(in []int16, srcRate, dstRate int) []int16 {
+	if srcRate <= 0 || dstRate <= 0 || len(in) == 0 || srcRate == dstRate {
+		out := make([]int16, len(in))
+		copy(out, in)
+		return out
+	}
+	ratio := float64(dstRate) / float64(srcRate)
+	outLen := int(math.Round(float64(len(in)) * ratio))
+	if outLen < 1 {
+		outLen = 1
+	}
+	out := make([]int16, outLen)
+	for i := 0; i < outLen; i++ {
+		pos := float64(i) / ratio
+		j := int(math.Floor(pos))
+		t := pos - float64(j)
+		s0 := float64(sampleAt(in, j))
+		s1 := float64(sampleAt(in, j+1))
+		val := (1.0-t)*s0 + t*s1
+		if val > math.MaxInt16 {
+			val = math.MaxInt16
+		}
+		if val < math.MinInt16 {
+			val = math.MinInt16
+		}
+		out[i] = int16(val)
+	}
+	return out
+}
+
+func sampleAt(samples []int16, idx int) int16 {
+	if len(samples) == 0 {
+		return 0
+	}
+	if idx < 0 {
+		return samples[0]
+	}
+	if idx >= len(samples) {
+		return samples[len(samples)-1]
+	}
+	return samples[idx]
+}
+
+func padZeros(in []int16, want int) []int16 {
+	if len(in) >= want {
+		return in
+	}
+	out := make([]int16, want)
+	copy(out, in)
+	return out
 }
 
 func pickSeconds(payload *uint32, hdr http.Header, ptt bool) uint32 {

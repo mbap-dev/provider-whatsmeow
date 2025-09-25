@@ -128,12 +128,14 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
-	// If destination is a LID JID, best-effort resolve to AD to avoid duplicate chats in clients
-	if isLIDJID(jid) {
-		if r, ok := resolveLIDToAD(sessionID, cli, jid, 3, 200*time.Millisecond); ok {
-			jid = r
+	// Prefer sending to LID if there is a mapping for the phone number.
+	// This helps avoid duplicate conversations in some clients.
+	if jid.Server == types.DefaultUserServer && cli != nil && cli.Store != nil && cli.Store.LIDs != nil {
+		if lid, err := cli.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && isLIDJID(lid) {
+			jid = lid
 		}
 	}
+	entry.Info("dest_jid=%s", jid.String())
 
 	var ctxInfo *goE2E.ContextInfo
 	if msg.Context != nil || len(msg.Mentions) > 0 {

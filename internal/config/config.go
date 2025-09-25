@@ -40,9 +40,6 @@ type Config struct {
 	// If not set, defaults to true.
 	AudioPTTDefault bool
 
-	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
-	PNResolverURL string
-
 	// RejectCalls enables automatic rejection of incoming calls. Default: true.
 	RejectCalls bool
 	// RejectCallsMessage is the optional text sent to the caller after rejecting.
@@ -51,7 +48,6 @@ type Config struct {
 
 	// AutoMarkReadOnMessage, when true, marks chats as read upon receiving messages.
 	AutoMarkReadOnMessage bool
-
 	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
 	PNResolverURL string
 }
@@ -83,8 +79,6 @@ func NewConfig() *Config {
 
 	// Mark chat as read automatically on inbound messages (default: false)
 	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
-
-	cfg.PNResolverURL = getEnv("PN_RESOLVER_URL", "")
 
 	return cfg
 }

@@ -134,6 +134,19 @@ func (c *Consumer) Start(ctx context.Context) error {
 				return fmt.Errorf("AMQP deliveries channel closed")
 			}
 
+			// Rapidamente ignore payloads de status (não são mensagens a enviar)
+			var probe struct {
+				Payload map[string]any `json:"payload"`
+			}
+			if err := json.Unmarshal(d.Body, &probe); err == nil {
+				if s, ok := probe.Payload["status"]; ok {
+					mid, _ := probe.Payload["message_id"].(string)
+					rid, _ := probe.Payload["recipient_id"].(string)
+					ilog.Debugf("skipping non-send payload status=%v message_id=%q recipient_id=%q", s, mid, rid)
+					continue
+				}
+			}
+
 			// 1) Tenta decodificar como Envelope (novo formato)
 			var env Envelope
 			if err := json.Unmarshal(d.Body, &env); err != nil || (env.Payload.Type == "" && env.Payload.Text == nil && env.Payload.Image == nil && env.Payload.Document == nil && env.Payload.Audio == nil && env.Payload.Sticker == nil) {

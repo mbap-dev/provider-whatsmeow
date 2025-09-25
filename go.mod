@@ -7,9 +7,9 @@ toolchain go1.24.6
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/hajimehoshi/go-mp3 v0.3.4
+	github.com/nyaruka/phonenumbers v1.2.1
 	github.com/pion/rtp v1.8.7
 	github.com/pion/webrtc/v3 v3.3.6
-	github.com/nyaruka/phonenumbers v1.2.1
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mau.fi/whatsmeow v0.0.0-20250905121447-8d6da61ecbfa

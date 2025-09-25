@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -41,9 +40,8 @@ type Config struct {
 	// If not set, defaults to true.
 	AudioPTTDefault bool
 
-	// PreferLID: when true, prefer sending to LID chats when a mapping exists.
-	// If ALWAYS_SEND_TO_LID=true, require a LID mapping and do not fallback to PN.
-	PreferLID bool
+	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
+	PNResolverURL string
 
 	// RejectCalls enables automatic rejection of incoming calls. Default: true.
 	RejectCalls bool
@@ -54,13 +52,8 @@ type Config struct {
 	// AutoMarkReadOnMessage, when true, marks chats as read upon receiving messages.
 	AutoMarkReadOnMessage bool
 
-	// PNOverrides allows mapping an input MSISDN (digits) to a different PN user part for s.whatsapp.net.
-	// Format: JSON object string, e.g. {"5562999967973":"556299967973"}
-	PNOverrides map[string]string
-
-	// BRFixDup9 enables a heuristic for Brazil (country code 55) to drop an extra leading '9'
-	// in the subscriber number when three or more leading '9's are present after the area code.
-	BRFixDup9 bool
+	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
+	PNResolverURL string
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -78,7 +71,7 @@ func NewConfig() *Config {
 
 	// Default: send audio as PTT unless explicitly disabled
 	cfg.AudioPTTDefault = getEnvBool("AUDIO_PTT_DEFAULT", true)
-	cfg.PreferLID = getEnvBool("ALWAYS_SEND_TO_LID", false)
+	cfg.PNResolverURL = getEnv("PN_RESOLVER_URL", "")
 
 	// Auto-reject incoming calls + optional reply message
 	cfg.RejectCalls = getEnvBool("REJECT_CALLS", true)
@@ -91,15 +84,7 @@ func NewConfig() *Config {
 	// Mark chat as read automatically on inbound messages (default: false)
 	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
 
-	// PN overrides (optional)
-	if s := getEnv("PN_OVERRIDES", ""); strings.TrimSpace(s) != "" {
-		m := make(map[string]string)
-		if err := json.Unmarshal([]byte(s), &m); err == nil {
-			cfg.PNOverrides = m
-		}
-	}
-	// Optional Brazil heuristic
-	cfg.BRFixDup9 = getEnvBool("BR_FIX_DUP9", false)
+	cfg.PNResolverURL = getEnv("PN_RESOLVER_URL", "")
 
 	return cfg
 }

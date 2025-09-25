@@ -42,9 +42,8 @@ curl http://localhost:8080/sessions/main/qr
   - Quando a mensagem é enviada, um webhook de `statuses` (status `sent`) é publicado para o UnoAPI informando o envio dessa resposta.
 ## Variáveis de ambiente úteis
 - `AUDIO_PTT_DEFAULT` (bool, default `true`)
-- `ALWAYS_SEND_TO_LID` (bool, default `false`): se `true`, exige mapeamento PN→LID para envio (evita chat paralelo).
-- `PN_OVERRIDES` (JSON): mapa MSISDN→PN para corrigir JIDs PN (ex.: `{ "5562999967973": "556299967973" }`).
-- `BR_FIX_DUP9` (bool, default `false`): heurística opcional (BR) que remove um `9` extra quando o assinante começa com `999…` após `55+DDD`.
+ 
+ 
 
 ## Testes
 - `go test ./...` roda testes unitários (helpers de envio, normalização de MIME, waveform etc.).

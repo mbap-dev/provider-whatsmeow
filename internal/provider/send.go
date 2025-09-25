@@ -27,6 +27,8 @@ import (
 	"layeh.com/gopus"
 )
 
+// (no external resolver)
+
 // TextContent representa {"text":{"body":"..."}}
 type TextContent struct {
 	Body string `json:"body"`
@@ -141,26 +143,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 	entry := log.WithSession(sessionID).WithMessageID(msg.MessageID)
 
-	// Normalize destination: apply overrides and optional BR heuristic before building JID
+	// Normalize destination: apply overrides and optional external resolver before building JID
 	rawTo := strings.TrimSpace(msg.To)
-	digits := digitsOnly(rawTo)
-	if m.pnOverrides != nil {
-		if override, ok := m.pnOverrides[digits]; ok && strings.TrimSpace(override) != "" {
-			digits = digitsOnly(override)
-			entry.Info("pn_override applied original=%s override=%s", msg.To, digits)
-		}
-	}
-	if m.brFixDup9 && strings.HasPrefix(digits, "55") && len(digits) >= 6 {
-		// digits: 55 + AA + subscriber
-		area := digits[2:4]
-		subs := digits[4:]
-		// If subscriber starts with 3 or more '9's, drop one leading 9
-		if strings.HasPrefix(subs, "999") {
-			subs = subs[1:]
-			digits = "55" + area + subs
-			entry.Info("br_fix_dup9 applied pn=%s", digits)
-		}
-	}
+	// Build digits (PN) applying local normalization rules
+	digits := phoneNumberToJIDDigits(rawTo)
 	// Build JID from normalized digits unless payload already contains '@'
 	var jid types.JID
 	var err error
@@ -171,26 +157,6 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
-	}
-	// Prefer/require sending to LID if configured and mapping exists.
-	if jid.Server == types.DefaultUserServer {
-		if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
-			entry.Info("lid_lookup=skip reason=no_store dest=%s", jid.String())
-		} else {
-			lid, err := cli.Store.LIDs.GetLIDForPN(ctx, jid)
-			if err != nil {
-				if m.preferLID {
-					entry.Error("lid_lookup=miss pn=%s err=%v", jid.String(), err)
-					return fmt.Errorf("no LID mapping for %s and ALWAYS_SEND_TO_LID is true", jid.String())
-				}
-				entry.Info("lid_lookup=miss pn=%s err=%v", jid.String(), err)
-			} else if isLIDJID(lid) {
-				entry.Info("lid_lookup=hit pn=%s lid=%s", jid.String(), lid.String())
-				jid = lid
-			} else {
-				entry.Info("lid_lookup=non_lid pn=%s got=%s", jid.String(), lid.String())
-			}
-		}
 	}
 	entry.Info("dest_jid=%s", jid.String())
 

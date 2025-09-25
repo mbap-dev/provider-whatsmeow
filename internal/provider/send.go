@@ -19,6 +19,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	goE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/hajimehoshi/go-mp3"
@@ -97,6 +98,23 @@ type OutgoingMessage struct {
 	MessageID        string           `json:"message_id,omitempty"`
 	Context          *MessageContext  `json:"context,omitempty"`
 	Mentions         []string         `json:"mentions,omitempty"`
+}
+
+// marshalForLog pretty-prints a proto message for logging, truncating if too long.
+func marshalForLog(m proto.Message) string {
+	if m == nil {
+		return "<nil>"
+	}
+	b, err := (protojson.MarshalOptions{EmitUnpopulated: true}).Marshal(m)
+	if err != nil {
+		return fmt.Sprintf("<protojson error: %v>", err)
+	}
+	s := string(b)
+	const max = 2000
+	if len(s) > max {
+		return s[:max] + "...(truncated)"
+	}
+	return s
 }
 
 func sendWithID(ctx context.Context, cli *whatsmeow.Client, jid types.JID, msg *goE2E.Message, id string) (whatsmeow.SendResponse, error) {
@@ -211,6 +229,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		} else {
 			wire = &goE2E.Message{Conversation: proto.String(body)}
 		}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send text failed: %v", err)
@@ -258,7 +277,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			imgMsg.ContextInfo = ctxInfo
 		}
-		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{ImageMessage: imgMsg}, msg.MessageID)
+		wire := &goE2E.Message{ImageMessage: imgMsg}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send image failed: %v", err)
 			return err
@@ -311,7 +332,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			docMsg.ContextInfo = ctxInfo
 		}
-		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{DocumentMessage: docMsg}, msg.MessageID)
+		wire := &goE2E.Message{DocumentMessage: docMsg}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send document failed: %v", err)
 			return err
@@ -426,7 +449,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			audioMsg.ContextInfo = ctxInfo
 		}
 
-		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{AudioMessage: audioMsg}, msg.MessageID)
+		wire := &goE2E.Message{AudioMessage: audioMsg}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send audio failed: %v", err)
 			return err
@@ -466,7 +491,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			stickerMsg.ContextInfo = ctxInfo
 		}
-		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{StickerMessage: stickerMsg}, msg.MessageID)
+		wire := &goE2E.Message{StickerMessage: stickerMsg}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send sticker failed: %v", err)
 			return err
@@ -526,7 +553,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if ctxInfo != nil {
 			// ContactsArrayMessage does not have ContextInfo; attach at Message level via future if supported.
 		}
-		resp, err := sendWithID(ctx, cli, jid, &goE2E.Message{ContactsArrayMessage: arr}, msg.MessageID)
+		wire := &goE2E.Message{ContactsArrayMessage: arr}
+		entry.Info("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send contacts failed: %v", err)
 			return err

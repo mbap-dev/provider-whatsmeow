@@ -957,6 +957,49 @@ func downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
 	return data, mime, nil
 }
 
+// phoneNumberToJIDDigits normalizes an input phone (E.164-like or JID) into PN digits used in JIDs.
+func phoneNumberToJIDDigits(value string) string {
+	// If already a JID, extract user part before '@' or ':'
+	in := strings.TrimSpace(value)
+	if i := strings.IndexAny(in, "@:"); i >= 0 {
+		in = in[:i]
+	}
+	number := digitsOnly(in)
+	if len(number) < 3 {
+		return number
+	}
+	// Apply Brazil mobile missing '9' heuristic once
+	return jidToPhoneNumberDigits(number, true)
+}
+
+func jidToPhoneNumberDigits(number string, retry bool) string {
+	if len(number) < 3 {
+		return number
+	}
+	country := number[:2]
+	if country == "55" {
+		significant := number[2:]
+		if isBRMobileMissingNine(significant) && len(number) < 13 && retry {
+			if len(number) >= 10 { // 55 + AA + 8 at least
+				prefix := number[2:4]
+				last8 := number[len(number)-8:]
+				out := "55" + prefix + "9" + last8
+				return jidToPhoneNumberDigits(out, false)
+			}
+		}
+	}
+	return number
+}
+
+func isBRMobileMissingNine(significant string) bool {
+	// significant == AA + subscriber. If missing '9', length < 11 and subscriber starts with 6..9
+	if len(significant) < 11 && len(significant) >= 3 {
+		d := significant[2]
+		return d >= '6' && d <= '9'
+	}
+	return false
+}
+
 // convertToOggOpusFFMPEG converts arbitrary audio input to mono OGG/Opus using ffmpeg.
 // This matches common Baileys-compatible settings and maximizes iOS WhatsApp compatibility.
 func convertToOggOpusFFMPEG(in []byte) ([]byte, error) {

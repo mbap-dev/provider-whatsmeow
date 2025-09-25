@@ -37,6 +37,8 @@ type ClientManager struct {
 	rejectMsg       string
 	autoMarkRead    bool
 	pnResolverURL   string
+	// simple PN->JID cache (E.164 -> JID string)
+	pnCache map[string]pnCacheItem
 }
 
 func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string) *ClientManager {
@@ -49,6 +51,7 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		rejectMsg:       rejectMsg,
 		autoMarkRead:    autoMarkRead,
 		pnResolverURL:   pnResolverURL,
+		pnCache:         make(map[string]pnCacheItem),
 	}
 }
 

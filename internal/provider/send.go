@@ -145,18 +145,22 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 
 	// Normalize destination: apply overrides and optional external resolver before building JID
 	rawTo := strings.TrimSpace(msg.To)
-	// Build digits (PN) applying local normalization rules
-	digits := phoneNumberToJIDDigits(rawTo)
-	// Build JID from normalized digits unless payload already contains '@'
+	// Try resolving PN -> canonical JID via server (handles BR 9th digit cases robustly)
 	var jid types.JID
 	var err error
-	if strings.Contains(rawTo, "@") {
-		jid, err = toJID(rawTo)
+	if rjid, ok := m.resolvePNtoJID(ctx, cli, rawTo); ok {
+		jid = rjid
 	} else {
-		jid, err = toUserJID(digits)
-	}
-	if err != nil {
-		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
+		// Fallback: local normalization -> PN JID
+		digits := phoneNumberToJIDDigits(rawTo)
+		if strings.Contains(rawTo, "@") {
+			jid, err = toJID(rawTo)
+		} else {
+			jid, err = toUserJID(digits)
+		}
+		if err != nil {
+			return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
+		}
 	}
 	entry.Info("dest_jid=%s", jid.String())
 
@@ -973,31 +977,24 @@ func phoneNumberToJIDDigits(value string) string {
 }
 
 func jidToPhoneNumberDigits(number string, retry bool) string {
-	if len(number) < 3 {
+	if len(number) < 4 { // require at least 55 + AA
 		return number
 	}
 	country := number[:2]
-	if country == "55" {
-		significant := number[2:]
-		if isBRMobileMissingNine(significant) && len(number) < 13 && retry {
-			if len(number) >= 10 { // 55 + AA + 8 at least
-				prefix := number[2:4]
-				last8 := number[len(number)-8:]
-				out := "55" + prefix + "9" + last8
-				return jidToPhoneNumberDigits(out, false)
-			}
-		}
+	if country != "55" {
+		return number
+	}
+	area := number[2:4]
+	subs := number[4:]
+	// If BR and subscriber has 9 digits and starts with 9, drop leading '9' (WA PN often uses 8-digit subscriber)
+	if len(subs) == 9 && subs[0] == '9' {
+		return "55" + area + subs[1:]
+	}
+	// If BR and subscriber has only 8 digits and looks like mobile (starts 6..9), insert leading '9' once
+	if len(subs) == 8 && subs[0] >= '6' && subs[0] <= '9' && retry {
+		return "55" + area + "9" + subs
 	}
 	return number
-}
-
-func isBRMobileMissingNine(significant string) bool {
-	// significant == AA + subscriber. If missing '9', length < 11 and subscriber starts with 6..9
-	if len(significant) < 11 && len(significant) >= 3 {
-		d := significant[2]
-		return d >= '6' && d <= '9'
-	}
-	return false
 }
 
 // convertToOggOpusFFMPEG converts arbitrary audio input to mono OGG/Opus using ffmpeg.

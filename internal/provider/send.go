@@ -143,7 +143,16 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 	entry := log.WithSession(sessionID).WithMessageID(msg.MessageID)
 
-	// Normalize destination: apply overrides and optional external resolver before building JID
+	// Log input summary early for diagnostics
+	entry.Debug("send_input type=%q to=%q media_url=%q has_text=%v has_image=%v has_doc=%v has_audio=%v",
+		strings.TrimSpace(msg.Type), strings.TrimSpace(msg.To), strings.TrimSpace(msg.MediaURL),
+		msg.Text != nil && strings.TrimSpace(msg.Text.Body) != "",
+		msg.Image != nil && strings.TrimSpace(msg.Image.Link) != "",
+		msg.Document != nil && strings.TrimSpace(msg.Document.Link) != "",
+		msg.Audio != nil && strings.TrimSpace(msg.Audio.Link) != "",
+	)
+
+	// Normalize destination: resolve via server when possible, fallback to local PN JID
 	rawTo := strings.TrimSpace(msg.To)
 	// Try resolving PN -> canonical JID via server (handles BR 9th digit cases robustly)
 	var jid types.JID
@@ -159,6 +168,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			jid, err = toUserJID(digits)
 		}
 		if err != nil {
+			entry.Error("recipient_parse_error to=%q err=%v", msg.To, err)
 			return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 		}
 	}
@@ -238,7 +248,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		} else {
 			wire = &goE2E.Message{Conversation: proto.String(body)}
 		}
-		entry.Info("wire_payload=%s", marshalForLog(wire))
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send text failed: %v", err)
@@ -287,7 +297,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			imgMsg.ContextInfo = ctxInfo
 		}
 		wire := &goE2E.Message{ImageMessage: imgMsg}
-		entry.Info("wire_payload=%s", marshalForLog(wire))
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send image failed: %v", err)
@@ -342,7 +352,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			docMsg.ContextInfo = ctxInfo
 		}
 		wire := &goE2E.Message{DocumentMessage: docMsg}
-		entry.Info("wire_payload=%s", marshalForLog(wire))
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send document failed: %v", err)
@@ -430,7 +440,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			mime = normalizeAudioMime(src, mime, ptt)
 		}
 
-		entry.Info("audio meta (pre-upload): bytes=%d secs=%d ptt=%v dest=%s", len(uploadBytes), secs, ptt, jid.String())
+		entry.Debug("audio meta (pre-upload): bytes=%d secs=%d ptt=%v dest=%s", len(uploadBytes), secs, ptt, jid.String())
 
 		uploaded, err := cli.Upload(ctx, uploadBytes, whatsmeow.MediaAudio)
 		if err != nil {
@@ -459,7 +469,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		}
 
 		wire := &goE2E.Message{AudioMessage: audioMsg}
-		entry.Info("wire_payload=%s", marshalForLog(wire))
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send audio failed: %v", err)
@@ -501,7 +511,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			stickerMsg.ContextInfo = ctxInfo
 		}
 		wire := &goE2E.Message{StickerMessage: stickerMsg}
-		entry.Info("wire_payload=%s", marshalForLog(wire))
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
 		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
 		if err != nil {
 			entry.Error("send sticker failed: %v", err)

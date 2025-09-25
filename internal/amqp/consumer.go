@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"your.org/provider-whatsmeow/internal/config"
+	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/provider"
 )
 
@@ -52,7 +52,7 @@ func suffixFromRoutingKey(binding, rk string) string {
 
 func (c *Consumer) Start(ctx context.Context) error {
 	if c.cfg.AMQPURL == "" {
-		log.Println("AMQP URL is empty; skipping consumer startup")
+		ilog.Infof("AMQP URL is empty; skipping consumer startup")
 		<-ctx.Done()
 		return nil
 	}
@@ -115,16 +115,16 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to consume from queue: %w", err)
 	}
 
-	log.Printf("AMQP consumer connected, waiting for messages on %s", c.cfg.AMQPBinding)
+	ilog.Infof("AMQP consumer connected, waiting for messages on %s", c.cfg.AMQPBinding)
 
 	for {
 		select {
 		case <-ctx.Done():
 			if err := ch.Close(); err != nil {
-				log.Printf("failed to close AMQP channel: %v", err)
+				ilog.Errorf("failed to close AMQP channel: %v", err)
 			}
 			if err := conn.Close(); err != nil {
-				log.Printf("failed to close AMQP connection: %v", err)
+				ilog.Errorf("failed to close AMQP connection: %v", err)
 			}
 			return nil
 
@@ -140,7 +140,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 				// 2) Retrocompat: body antigo direto como OutgoingMessage
 				var legacy provider.OutgoingMessage
 				if err2 := json.Unmarshal(d.Body, &legacy); err2 != nil {
-					log.Printf("failed to decode message: %v (legacy err: %v)", err, err2)
+					ilog.Errorf("failed to decode message: %v (legacy err: %v)", err, err2)
 					continue
 				}
 				env.Payload = legacy
@@ -154,10 +154,29 @@ func (c *Consumer) Start(ctx context.Context) error {
 			// Resolve a sessão: sufixo do routing key (ex.: provider.whatsmeow.<sess>)
 			phoneID := suffixFromRoutingKey(c.cfg.AMQPBinding, d.RoutingKey)
 
+			// Log de entrada (sanitizado)
+			toPreview := strings.TrimSpace(env.Payload.To)
+			typ := strings.TrimSpace(env.Payload.Type)
+			hasText := env.Payload.Text != nil && strings.TrimSpace(env.Payload.Text.Body) != ""
+			hasImage := env.Payload.Image != nil && strings.TrimSpace(env.Payload.Image.Link) != ""
+			hasDoc := env.Payload.Document != nil && strings.TrimSpace(env.Payload.Document.Link) != ""
+			hasAudio := env.Payload.Audio != nil && strings.TrimSpace(env.Payload.Audio.Link) != ""
+			mediaURL := strings.TrimSpace(env.Payload.MediaURL)
+			ilog.Debugf("amqp message decoded phoneID=%s id=%s type=%q to=%q media_url=%q text=%v image=%v doc=%v audio=%v", phoneID, env.Payload.MessageID, typ, toPreview, mediaURL, hasText, hasImage, hasDoc, hasAudio)
+
 			go func(msg provider.OutgoingMessage, phone string) {
 				ctxSend := context.WithValue(context.Background(), provider.CtxKeyPhoneNumberID, phone)
 				if err := c.provider.Send(ctxSend, msg); err != nil {
-					log.Printf("failed to send message (phoneID=%s): %v", phone, err)
+					to := strings.TrimSpace(msg.To)
+					media := strings.TrimSpace(msg.MediaURL)
+					ilog.Errorf("failed to send message (phoneID=%s id=%s type=%q to=%q media_url=%q): %v", phone, msg.MessageID, strings.TrimSpace(msg.Type), to, media, err)
+					if to == "" {
+						raw := string(d.Body)
+						if len(raw) > 1500 {
+							raw = raw[:1500] + "...(truncated)"
+						}
+						ilog.Debugf("payload_raw: %s", raw)
+					}
 				}
 			}(env.Payload, phoneID)
 		}

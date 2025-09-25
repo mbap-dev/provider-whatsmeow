@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +9,7 @@ import (
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
 	"your.org/provider-whatsmeow/internal/config"
 	httpserver "your.org/provider-whatsmeow/internal/http"
+	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/provider"
 )
 
@@ -33,13 +33,15 @@ func main() {
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.
 	if err := amqpconsumer.InitExchange(cfg); err != nil {
-		log.Fatalf("failed to initialize AMQP exchange: %v", err)
+		ilog.Errorf("failed to initialize AMQP exchange: %v", err)
+		os.Exit(1)
 	}
 
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.
 	if err := amqpconsumer.InitExchange(cfg); err != nil {
-		log.Fatalf("failed to initialize AMQP exchange: %v", err)
+		ilog.Errorf("failed to initialize AMQP exchange: %v", err)
+		os.Exit(1)
 	}
 
 	// Initialize the AMQP consumer.  The consumer will connect to the
@@ -47,7 +49,8 @@ func main() {
 	// then dispatch all incoming messages to the provider send function.
 	consumer, err := amqpconsumer.NewConsumer(cfg, clientManager)
 	if err != nil {
-		log.Fatalf("failed to initialise AMQP consumer: %v", err)
+		ilog.Errorf("failed to initialise AMQP consumer: %v", err)
+		os.Exit(1)
 	}
 
 	// Spin up the HTTP server exposing health checks, QR code
@@ -66,7 +69,7 @@ func main() {
 	// context is cancelled.
 	go func() {
 		if err := consumer.Start(ctx); err != nil {
-			log.Printf("AMQP consumer stopped: %v", err)
+			ilog.Errorf("AMQP consumer stopped: %v", err)
 		}
 	}()
 
@@ -75,9 +78,7 @@ func main() {
 	// before the context is cancelled it is logged.
 	go func() {
 		if err := srv.Start(); err != nil {
-			// http.ErrServerClosed is expected when Shutdown is called
-			// so only log unexpected errors.
-			log.Printf("HTTP server stopped: %v", err)
+			ilog.Errorf("HTTP server stopped: %v", err)
 		}
 	}()
 
@@ -85,7 +86,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Println("Shutting down…")
+	ilog.Infof("Shutting down…")
 
 	// Cancel the root context which causes the consumer to exit.
 	cancel()
@@ -93,6 +94,6 @@ func main() {
 	// Gracefully shut down the HTTP server.  A fresh context with a
 	// timeout could be provided here to bound the shutdown period.
 	if err := srv.Shutdown(context.Background()); err != nil {
-		log.Printf("failed to shutdown HTTP server: %v", err)
+		ilog.Errorf("failed to shutdown HTTP server: %v", err)
 	}
 }

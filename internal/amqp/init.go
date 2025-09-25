@@ -2,17 +2,16 @@ package amqp
 
 import (
 	"fmt"
-	"log"
-
 	amqp "github.com/rabbitmq/amqp091-go"
 	"your.org/provider-whatsmeow/internal/config"
+	ilog "your.org/provider-whatsmeow/internal/log"
 )
 
 // InitExchange declares the exchange and queue consumed by this service.
 // It is safe to call multiple times as declarations are idempotent.
 func InitExchange(cfg *config.Config) error {
 	if cfg.AMQPURL == "" {
-		log.Println("AMQP URL is empty; skipping exchange initialization")
+		ilog.Infof("AMQP URL is empty; skipping exchange initialization")
 		return nil
 	}
 

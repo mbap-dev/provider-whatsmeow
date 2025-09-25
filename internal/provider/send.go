@@ -127,6 +127,12 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
+	// If destination is a LID JID, best-effort resolve to AD to avoid duplicate chats in clients
+	if isLIDJID(jid) {
+		if r, ok := resolveLIDToAD(sessionID, cli, jid, 3, 200*time.Millisecond); ok {
+			jid = r
+		}
+	}
 
 	var ctxInfo *goE2E.ContextInfo
 	if msg.Context != nil || len(msg.Mentions) > 0 {

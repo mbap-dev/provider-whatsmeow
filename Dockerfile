@@ -13,6 +13,7 @@ RUN go mod download
 
 COPY . .
 ENV CGO_ENABLED=1 GOOS=linux GOARCH=amd64
+RUN go test ./...
 RUN go build -o /out/whatsmeow-adapter ./cmd/whatsmeow-adapter
 
 FROM alpine:3.20

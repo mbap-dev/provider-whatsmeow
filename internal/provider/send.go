@@ -145,11 +145,24 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}
-	// Prefer sending to LID if there is a mapping for the phone number.
-	// This helps avoid duplicate conversations in some clients.
-	if jid.Server == types.DefaultUserServer && cli != nil && cli.Store != nil && cli.Store.LIDs != nil {
-		if lid, err := cli.Store.LIDs.GetLIDForPN(ctx, jid); err == nil && isLIDJID(lid) {
-			jid = lid
+	// Prefer/require sending to LID if configured and mapping exists.
+	if jid.Server == types.DefaultUserServer {
+		if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
+			entry.Info("lid_lookup=skip reason=no_store dest=%s", jid.String())
+		} else {
+			lid, err := cli.Store.LIDs.GetLIDForPN(ctx, jid)
+			if err != nil {
+				if m.preferLID {
+					entry.Error("lid_lookup=miss pn=%s err=%v", jid.String(), err)
+					return fmt.Errorf("no LID mapping for %s and ALWAYS_SEND_TO_LID is true", jid.String())
+				}
+				entry.Info("lid_lookup=miss pn=%s err=%v", jid.String(), err)
+			} else if isLIDJID(lid) {
+				entry.Info("lid_lookup=hit pn=%s lid=%s", jid.String(), lid.String())
+				jid = lid
+			} else {
+				entry.Info("lid_lookup=non_lid pn=%s got=%s", jid.String(), lid.String())
+			}
 		}
 	}
 	entry.Info("dest_jid=%s", jid.String())

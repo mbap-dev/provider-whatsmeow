@@ -38,6 +38,10 @@ type Config struct {
 	// If not set, defaults to true.
 	AudioPTTDefault bool
 
+	// PreferLID: when true, prefer sending to LID chats when a mapping exists.
+	// If ALWAYS_SEND_TO_LID=true, require a LID mapping and do not fallback to PN.
+	PreferLID bool
+
 	// RejectCalls enables automatic rejection of incoming calls. Default: true.
 	RejectCalls bool
 	// RejectCallsMessage is the optional text sent to the caller after rejecting.
@@ -63,6 +67,7 @@ func NewConfig() *Config {
 
 	// Default: send audio as PTT unless explicitly disabled
 	cfg.AudioPTTDefault = getEnvBool("AUDIO_PTT_DEFAULT", true)
+	cfg.PreferLID = getEnvBool("ALWAYS_SEND_TO_LID", false)
 
 	// Auto-reject incoming calls + optional reply message
 	cfg.RejectCalls = getEnvBool("REJECT_CALLS", true)

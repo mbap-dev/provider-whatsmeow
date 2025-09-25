@@ -34,9 +34,10 @@ type ClientManager struct {
 	rejectCalls     bool
 	rejectMsg       string
 	autoMarkRead    bool
+	preferLID       bool
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, preferLID bool) *ClientManager {
 	return &ClientManager{
 		clients:         make(map[string]*clientEntry),
 		sessionStore:    sessionStore,
@@ -45,6 +46,7 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		rejectCalls:     rejectCalls,
 		rejectMsg:       rejectMsg,
 		autoMarkRead:    autoMarkRead,
+		preferLID:       preferLID,
 	}
 }
 

@@ -24,6 +24,7 @@ Microserviço **Go** que:
 - `GET /sessions/{id}/qr` — **base64** do PNG do QR (durante pareamento).
 - `GET /healthz` — liveness (200).
 - `GET /readyz` — readiness (200 quando servidor iniciou).
+- `GET /sessions/{id}/resolve?to=VALUE` — resolve o destino aplicando overrides/heurística e mapeamento PN→LID; retorna `{ input, normalized_pn, pn_jid, lid_jid?, dest_jid, used_lid }`.
 
 ### Exemplos
 
@@ -39,6 +40,12 @@ curl http://localhost:8080/sessions/main/qr
 - `REJECT_CALLS_MESSAGE` (opcional): texto de resposta enviado para quem ligou após a rejeição. Suporta `\n` para quebra de linha.
   - Ex.: `REJECT_CALLS_MESSAGE="Não aceitamos ligações pelo WhatsApp.\nPor favor, envie uma mensagem."`
   - Quando a mensagem é enviada, um webhook de `statuses` (status `sent`) é publicado para o UnoAPI informando o envio dessa resposta.
-Testes
+## Variáveis de ambiente úteis
+- `AUDIO_PTT_DEFAULT` (bool, default `true`)
+- `ALWAYS_SEND_TO_LID` (bool, default `false`): se `true`, exige mapeamento PN→LID para envio (evita chat paralelo).
+- `PN_OVERRIDES` (JSON): mapa MSISDN→PN para corrigir JIDs PN (ex.: `{ "5562999967973": "556299967973" }`).
+- `BR_FIX_DUP9` (bool, default `false`): heurística opcional (BR) que remove um `9` extra quando o assinante começa com `999…` após `55+DDD`.
+
+## Testes
 - `go test ./...` roda testes unitários (helpers de envio, normalização de MIME, waveform etc.).
 - O Dockerfile executa `go test ./...` no estágio de build e falha a imagem se os testes falharem.

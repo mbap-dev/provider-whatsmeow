@@ -141,7 +141,34 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 	entry := log.WithSession(sessionID).WithMessageID(msg.MessageID)
 
-	jid, err := toJID(msg.To)
+	// Normalize destination: apply overrides and optional BR heuristic before building JID
+	rawTo := strings.TrimSpace(msg.To)
+	digits := digitsOnly(rawTo)
+	if m.pnOverrides != nil {
+		if override, ok := m.pnOverrides[digits]; ok && strings.TrimSpace(override) != "" {
+			digits = digitsOnly(override)
+			entry.Info("pn_override applied original=%s override=%s", msg.To, digits)
+		}
+	}
+	if m.brFixDup9 && strings.HasPrefix(digits, "55") && len(digits) >= 6 {
+		// digits: 55 + AA + subscriber
+		area := digits[2:4]
+		subs := digits[4:]
+		// If subscriber starts with 3 or more '9's, drop one leading 9
+		if strings.HasPrefix(subs, "999") {
+			subs = subs[1:]
+			digits = "55" + area + subs
+			entry.Info("br_fix_dup9 applied pn=%s", digits)
+		}
+	}
+	// Build JID from normalized digits unless payload already contains '@'
+	var jid types.JID
+	var err error
+	if strings.Contains(rawTo, "@") {
+		jid, err = toJID(rawTo)
+	} else {
+		jid, err = toUserJID(digits)
+	}
 	if err != nil {
 		return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
 	}

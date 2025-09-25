@@ -43,6 +43,8 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/sessions/{id}/reload", s.handleReload).Methods(http.MethodPost)
 	router.HandleFunc("/sessions/{id}/qr", s.handleQR).Methods(http.MethodGet)
 	router.HandleFunc("/sessions/{id}/status", s.handleStatus).Methods(http.MethodGet)
+	// Debug: resolve destination JID applying overrides and LID lookup
+	router.HandleFunc("/sessions/{id}/resolve", s.handleResolve).Methods(http.MethodGet)
 
 	// Health and readiness probes
 	router.HandleFunc("/healthz", s.handleHealth).Methods(http.MethodGet)
@@ -60,6 +62,22 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(st)
+}
+
+func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	if to == "" {
+		http.Error(w, "missing to query param", http.StatusBadRequest)
+		return
+	}
+	res, err := s.provider.ResolveDest(id, to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
 }
 
 // Start begins serving HTTP requests.  It sets the readiness flag

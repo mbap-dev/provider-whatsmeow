@@ -1,8 +1,11 @@
 package config
 
-import "os"
-import "strconv"
-import "strings"
+import (
+	"encoding/json"
+	"os"
+	"strconv"
+	"strings"
+)
 
 // Config holds all configurable settings for the adapter.  Each field
 // corresponds to an environment variable.  Defaults are applied where
@@ -50,6 +53,14 @@ type Config struct {
 
 	// AutoMarkReadOnMessage, when true, marks chats as read upon receiving messages.
 	AutoMarkReadOnMessage bool
+
+	// PNOverrides allows mapping an input MSISDN (digits) to a different PN user part for s.whatsapp.net.
+	// Format: JSON object string, e.g. {"5562999967973":"556299967973"}
+	PNOverrides map[string]string
+
+	// BRFixDup9 enables a heuristic for Brazil (country code 55) to drop an extra leading '9'
+	// in the subscriber number when three or more leading '9's are present after the area code.
+	BRFixDup9 bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -80,6 +91,16 @@ func NewConfig() *Config {
 	// Mark chat as read automatically on inbound messages (default: false)
 	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
 
+	// PN overrides (optional)
+	if s := getEnv("PN_OVERRIDES", ""); strings.TrimSpace(s) != "" {
+		m := make(map[string]string)
+		if err := json.Unmarshal([]byte(s), &m); err == nil {
+			cfg.PNOverrides = m
+		}
+	}
+	// Optional Brazil heuristic
+	cfg.BRFixDup9 = getEnvBool("BR_FIX_DUP9", false)
+
 	return cfg
 }
 
@@ -100,3 +121,5 @@ func getEnvBool(key string, defaultVal bool) bool {
 	}
 	return defaultVal
 }
+
+//

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -35,9 +37,11 @@ type ClientManager struct {
 	rejectMsg       string
 	autoMarkRead    bool
 	preferLID       bool
+	pnOverrides     map[string]string
+	brFixDup9       bool
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, preferLID bool) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, preferLID bool, pnOverrides map[string]string, brFixDup9 bool) *ClientManager {
 	return &ClientManager{
 		clients:         make(map[string]*clientEntry),
 		sessionStore:    sessionStore,
@@ -47,6 +51,8 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		rejectMsg:       rejectMsg,
 		autoMarkRead:    autoMarkRead,
 		preferLID:       preferLID,
+		pnOverrides:     pnOverrides,
+		brFixDup9:       brFixDup9,
 	}
 }
 
@@ -234,6 +240,56 @@ func (m *ClientManager) GetClient(sessionID string) (*whatsmeow.Client, bool) {
 		return nil, false
 	}
 	return ent.Client, ent.Client != nil
+}
+
+// ResolveDest applies overrides/heuristics and LID lookup to determine the destination JID.
+// It returns the normalized PN JID (s.whatsapp.net), the resolved LID (if any),
+// and the final destination JID that would be used for sending.
+type ResolveResult struct {
+	Input        string `json:"input"`
+	NormalizedPN string `json:"normalized_pn"`
+	PNJID        string `json:"pn_jid"`
+	LIDJID       string `json:"lid_jid,omitempty"`
+	DestJID      string `json:"dest_jid"`
+	UsedLID      bool   `json:"used_lid"`
+}
+
+func (m *ClientManager) ResolveDest(sessionID, to string) (ResolveResult, error) {
+	res := ResolveResult{Input: to}
+	ent, ok := m.clients[sessionID]
+	if !ok || ent == nil || ent.Client == nil {
+		return res, errors.New("session not connected")
+	}
+	// normalize digits
+	rawTo := strings.TrimSpace(to)
+	digits := digitsOnly(rawTo)
+	if m.pnOverrides != nil {
+		if override, ok := m.pnOverrides[digits]; ok && strings.TrimSpace(override) != "" {
+			digits = digitsOnly(override)
+		}
+	}
+	if m.brFixDup9 && strings.HasPrefix(digits, "55") && len(digits) >= 6 {
+		area := digits[2:4]
+		subs := digits[4:]
+		if strings.HasPrefix(subs, "999") {
+			subs = subs[1:]
+			digits = "55" + area + subs
+		}
+	}
+	res.NormalizedPN = digits
+	pnJ := types.NewJID(digits, types.DefaultUserServer)
+	res.PNJID = pnJ.String()
+	dest := pnJ
+	// LID lookup
+	if ent.Client != nil && ent.Client.Store != nil && ent.Client.Store.LIDs != nil {
+		if lid, err := ent.Client.Store.LIDs.GetLIDForPN(context.Background(), pnJ); err == nil && lid.Server == types.HiddenUserServer {
+			res.LIDJID = lid.String()
+			dest = lid
+			res.UsedLID = true
+		}
+	}
+	res.DestJID = dest.String()
+	return res, nil
 }
 
 func (m *ClientManager) SessionPath(sessionID string) string {

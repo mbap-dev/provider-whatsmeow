@@ -28,7 +28,7 @@ func main() {
 	// for bootstrapping new sessions, keeping track of connected clients
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
-	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, cfg.AudioPTTDefault, cfg.RejectCalls, cfg.RejectCallsMessage, cfg.AutoMarkReadOnMessage, cfg.PreferLID)
+	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, cfg.AudioPTTDefault, cfg.RejectCalls, cfg.RejectCallsMessage, cfg.AutoMarkReadOnMessage, cfg.PreferLID, cfg.PNOverrides, cfg.BRFixDup9)
 
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.

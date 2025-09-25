@@ -48,3 +48,14 @@ curl http://localhost:8080/sessions/main/qr
 ## Testes
 - `go test ./...` roda testes unitários (helpers de envio, normalização de MIME, waveform etc.).
 - O Dockerfile executa `go test ./...` no estágio de build e falha a imagem se os testes falharem.
+
+## Dev (Check Rápido)
+- Makefile incluso:
+  - `make check` → `go mod tidy`, `go vet`, `go test ./...`
+  - `make build` → compila binário em `bin/whatsmeow-adapter`
+  - `make docker-build` → build Docker local
+  - Sem pkg-config (se preferir): `make test-nopkg` / `make build-nopkg`
+
+## Logs
+- Controle por `LOG_LEVEL`: `error` (default), `info`, `debug`.
+- `debug`: inclui payloads e detalhes; `info`: resumos; `error`: apenas erros.

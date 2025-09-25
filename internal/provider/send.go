@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -355,10 +356,16 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		)
 
 		if ptt {
-			uploadBytes, secs, waveform, err = convertMP3ToOGG(original)
+			// Prefer ffmpeg-based conversion with waveform for iOS WA
+			uploadBytes, secs, waveform, err = convertToOggOpusFFMPEGWithWaveform(original)
 			if err != nil {
-				entry.Error("audio convert error: %v", err)
-				return fmt.Errorf("audio conversion failed: %w", err)
+				entry.Error("ffmpeg convert+waveform failed, falling back to gopus: %v", err)
+				// Fallback to Go encoder
+				uploadBytes, secs, waveform, err = convertMP3ToOGG(original)
+				if err != nil {
+					entry.Error("audio convert error: %v", err)
+					return fmt.Errorf("audio conversion failed: %w", err)
+				}
 			}
 		} else {
 			uploadBytes = original
@@ -905,4 +912,103 @@ func downloadBytes(ctx context.Context, url string) ([]byte, string, error) {
 	}
 	mime := http.DetectContentType(data)
 	return data, mime, nil
+}
+
+// convertToOggOpusFFMPEG converts arbitrary audio input to mono OGG/Opus using ffmpeg.
+// This matches common Baileys-compatible settings and maximizes iOS WhatsApp compatibility.
+func convertToOggOpusFFMPEG(in []byte) ([]byte, error) {
+	if len(in) == 0 {
+		return nil, errors.New("empty audio payload")
+	}
+	args := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-i", "pipe:0",
+		"-vn",
+		"-ac", "1",
+		"-ar", "48000",
+		"-c:a", "libopus",
+		"-b:a", "24k",
+		"-application", "voip",
+		"-avoid_negative_ts", "make_zero",
+		"-f", "ogg",
+		"pipe:1",
+	}
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stdin = bytes.NewReader(in)
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg run: %w: %s", err, strings.TrimSpace(errBuf.String()))
+	}
+	if out.Len() == 0 {
+		return nil, errors.New("ffmpeg produced empty output")
+	}
+	// Note: duration/waveform are not derived here; Seconds stays 0; Waveform omitted.
+	return out.Bytes(), nil
+}
+
+// convertToOggOpusFFMPEGWithWaveform also derives waveform by decoding PCM via ffmpeg.
+func convertToOggOpusFFMPEGWithWaveform(in []byte) ([]byte, uint32, []byte, error) {
+	if len(in) == 0 {
+		return nil, 0, nil, errors.New("empty audio payload")
+	}
+	// First pass: decode to mono 16k s16le to compute waveform and duration
+	pcmArgs := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-i", "pipe:0",
+		"-vn",
+		"-ac", "1",
+		"-ar", "16000",
+		"-f", "s16le",
+		"pipe:1",
+	}
+	pcm, stderr, err := runFFMPEG(in, pcmArgs)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("ffmpeg pcm: %w: %s", err, strings.TrimSpace(stderr))
+	}
+	if len(pcm) < 2 {
+		return nil, 0, nil, errors.New("ffmpeg pcm output empty")
+	}
+	samples := bytesToInt16(pcm)
+	secs := uint32(int(math.Round(float64(len(samples)) / float64(16000))))
+	if secs == 0 {
+		secs = 1
+	}
+	waveform := buildWaveform(samples)
+
+	// Second pass: encode to OGG/Opus at 48k mono VOIP
+	oggArgs := []string{
+		"-hide_banner", "-loglevel", "error",
+		"-i", "pipe:0",
+		"-vn",
+		"-ac", "1",
+		"-ar", "48000",
+		"-c:a", "libopus",
+		"-b:a", "24k",
+		"-application", "voip",
+		"-avoid_negative_ts", "make_zero",
+		"-f", "ogg",
+		"pipe:1",
+	}
+	ogg, stderr2, err := runFFMPEG(in, oggArgs)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("ffmpeg ogg: %w: %s", err, strings.TrimSpace(stderr2))
+	}
+	if len(ogg) == 0 {
+		return nil, 0, nil, errors.New("ffmpeg produced empty ogg output")
+	}
+	return ogg, secs, waveform, nil
+}
+
+func runFFMPEG(in []byte, args []string) ([]byte, string, error) {
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stdin = bytes.NewReader(in)
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	return out.Bytes(), errBuf.String(), err
 }

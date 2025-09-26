@@ -181,6 +181,20 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 					}
 				}
 			}
+		} else if pm.GetType() == waE2E.ProtocolMessage_REVOKE {
+			// Message deletion (revoke). Emit a status 'deleted' similar to UnoAPI.
+			rid := ""
+			if pm.GetKey() != nil {
+				rid = strings.TrimSpace(pm.GetKey().GetId())
+			}
+			if rid == "" {
+				// Without the original id, do nothing
+				return nil
+			}
+			if err := m.emitCloudDeleted(sessionID, client, e, rid); err != nil {
+				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud deleted error: %v", err)
+			}
+			return nil
 		} else {
 			// ignore other protocol messages
 			return nil
@@ -478,6 +492,40 @@ func (m *ClientManager) emitCloudSent(sessionID string, to types.JID, id types.M
 	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
 	val["statuses"] = []any{st}
 	log.WithSession(sessionID).WithMessageID(id).Info("evt=sent cloud payload ready id=%s", id)
+	return m.deliverWebhook(sessionID, payload)
+}
+
+// emitCloudDeleted publishes a status event for a message deletion (revoke)
+// in the Cloud-like format UnoAPI expects.
+func (m *ClientManager) emitCloudDeleted(sessionID string, client *whatsmeow.Client, e *events.Message, revokedID string) error {
+	phone := normalizePhone(sessionID)
+
+	// Best-effort recipient id derived from chat/sender
+	recipient := ""
+	if e.Info.Chat != (types.JID{}) {
+		recipient = jidToPhoneNumberIfUser(e.Info.Chat)
+	}
+	if recipient == "" && e.Info.Sender != (types.JID{}) {
+		recipient = jidToPhoneNumberIfUser(e.Info.Sender)
+	}
+
+	st := map[string]any{
+		"id":           revokedID,
+		"recipient_id": strings.ReplaceAll(recipient, "+", ""),
+		"status":       "deleted",
+	}
+	if !e.Info.Timestamp.IsZero() {
+		st["timestamp"] = strconv.FormatInt(e.Info.Timestamp.Unix(), 10)
+	}
+	if e.Info.Chat != (types.JID{}) {
+		st["conversation"] = map[string]any{"id": e.Info.Chat.String()}
+	}
+
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["statuses"] = []any{st}
+
+	log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=deleted cloud payload ready revoked_id=%s", revokedID)
 	return m.deliverWebhook(sessionID, payload)
 }
 

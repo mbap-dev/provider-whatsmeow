@@ -162,6 +162,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 				// if we don't have a body, ignore
 				return nil
 			}
+			body = body + "\n`Mensagem Editada`"
 			wireMsg["type"] = "text"
 			wireMsg["text"] = map[string]any{"body": body}
 			if pm.GetKey() != nil {

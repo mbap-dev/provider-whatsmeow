@@ -416,11 +416,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	profile := map[string]any{"name": dispName}
 	if av, ok := getAvatarURL(client, func() types.JID {
 		if isGroupJID(chatJID) {
-			return chatJID // avatar do grupo
+			return chatJID
 		}
-		return chatJID // 1:1: avatar do contato (chat)
+		return chatJID
 	}()); ok && strings.TrimSpace(av) != "" {
-		profile["avatar"] = av
+		profile["picture"] = av
 	}
 	contactObj := map[string]any{
 		"profile": profile,

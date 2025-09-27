@@ -53,12 +53,17 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		// Connection lifecycle → Redis status
 		case *events.Connected:
 			status.Set(sessionID, "online")
+			// Start always-online presence refresher if enabled
+			m.maybeStartAlwaysOnline(sessionID, client)
 		case *events.Disconnected:
 			status.Set(sessionID, "offline")
+			m.stopAlwaysOnline(sessionID)
 		case *events.LoggedOut:
 			status.Set(sessionID, "disconnected")
+			m.stopAlwaysOnline(sessionID)
 		case *events.StreamReplaced:
 			status.Set(sessionID, "restart_required")
+			m.stopAlwaysOnline(sessionID)
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
 			if m.rejectCalls {

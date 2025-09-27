@@ -54,6 +54,13 @@ type Config struct {
 	// RedisURL points to the shared UNO Redis instance for session status.
 	// Example: redis://user:pass@localhost:6379/0
 	RedisURL string
+
+	// AlwaysOnline, when true, keeps the presence as available by periodically
+	// calling SendPresence(PresenceAvailable) while connected.
+	AlwaysOnline bool
+	// AlwaysOnlineIntervalSeconds controls how often to refresh presence.
+	// Default: 60 seconds.
+	AlwaysOnlineIntervalSeconds int
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -86,6 +93,17 @@ func NewConfig() *Config {
 
 	// Redis for UNO session status
 	cfg.RedisURL = getEnv("REDIS_URL", "")
+
+	// Presence keep-alive / always-online
+	cfg.AlwaysOnline = getEnvBool("ALWAYS_ONLINE", false)
+	if v := getEnv("ALWAYS_ONLINE_INTERVAL_SECONDS", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.AlwaysOnlineIntervalSeconds = n
+		}
+	}
+	if cfg.AlwaysOnlineIntervalSeconds == 0 {
+		cfg.AlwaysOnlineIntervalSeconds = 60
+	}
 
 	return cfg
 }

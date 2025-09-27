@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
@@ -25,6 +26,8 @@ type clientEntry struct {
 	Log     waLog.Logger
 	Session string
 	Webhook string
+	// cancel function for the always-online presence refresher
+	presenceCancel context.CancelFunc
 }
 
 // ClientManager mantém um registro de clientes por sessão
@@ -40,6 +43,10 @@ type ClientManager struct {
 	pnResolverURL   string
 	// simple PN->JID cache (E.164 -> JID string)
 	pnCache map[string]pnCacheItem
+
+	// always-online settings
+	alwaysOnline      bool
+	alwaysOnlineEvery time.Duration
 }
 
 func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string) *ClientManager {
@@ -53,6 +60,72 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		autoMarkRead:    autoMarkRead,
 		pnResolverURL:   pnResolverURL,
 		pnCache:         make(map[string]pnCacheItem),
+	}
+}
+
+// EnableAlwaysOnline configures the manager to periodically send presence available
+// while connected. Interval must be > 0.
+func (m *ClientManager) EnableAlwaysOnline(interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	m.alwaysOnline = true
+	m.alwaysOnlineEvery = interval
+}
+
+func (m *ClientManager) maybeStartAlwaysOnline(sessionID string, cli *whatsmeow.Client) {
+	if !m.alwaysOnline || cli == nil {
+		return
+	}
+	m.mu.Lock()
+	ent, ok := m.clients[sessionID]
+	if !ok || ent == nil || ent.Client == nil {
+		m.mu.Unlock()
+		return
+	}
+	// stop previous if any
+	if ent.presenceCancel != nil {
+		ent.presenceCancel()
+		ent.presenceCancel = nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ent.presenceCancel = cancel
+	m.clients[sessionID] = ent
+	interval := m.alwaysOnlineEvery
+	log := ent.Log
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		// send immediately once
+		if err := cli.SendPresence(types.PresenceAvailable); err != nil {
+			log.Errorf("presence available error: %v", err)
+		} else {
+			log.Infof("presence set to available, interval=%s", interval)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !cli.IsConnected() {
+					continue
+				}
+				if err := cli.SendPresence(types.PresenceAvailable); err != nil {
+					log.Errorf("presence refresh error: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+func (m *ClientManager) stopAlwaysOnline(sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ent, ok := m.clients[sessionID]; ok && ent != nil && ent.presenceCancel != nil {
+		ent.presenceCancel()
+		ent.presenceCancel = nil
 	}
 }
 

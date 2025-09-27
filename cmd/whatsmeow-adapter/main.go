@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
 	"your.org/provider-whatsmeow/internal/config"
@@ -33,6 +34,9 @@ func main() {
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
 	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, cfg.AudioPTTDefault, cfg.RejectCalls, cfg.RejectCallsMessage, cfg.AutoMarkReadOnMessage, cfg.PNResolverURL)
+	if cfg.AlwaysOnline {
+		clientManager.EnableAlwaysOnline(time.Duration(cfg.AlwaysOnlineIntervalSeconds) * time.Second)
+	}
 
 	// Auto-restore sessions that already have a saved store (session.db)
 	if restored, err := clientManager.RestoreSavedSessions(); err != nil {

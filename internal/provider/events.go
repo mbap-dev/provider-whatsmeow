@@ -24,6 +24,24 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Defaults used for LID->AD resolution when no manager-specific tuning is available.
+var (
+	defaultLIDResolveAttempts = 3
+	defaultLIDResolveDelay    = 300 * time.Millisecond
+)
+
+// Shared HTTP client for webhook delivery with tuned connection pooling.
+var webhookHTTPClient = &http.Client{
+	Timeout: 20 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
 // Context key used to carry the wildcard suffix (e.g., phone_number_id)
 // extracted from the AMQP routing key into ClientManager.Send.
 type ctxKey string
@@ -91,6 +109,12 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 					}
 				}
 			}
+		case *events.AppStateSyncComplete:
+			if e.Name == "critical_block" || e.Name == "regular_high" {
+				_ = client.SendPresence(types.PresenceAvailable)
+			}
+		case *events.PushNameSetting:
+			_ = client.SendPresence(types.PresenceAvailable)
 		case *events.Message:
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
@@ -662,7 +686,7 @@ func jidDisplayMaybeResolve(sessionID string, cli *whatsmeow.Client, j types.JID
 	}
 
 	// Try to resolve LID -> AD (s.whatsapp.net)
-	if resolved, ok := resolveLIDToAD(sessionID, cli, j, 3, 300*time.Millisecond); ok {
+	if resolved, ok := resolveLIDToAD(sessionID, cli, j, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
 		return digitsOnly(resolved.User)
 	}
 	// Fallback: include @lid so downstream sees it's unresolved
@@ -676,11 +700,15 @@ func resolveLIDToAD(sessionID string, cli *whatsmeow.Client, lid types.JID, atte
 	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
 		return types.JID{}, false
 	}
+	if v, ok := cacheGetLID(lid.String()); ok {
+		return v, true
+	}
 	for i := 0; i < attempts; i++ {
 		ad, err := cli.Store.LIDs.GetPNForLID(context.Background(), lid)
 		if err == nil {
 			if !isLIDJID(ad) && ad.User != "" && ad.Server != "" {
 				entry.Info("lid_resolve success lid=%s -> %s", lid.String(), ad.String())
+				cachePutLID(lid.String(), ad)
 				return ad, true
 			}
 		}
@@ -965,7 +993,7 @@ func (m *ClientManager) deliverWebhook(sessionID string, payload any) error {
 	req.Header.Set("Content-Type", "application/json")
 
 	go func() {
-		resp, err := http.DefaultClient.Do(req.WithContext(context.Background()))
+		resp, err := webhookHTTPClient.Do(req.WithContext(context.Background()))
 		if err != nil {
 			entry.Error("webhook post error: %v", err)
 			return

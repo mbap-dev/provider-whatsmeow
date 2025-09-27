@@ -14,6 +14,7 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"your.org/provider-whatsmeow/internal/status"
 )
 
 // clientEntry mantém refs para facilitar cleanup
@@ -63,6 +64,9 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	if ent, ok := m.clients[sessionID]; ok && ent.Client != nil {
 		return ent.Client, nil
 	}
+
+	// Mark status as connecting for UNO
+	status.Set(sessionID, "connecting")
 
 	// Garante diretório por sessão
 	if err := os.MkdirAll(m.SessionPath(sessionID), 0o755); err != nil {
@@ -143,6 +147,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 		go func() {
 			if err := cli.Connect(); err != nil {
 				clientLog.Errorf("connect error: %v", err)
+				status.Set(sessionID, "offline")
 			}
 		}()
 		return cli, nil
@@ -172,6 +177,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	go func() {
 		if err := cli.Connect(); err != nil {
 			clientLog.Errorf("connect error: %v", err)
+			status.Set(sessionID, "offline")
 		}
 	}()
 
@@ -187,6 +193,8 @@ func (m *ClientManager) Disconnect(sessionID string) error {
 		}
 		delete(m.clients, sessionID)
 	}
+	// Mark as disconnected in UNO
+	status.Set(sessionID, "disconnected")
 	return nil
 }
 
@@ -197,6 +205,7 @@ func (m *ClientManager) Reload(sessionID string) error {
 	if !ok {
 		return fmt.Errorf("session %s not found", sessionID)
 	}
+	status.Set(sessionID, "connecting")
 	if err := m.Disconnect(sessionID); err != nil {
 		return err
 	}

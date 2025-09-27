@@ -50,6 +50,10 @@ type Config struct {
 	AutoMarkReadOnMessage bool
 	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
 	PNResolverURL string
+
+	// RedisURL points to the shared UNO Redis instance for session status.
+	// Example: redis://user:pass@localhost:6379/0
+	RedisURL string
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -79,6 +83,9 @@ func NewConfig() *Config {
 
 	// Mark chat as read automatically on inbound messages (default: false)
 	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
+
+	// Redis for UNO session status
+	cfg.RedisURL = getEnv("REDIS_URL", "")
 
 	return cfg
 }

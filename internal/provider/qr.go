@@ -8,6 +8,7 @@ import (
 
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
+	"your.org/provider-whatsmeow/internal/status"
 )
 
 type qrState struct {
@@ -43,6 +44,10 @@ func (m *ClientManager) startQRWatcher(sessionID string, ch <-chan whatsmeow.QRC
 				qrMu.Lock()
 				delete(qrBySession, sessionID)
 				qrMu.Unlock()
+				if item.Event == "success" {
+					// Update UNO status: now online
+					status.Set(sessionID, "online")
+				}
 
 			case "error":
 				// Você pode logar item.Error se quiser

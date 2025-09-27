@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"your.org/provider-whatsmeow/internal/log"
+	"your.org/provider-whatsmeow/internal/status"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -49,6 +50,15 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 
 	client.AddEventHandler(func(evt interface{}) {
 		switch e := evt.(type) {
+		// Connection lifecycle → Redis status
+		case *events.Connected:
+			status.Set(sessionID, "online")
+		case *events.Disconnected:
+			status.Set(sessionID, "offline")
+		case *events.LoggedOut:
+			status.Set(sessionID, "disconnected")
+		case *events.StreamReplaced:
+			status.Set(sessionID, "restart_required")
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
 			if m.rejectCalls {

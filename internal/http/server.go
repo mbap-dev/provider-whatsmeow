@@ -2,8 +2,8 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	_ "fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -107,7 +107,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	// UNO expects 204 No Content; connect proceeds asynchronously
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleDisconnect tears down an existing session.  It always
@@ -115,7 +116,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	_ = s.provider.Disconnect(id)
-	w.WriteHeader(http.StatusOK)
+	// UNO expects 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleReload triggers a session reload.  It returns 200 on success
@@ -127,7 +129,8 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	// UNO expects 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleQR returns a base64 encoded PNG image of the current QR code
@@ -147,8 +150,16 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = io.WriteString(w, qr)
+	// Provider stores QR as base64 PNG; UNO expects raw bytes image/png
+	buf, decErr := base64.StdEncoding.DecodeString(qr)
+	if decErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, decErr.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf)
 }
 
 // handleHealth always returns HTTP 200 OK.  It can be used by

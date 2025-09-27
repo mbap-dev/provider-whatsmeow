@@ -11,6 +11,7 @@ import (
 	httpserver "your.org/provider-whatsmeow/internal/http"
 	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/provider"
+	"your.org/provider-whatsmeow/internal/status"
 )
 
 // main is the entrypoint for the WhatsMeow adapter.  It wires together the
@@ -23,6 +24,9 @@ func main() {
 	// missing a sensible default is used instead.  See config.NewConfig
 	// for details on each field.
 	cfg := config.NewConfig()
+
+	// Init Redis status writer (no-op if REDIS_URL empty)
+	status.Init(cfg.RedisURL)
 
 	// Create a manager for WhatsApp clients.  The manager is responsible
 	// for bootstrapping new sessions, keeping track of connected clients

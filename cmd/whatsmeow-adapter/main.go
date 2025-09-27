@@ -34,6 +34,15 @@ func main() {
 	// message consumer.
 	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, cfg.AudioPTTDefault, cfg.RejectCalls, cfg.RejectCallsMessage, cfg.AutoMarkReadOnMessage, cfg.PNResolverURL)
 
+	// Auto-restore sessions that already have a saved store (session.db)
+	if restored, err := clientManager.RestoreSavedSessions(); err != nil {
+		ilog.Errorf("failed to restore saved sessions: %v", err)
+	} else if len(restored) > 0 {
+		ilog.Infof("restoring %d saved session(s): %v", len(restored), restored)
+	} else {
+		ilog.Infof("no saved sessions to restore")
+	}
+
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.
 	if err := amqpconsumer.InitExchange(cfg); err != nil {

@@ -920,14 +920,25 @@ func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
 	if cli == nil || jid == (types.JID{}) {
 		return "", false
 	}
-	// First try without params
-	if info, err := cli.GetProfilePictureInfo(jid, nil); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
-		return info.URL, true
-	}
-	// For communities, retried with IsCommunity=true to avoid 401 (best effort)
-	if isGroupJID(jid) {
-		if info, err := cli.GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{IsCommunity: true}); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
+	// Try a few combinations (prefer preview for speed)
+	try := func(p *whatsmeow.GetProfilePictureParams) (string, bool) {
+		if info, err := cli.GetProfilePictureInfo(jid, p); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
 			return info.URL, true
+		}
+		return "", false
+	}
+	if url, ok := try(nil); ok {
+		return url, true
+	}
+	if url, ok := try(&whatsmeow.GetProfilePictureParams{Preview: true}); ok {
+		return url, true
+	}
+	if isGroupJID(jid) {
+		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true, Preview: true}); ok {
+			return url, true
+		}
+		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true}); ok {
+			return url, true
 		}
 	}
 	return "", false

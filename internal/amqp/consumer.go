@@ -115,7 +115,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to consume from queue: %w", err)
 	}
 
-	ilog.Infof("AMQP consumer connected, waiting for messages on %s", c.cfg.AMQPBinding)
+	ilog.Infof("AMQP consumer connected: exchange=%s queue=%s binding=%s", c.cfg.AMQPExchange, c.cfg.AMQPQueue, c.cfg.AMQPBinding)
 
 	for {
 		select {

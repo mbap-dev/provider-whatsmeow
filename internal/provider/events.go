@@ -904,12 +904,21 @@ func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 	if cli == nil {
 		return "", false
 	}
-	info, err := cli.GetGroupInfo(gid)
-	if err != nil || info == nil {
-		return "", false
+	// Cache first
+	if n, ok := cacheGetGroupName(gid.String()); ok {
+		return n, true
 	}
-	if strings.TrimSpace(info.Name) != "" {
-		return info.Name, true
+	// Try a couple of times with a small delay to allow metadata to load
+	for i := 0; i < 2; i++ {
+		info, err := cli.GetGroupInfo(gid)
+		if err == nil && info != nil && strings.TrimSpace(info.Name) != "" {
+			name := strings.TrimSpace(info.Name)
+			cachePutGroupName(gid.String(), name)
+			return name, true
+		}
+		if i == 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	return "", false
 }
@@ -920,13 +929,20 @@ func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
 	if cli == nil || jid == (types.JID{}) {
 		return "", false
 	}
+	// Cache first
+	if u, ok := cacheGetAvatar(jid.String()); ok {
+		return u, true
+	}
 	// Try a few combinations (prefer preview for speed)
 	try := func(p *whatsmeow.GetProfilePictureParams) (string, bool) {
 		if info, err := cli.GetProfilePictureInfo(jid, p); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
-			return info.URL, true
+			url := strings.TrimSpace(info.URL)
+			cachePutAvatar(jid.String(), url)
+			return url, true
 		}
 		return "", false
 	}
+	// Try immediate attempts
 	if url, ok := try(nil); ok {
 		return url, true
 	}
@@ -940,6 +956,11 @@ func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
 		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true}); ok {
 			return url, true
 		}
+	}
+	// One quick retry after a short delay in case metadata just loaded
+	time.Sleep(150 * time.Millisecond)
+	if url, ok := try(&whatsmeow.GetProfilePictureParams{Preview: true}); ok {
+		return url, true
 	}
 	return "", false
 }

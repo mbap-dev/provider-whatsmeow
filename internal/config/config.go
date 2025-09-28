@@ -68,11 +68,11 @@ type Config struct {
 // defaults as documented on the struct fields.
 func NewConfig() *Config {
 	cfg := &Config{}
-	cfg.AMQPURL = getEnv("AMQP_URL", "amqp://user_test:123456@localhost:5672/EnvolveNEXT")
+	cfg.AMQPURL = getEnv("AMQP_URL", "amqp://user_test:123456@localhost:5672/vhost")
 	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
 	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
 	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "outgoing.whatsmeow")
-	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "https://unoapi-testes.envolvenext.com.br/webhooks/whatsapp")
+	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "http://localhost/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
 

@@ -2,7 +2,7 @@ name: Build & Push Docker (GHCR)
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "main" ]
     tags: [ "v*.*.*" ]
   workflow_dispatch:
 

@@ -1,0 +1,5 @@
+/state/
+/.idea/*
+/.gomodcache/
+/.gocache/
+/bin/whatsmeow-adapter

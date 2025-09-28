@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  whatsmeow-adapter:
+    build: .
+    image: ghcr.io/mbap-dev/provider-whatsmeow:latest
+    restart: unless-stopped
+    environment:
+      # Ex.: amqp://user:pass@rb-host:5672/vhost
+      AMQP_URL: "${AMQP_URL}"
+      AMQP_EXCHANGE: "${AMQP_EXCHANGE:-unoapi.outgoing}"
+      AMQP_BINDING: "${AMQP_BINDING:-provider.whatsmeow.*}"
+      AMQP_QUEUE: "${AMQP_QUEUE:-provider.whatsmeow}"
+      WEBHOOK_BASE: "${WEBHOOK_BASE:-}"       # opcional
+      SESSION_STORE: "/var/lib/whatsmeow"
+      HTTP_ADDR: ":8080"
+      # Áudio: enviar como PTT por padrão (true/false)
+      AUDIO_PTT_DEFAULT: "${AUDIO_PTT_DEFAULT:-true}"
+    volumes:
+      - ./data/whatsmeow:/var/lib/whatsmeow
+    ports:
+      - "8080:8080"

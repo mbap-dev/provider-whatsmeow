@@ -1,0 +1,129 @@
+package config
+
+import (
+	"os"
+	"strconv"
+	"strings"
+)
+
+// Config holds all configurable settings for the adapter.  Each field
+// corresponds to an environment variable.  Defaults are applied where
+// reasonable so the service can run locally with minimal setup.
+type Config struct {
+	// AMQPURL is the connection string used to connect to the RabbitMQ
+	// broker.  Example: amqp://guest:guest@localhost:5672/.
+	AMQPURL string
+	// AMQPExchange is the name of the exchange to bind to for outgoing
+	// messages.  By default this is set to "unoapi.outgoing".
+	AMQPExchange string
+	// AMQPBinding is the routing key pattern used when binding the
+	// queue.  It is set to "provider.whatsmeow.*" to receive all
+	// messages destined for this provider.
+	AMQPBinding string
+	// AMQPQueue is the name of the queue that will be declared and
+	// consumed by this service.  If empty, a server-generated name is
+	// used.
+	AMQPQueue string
+	// WebhookBase is the base URL to which webhook payloads should be
+	// delivered.  If left empty the service will not emit webhooks.
+	WebhookBase string
+	// SessionStore is the directory on disk where session files are
+	// persisted.  A separate subdirectory will be created for each
+	// session identifier.
+	SessionStore string
+	// HTTPAddr is the host:port on which to expose the HTTP API and
+	// health checks.  The default is ":8080" which listens on all
+	// interfaces.
+	HTTPAddr string
+
+	// AudioPTTDefault controls whether audio messages are sent as PTT by default.
+	// If not set, defaults to true.
+	AudioPTTDefault bool
+
+	// RejectCalls enables automatic rejection of incoming calls. Default: true.
+	RejectCalls bool
+	// RejectCallsMessage is the optional text sent to the caller after rejecting.
+	// Supports escaped newlines (\n) which are converted to real newlines.
+	RejectCallsMessage string
+
+	// AutoMarkReadOnMessage, when true, marks chats as read upon receiving messages.
+	AutoMarkReadOnMessage bool
+	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
+	PNResolverURL string
+
+	// RedisURL points to the shared UNO Redis instance for session status.
+	// Example: redis://user:pass@localhost:6379/0
+	RedisURL string
+
+	// AlwaysOnline, when true, keeps the presence as available by periodically
+	// calling SendPresence(PresenceAvailable) while connected.
+	AlwaysOnline bool
+	// AlwaysOnlineIntervalSeconds controls how often to refresh presence.
+	// Default: 60 seconds.
+	AlwaysOnlineIntervalSeconds int
+}
+
+// NewConfig reads configuration from the environment and returns a
+// populated Config instance.  Missing variables fall back to sensible
+// defaults as documented on the struct fields.
+func NewConfig() *Config {
+	cfg := &Config{}
+	cfg.AMQPURL = getEnv("AMQP_URL", "amqp://user_test:123456@localhost:5672/vhost")
+	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
+	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
+	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "outgoing.whatsmeow")
+	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "http://localhost/webhooks/whatsapp")
+	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
+	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")
+
+	// Default: send audio as PTT unless explicitly disabled
+	cfg.AudioPTTDefault = getEnvBool("AUDIO_PTT_DEFAULT", true)
+	cfg.PNResolverURL = getEnv("PN_RESOLVER_URL", "")
+
+	// Auto-reject incoming calls + optional reply message
+	cfg.RejectCalls = getEnvBool("REJECT_CALLS", true)
+	cfg.RejectCallsMessage = getEnv("REJECT_CALLS_MESSAGE", "")
+	// Allow escaped newlines in env var
+	if strings.Contains(cfg.RejectCallsMessage, "\\n") {
+		cfg.RejectCallsMessage = strings.ReplaceAll(cfg.RejectCallsMessage, "\\n", "\n")
+	}
+
+	// Mark chat as read automatically on inbound messages (default: false)
+	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
+
+	// Redis for UNO session status
+	cfg.RedisURL = getEnv("REDIS_URL", "")
+
+	// Presence keep-alive / always-online
+	cfg.AlwaysOnline = getEnvBool("ALWAYS_ONLINE", false)
+	if v := getEnv("ALWAYS_ONLINE_INTERVAL_SECONDS", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.AlwaysOnlineIntervalSeconds = n
+		}
+	}
+	if cfg.AlwaysOnlineIntervalSeconds == 0 {
+		cfg.AlwaysOnlineIntervalSeconds = 60
+	}
+
+	return cfg
+}
+
+// getEnv returns the value of the environment variable named by key.  If
+// the variable is not present or empty then defaultVal is returned.
+func getEnv(key string, defaultVal string) string {
+	if val, ok := os.LookupEnv(key); ok && val != "" {
+		return val
+	}
+	return defaultVal
+}
+
+func getEnvBool(key string, defaultVal bool) bool {
+	if val, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(val); err == nil {
+			return b
+		}
+	}
+	return defaultVal
+}
+
+//

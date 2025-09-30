@@ -43,6 +43,8 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/sessions/{id}/reload", s.handleReload).Methods(http.MethodPost)
 	router.HandleFunc("/sessions/{id}/qr", s.handleQR).Methods(http.MethodGet)
 	router.HandleFunc("/sessions/{id}/status", s.handleStatus).Methods(http.MethodGet)
+	// Calls (ring-only fake call)
+	router.HandleFunc("/sessions/{id}/fakecall", s.handleFakeCall).Methods(http.MethodPost)
 	// Debug: resolve destination JID applying overrides and LID lookup
 	router.HandleFunc("/sessions/{id}/resolve", s.handleResolve).Methods(http.MethodGet)
 
@@ -78,6 +80,44 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
+}
+
+type fakeCallRequest struct {
+	To     string `json:"to"`
+	RingMS int    `json:"ring_ms"`
+}
+
+// handleFakeCall triggers a ring-only fake voice call to the destination.
+// Body: {"to": "<phone or jid>", "ring_ms": 15000}
+func (s *Server) handleFakeCall(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	var req fakeCallRequest
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, "invalid json payload", http.StatusBadRequest)
+		return
+	}
+	to := strings.TrimSpace(req.To)
+	if to == "" {
+		http.Error(w, "missing to", http.StatusBadRequest)
+		return
+	}
+	ringMS := req.RingMS
+	if ringMS <= 0 {
+		ringMS = 15000
+	}
+
+	callID, err := s.provider.FakeCall(id, to, ringMS)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"call_id": callID,
+		"ring_ms": ringMS,
+		"to":      to,
+	})
 }
 
 // Start begins serving HTTP requests.  It sets the readiness flag

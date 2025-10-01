@@ -847,7 +847,14 @@ func parseVCard(v string) (string, []map[string]any) {
 			fn = strings.TrimSpace(s[3:])
 			continue
 		}
-		if strings.HasPrefix(strings.ToUpper(s), "TEL") {
+		// Handle TEL lines with optional itemN. prefix (e.g., "item1.TEL;...")
+		// Detect property name before ':' and look for "TEL" within it.
+		upper := strings.ToUpper(s)
+		prop := upper
+		if k := strings.Index(upper, ":"); k >= 0 {
+			prop = upper[:k]
+		}
+		if strings.Contains(prop, "TEL") {
 			// Extract phone after the last ':' if present; some WA Business
 			// vCards may have an empty value (e.g., "TEL;waid=123:") – in
 			// that case, use the waid as the phone fallback.
@@ -870,17 +877,26 @@ func parseVCard(v string) (string, []map[string]any) {
 					waid = strings.TrimSpace(rest)
 				}
 			}
+			// Normalize digits and apply BR mobile 9th-digit heuristic when necessary.
+			dPhone := digitsOnly(phone)
+			dWAID := digitsOnly(waid)
+			if len(dPhone) >= 2 && strings.HasPrefix(dPhone, "55") {
+				dPhone = jidToPhoneNumberDigits(dPhone, true)
+			}
+			if len(dWAID) >= 2 && strings.HasPrefix(dWAID, "55") {
+				dWAID = jidToPhoneNumberDigits(dWAID, true)
+			}
 			// Fallback: if phone is empty but waid is present, use waid
-			if strings.TrimSpace(phone) == "" && strings.TrimSpace(waid) != "" {
-				phone = strings.TrimSpace(waid)
+			if strings.TrimSpace(dPhone) == "" && strings.TrimSpace(dWAID) != "" {
+				dPhone = dWAID
 			}
 			// If both are empty, skip this TEL line
-			if strings.TrimSpace(phone) == "" {
+			if strings.TrimSpace(dPhone) == "" {
 				continue
 			}
-			entry := map[string]any{"phone": phone}
-			if waid != "" {
-				entry["wa_id"] = waid
+			entry := map[string]any{"phone": dPhone}
+			if dWAID != "" {
+				entry["wa_id"] = dWAID
 			}
 			phones = append(phones, entry)
 		}

@@ -811,12 +811,17 @@ func parseVCard(v string) (string, []map[string]any) {
 			continue
 		}
 		if strings.HasPrefix(strings.ToUpper(s), "TEL") {
-			// phone is after last ':'
+			// Extract phone after the last ':' if present; some WA Business
+			// vCards may have an empty value (e.g., "TEL;waid=123:") – in
+			// that case, use the waid as the phone fallback.
 			c := strings.LastIndex(s, ":")
-			if c <= 0 || c+1 >= len(s) {
-				continue
+			var phone string
+			if c >= 0 && c+1 < len(s) {
+				phone = strings.TrimSpace(s[c+1:])
+			} else {
+				phone = ""
 			}
-			phone := strings.TrimSpace(s[c+1:])
+			// Extract waid parameter if present
 			waid := ""
 			if i := strings.Index(strings.ToLower(s), "waid="); i >= 0 {
 				// take until next ';' or ':'
@@ -827,6 +832,14 @@ func parseVCard(v string) (string, []map[string]any) {
 				} else {
 					waid = strings.TrimSpace(rest)
 				}
+			}
+			// Fallback: if phone is empty but waid is present, use waid
+			if strings.TrimSpace(phone) == "" && strings.TrimSpace(waid) != "" {
+				phone = strings.TrimSpace(waid)
+			}
+			// If both are empty, skip this TEL line
+			if strings.TrimSpace(phone) == "" {
+				continue
 			}
 			entry := map[string]any{"phone": phone}
 			if waid != "" {

@@ -141,13 +141,22 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		return nil
 	}
 
-	// Calcula contrapartes
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
 	// Preferir JID alternativo (AD) quando a lib expõe SenderAlt não‑LID
 	if e.Info.SenderAlt != (types.JID{}) && !isLIDJID(e.Info.SenderAlt) && e.Info.SenderAlt.Server != "" {
 		senderJID = e.Info.SenderAlt
+	}
+
+	// Ignore optional channels per configuration
+	if m.ignoreStatusBroadcast && (isStatusBroadcastJID(chatJID) || isStatusBroadcastJID(senderJID)) {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: status_broadcast")
+		return nil
+	}
+	if m.ignoreNewsletters && (isNewsletterJID(chatJID) || isNewsletterJID(senderJID)) {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: newsletter")
+		return nil
 	}
 
 	// Resolve contato e "from" considerando JIDs LID (memoize para evitar resolver duas vezes)
@@ -657,6 +666,14 @@ func jidToPhoneNumberIfUser(j any) string {
 
 func isGroupJID(j types.JID) bool {
 	return strings.HasSuffix(j.Server, "g.us")
+}
+
+func isStatusBroadcastJID(j types.JID) bool {
+	return j.Server == types.BroadcastServer && j.User == types.StatusBroadcastJID.User
+}
+
+func isNewsletterJID(j types.JID) bool {
+	return j.Server == types.NewsletterServer
 }
 
 // isLIDJID reports whether a JID points to the Local ID (lid) server.

@@ -47,19 +47,25 @@ type ClientManager struct {
 	// always-online settings
 	alwaysOnline      bool
 	alwaysOnlineEvery time.Duration
+
+	// inbound filters
+	ignoreStatusBroadcast bool
+	ignoreNewsletters     bool
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string, ignoreStatusBroadcast, ignoreNewsletters bool) *ClientManager {
 	return &ClientManager{
-		clients:         make(map[string]*clientEntry),
-		sessionStore:    sessionStore,
-		webhookBase:     webhookBase,
-		defaultAudioPTT: defaultAudioPTT,
-		rejectCalls:     rejectCalls,
-		rejectMsg:       rejectMsg,
-		autoMarkRead:    autoMarkRead,
-		pnResolverURL:   pnResolverURL,
-		pnCache:         make(map[string]pnCacheItem),
+		clients:               make(map[string]*clientEntry),
+		sessionStore:          sessionStore,
+		webhookBase:           webhookBase,
+		defaultAudioPTT:       defaultAudioPTT,
+		rejectCalls:           rejectCalls,
+		rejectMsg:             rejectMsg,
+		autoMarkRead:          autoMarkRead,
+		pnResolverURL:         pnResolverURL,
+		pnCache:               make(map[string]pnCacheItem),
+		ignoreStatusBroadcast: ignoreStatusBroadcast,
+		ignoreNewsletters:     ignoreNewsletters,
 	}
 }
 

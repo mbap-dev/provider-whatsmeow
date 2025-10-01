@@ -33,7 +33,17 @@ func main() {
 	// for bootstrapping new sessions, keeping track of connected clients
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
-	clientManager := provider.NewClientManager(cfg.SessionStore, cfg.WebhookBase, cfg.AudioPTTDefault, cfg.RejectCalls, cfg.RejectCallsMessage, cfg.AutoMarkReadOnMessage, cfg.PNResolverURL)
+	clientManager := provider.NewClientManager(
+		cfg.SessionStore,
+		cfg.WebhookBase,
+		cfg.AudioPTTDefault,
+		cfg.RejectCalls,
+		cfg.RejectCallsMessage,
+		cfg.AutoMarkReadOnMessage,
+		cfg.PNResolverURL,
+		cfg.IgnoreStatusBroadcast,
+		cfg.IgnoreNewsletters,
+	)
 	if cfg.AlwaysOnline {
 		clientManager.EnableAlwaysOnline(time.Duration(cfg.AlwaysOnlineIntervalSeconds) * time.Second)
 	}

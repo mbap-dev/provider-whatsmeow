@@ -134,7 +134,6 @@ func (c *Consumer) Start(ctx context.Context) error {
 				return fmt.Errorf("AMQP deliveries channel closed")
 			}
 
-			// Rapidamente ignore payloads de status (não são mensagens a enviar)
 			var probe struct {
 				Payload map[string]any `json:"payload"`
 			}
@@ -143,6 +142,18 @@ func (c *Consumer) Start(ctx context.Context) error {
 					mid, _ := probe.Payload["message_id"].(string)
 					rid, _ := probe.Payload["recipient_id"].(string)
 					ilog.Debugf("skipping non-send payload status=%v message_id=%q recipient_id=%q", s, mid, rid)
+					continue
+				}
+				if _, ok := probe.Payload["statuses"]; ok {
+					ilog.Debugf("skipping cloud webhook payload: contains statuses[]")
+					continue
+				}
+				if _, ok := probe.Payload["object"]; ok {
+					ilog.Debugf("skipping cloud webhook payload: has object field")
+					continue
+				}
+				if _, ok := probe.Payload["entry"]; ok {
+					ilog.Debugf("skipping cloud webhook payload: has entry field")
 					continue
 				}
 			}

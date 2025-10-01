@@ -42,6 +42,8 @@ curl http://localhost:8080/sessions/main/qr
   - Quando a mensagem é enviada, um webhook de `statuses` (status `sent`) é publicado para o UnoAPI informando o envio dessa resposta.
 ## Variáveis de ambiente úteis
 - `AUDIO_PTT_DEFAULT` (bool, default `true`)
+- `IGNORE_STATUS_BROADCAST` (bool, default `true`) — ignora mensagens de "Atualizações/Status" (status@broadcast) recebidas; defina `false` para processar essas mensagens normalmente.
+- `IGNORE_NEWSLETTERS` (bool, default `true`) — ignora mensagens de canais/Newsletters (servidor `newsletter`); defina `false` para processá-las.
  
  
 

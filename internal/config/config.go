@@ -61,6 +61,13 @@ type Config struct {
 	// AlwaysOnlineIntervalSeconds controls how often to refresh presence.
 	// Default: 60 seconds.
 	AlwaysOnlineIntervalSeconds int
+
+	// IgnoreStatusBroadcast drops incoming WhatsApp Status (status@broadcast) messages.
+	// Default: true.
+	IgnoreStatusBroadcast bool
+	// IgnoreNewsletters drops incoming Newsletter messages (server=newsletter).
+	// Default: true.
+	IgnoreNewsletters bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -104,6 +111,10 @@ func NewConfig() *Config {
 	if cfg.AlwaysOnlineIntervalSeconds == 0 {
 		cfg.AlwaysOnlineIntervalSeconds = 60
 	}
+
+	// Inbound filters (defaults: ignore both)
+	cfg.IgnoreStatusBroadcast = getEnvBool("IGNORE_STATUS_BROADCAST", true)
+	cfg.IgnoreNewsletters = getEnvBool("IGNORE_NEWSLETTERS", true)
 
 	return cfg
 }

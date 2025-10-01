@@ -250,6 +250,17 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	case msg.GetContactMessage() != nil:
 		c := msg.GetContactMessage()
 		wireMsg["type"] = "contacts"
+		// Debug raw inbound vCard to help diagnose WA Business contacts
+		{
+			entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+			v := c.GetVcard()
+			snippet := v
+			if len(snippet) > 2000 {
+				snippet = snippet[:2000] + "...(truncated)"
+			}
+			entry.Debug("in_contact_raw display_name=%q vcard_len=%d vcard=%q", strings.TrimSpace(c.GetDisplayName()), len(v), snippet)
+		}
+
 		name, phones := parseVCard(c.GetVcard())
 		if name == "" {
 			name = strings.TrimSpace(c.GetDisplayName())
@@ -257,17 +268,35 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		if len(phones) == 0 {
 			phones = []map[string]any{}
 		}
+		{
+			entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+			entry.Debug("in_contact_parsed name=%q phones=%v", name, phones)
+		}
 		entryC := map[string]any{
 			"name":   map[string]any{"formatted_name": name},
 			"phones": phones,
 		}
 		wireMsg["contacts"] = []any{entryC}
+		{
+			entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+			entry.Debug("in_contact_wire contacts=%v", wireMsg["contacts"])
+		}
 
 	case msg.GetContactsArrayMessage() != nil:
 		arr := msg.GetContactsArrayMessage()
 		wireMsg["type"] = "contacts"
 		var list []any
-		for _, cm := range arr.GetContacts() {
+		for i, cm := range arr.GetContacts() {
+			// Debug raw for each entry
+			{
+				entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+				v := cm.GetVcard()
+				snippet := v
+				if len(snippet) > 2000 {
+					snippet = snippet[:2000] + "...(truncated)"
+				}
+				entry.Debug("in_contacts_raw[%d] display_name=%q vcard_len=%d vcard=%q", i, strings.TrimSpace(cm.GetDisplayName()), len(v), snippet)
+			}
 			cn := strings.TrimSpace(cm.GetDisplayName())
 			name, phones := parseVCard(cm.GetVcard())
 			if name == "" {
@@ -275,6 +304,10 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			}
 			if len(phones) == 0 {
 				phones = []map[string]any{}
+			}
+			{
+				entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+				entry.Debug("in_contacts_parsed[%d] name=%q phones=%v", i, name, phones)
 			}
 			list = append(list, map[string]any{
 				"name":   map[string]any{"formatted_name": name},
@@ -285,6 +318,10 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			return nil
 		}
 		wireMsg["contacts"] = list
+		{
+			entry := log.WithSession(sessionID).WithMessageID(e.Info.ID)
+			entry.Debug("in_contacts_wire contacts=%v", wireMsg["contacts"])
+		}
 
 	case msg.GetReactionMessage() != nil:
 		r := msg.GetReactionMessage()

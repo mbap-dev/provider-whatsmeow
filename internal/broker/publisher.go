@@ -61,9 +61,11 @@ func (p *WebhookPublisher) ensure() error {
 		return fmt.Errorf("open channel: %w", err)
 	}
 	// Ensure exchange exists
+	// UnoAPI expects webhooks on the bridge exchange (direct type),
+	// routing key is the session phone (digits only).
 	if err := ch.ExchangeDeclare(
 		p.exchange,
-		"topic",
+		"direct",
 		true,  // durable
 		false, // autoDelete
 		false, // internal

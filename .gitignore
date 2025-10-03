@@ -3,3 +3,4 @@
 /.gomodcache/
 /.gocache/
 /bin/whatsmeow-adapter
+/.gopath/

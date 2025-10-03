@@ -2,6 +2,7 @@
 
 Microserviço **Go** que:
 - consome mensagens **AMQP/RabbitMQ** (rota `provider.whatsmeow.*`, fila `provider.whatsmeow` criada automaticamente);
+- publica webhooks no exchange de bridge do UnoAPI (default `unoapi.brigde`, tipo `direct`), com routing key igual ao número da sessão (somente dígitos) e corpo `{ "payload": <cloud_api_webhook_payload> }`.
 - envia via **WhatsMeow** (WhatsApp MD);
 - publica **webhooks** (Cloud-like) se `WEBHOOK_BASE` estiver definido;
 - expõe HTTP para gerenciar sessões e health checks.

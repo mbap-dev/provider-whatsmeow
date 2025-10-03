@@ -172,6 +172,9 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 	contactPhone := resolveDisplay(chatJID)
 	if isGroupJID(chatJID) && (senderJID.User != "") {
+		// For message routing/from field we still use the participant.
+		// But for contact entry in payload, Uno expects wa_id to match the
+		// conversation (group) id. We'll set wa_id below accordingly.
 		contactPhone = resolveDisplay(senderJID)
 	}
 	fromField := phone
@@ -500,12 +503,16 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	} else {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_not_found chat=%s sender=%s is_group=%t", chatJID.String(), senderJID.String(), isGroupJID(chatJID))
 	}
-	contactObj := map[string]any{
-		"profile": profile,
-		"wa_id":   contactPhone,
-	}
+	contactObj := map[string]any{"profile": profile}
 	if isGroupJID(chatJID) {
+		// Uno identifica contatos de grupo pelo JID do grupo.
+		contactObj["wa_id"] = chatJID.String()
 		contactObj["group_id"] = chatJID.String()
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
+			"contact_group built wa_id=%s name=%q", chatJID.String(), dispName,
+		)
+	} else {
+		contactObj["wa_id"] = contactPhone
 	}
 
 	payload := cloudEnvelope(phone)
@@ -748,7 +755,12 @@ func jidDisplayMaybeResolve(sessionID string, cli *whatsmeow.Client, j types.JID
 		return j.User
 	}
 	if !isLIDJID(j) {
-		return digitsOnly(j.User)
+		// Strip device suffix (":<device>") from AD JIDs before deriving phone.
+		user := j.User
+		if i := strings.Index(user, ":"); i >= 0 {
+			user = user[:i]
+		}
+		return digitsOnly(user)
 	}
 
 	// Try to resolve LID -> AD (s.whatsapp.net)

@@ -489,13 +489,16 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 	// Monta profile com name e, se disponível, avatar (Cloud-like)
 	profile := map[string]any{"name": dispName}
-	if av, ok := getAvatarURL(client, func() types.JID {
+	if av, ok := getAvatarURL(sessionID, client, func() types.JID {
 		if isGroupJID(chatJID) {
 			return chatJID
 		}
 		return chatJID
 	}()); ok && strings.TrimSpace(av) != "" {
 		profile["picture"] = av
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_set url=%s chat=%s sender=%s", av, chatJID.String(), senderJID.String())
+	} else {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_not_found chat=%s sender=%s is_group=%t", chatJID.String(), senderJID.String(), isGroupJID(chatJID))
 	}
 	contactObj := map[string]any{
 		"profile": profile,
@@ -1017,44 +1020,53 @@ func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 
 // getAvatarURL tenta obter a URL da foto de perfil (contato ou grupo).
 // Usa a API pública do whatsmeow; se não disponível/erro, retorna false.
-func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
+func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (string, bool) {
 	if cli == nil || jid == (types.JID{}) {
 		return "", false
 	}
 	// Cache first
 	if u, ok := cacheGetAvatar(jid.String()); ok {
+		log.WithSession(sessionID).Debug("avatar_cache_hit jid=%s url=%s", jid.String(), u)
 		return u, true
 	}
 	// Try a few combinations (prefer preview for speed)
-	try := func(p *whatsmeow.GetProfilePictureParams) (string, bool) {
-		if info, err := cli.GetProfilePictureInfo(jid, p); err == nil && info != nil && strings.TrimSpace(info.URL) != "" {
+	try := func(label string, p *whatsmeow.GetProfilePictureParams) (string, bool) {
+		info, err := cli.GetProfilePictureInfo(jid, p)
+		if err != nil {
+			log.WithSession(sessionID).Debug("avatar_try label=%s jid=%s err=%v", label, jid.String(), err)
+			return "", false
+		}
+		if info != nil && strings.TrimSpace(info.URL) != "" {
 			url := strings.TrimSpace(info.URL)
 			cachePutAvatar(jid.String(), url)
+			log.WithSession(sessionID).Debug("avatar_success label=%s jid=%s url=%s", label, jid.String(), url)
 			return url, true
 		}
+		log.WithSession(sessionID).Debug("avatar_try_empty label=%s jid=%s", label, jid.String())
 		return "", false
 	}
 	// Try immediate attempts
-	if url, ok := try(nil); ok {
+	if url, ok := try("default", nil); ok {
 		return url, true
 	}
-	if url, ok := try(&whatsmeow.GetProfilePictureParams{Preview: true}); ok {
+	if url, ok := try("preview", &whatsmeow.GetProfilePictureParams{Preview: true}); ok {
 		return url, true
 	}
 	// Communities (not regular groups) require a different parameter
 	if isCommunityJID(jid) {
-		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true, Preview: true}); ok {
+		if url, ok := try("community_preview", &whatsmeow.GetProfilePictureParams{IsCommunity: true, Preview: true}); ok {
 			return url, true
 		}
-		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true}); ok {
+		if url, ok := try("community", &whatsmeow.GetProfilePictureParams{IsCommunity: true}); ok {
 			return url, true
 		}
 	}
 	// One quick retry after a short delay in case metadata just loaded
 	time.Sleep(150 * time.Millisecond)
-	if url, ok := try(&whatsmeow.GetProfilePictureParams{Preview: true}); ok {
+	if url, ok := try("preview_retry", &whatsmeow.GetProfilePictureParams{Preview: true}); ok {
 		return url, true
 	}
+	log.WithSession(sessionID).Debug("avatar_not_available jid=%s", jid.String())
 	return "", false
 }
 

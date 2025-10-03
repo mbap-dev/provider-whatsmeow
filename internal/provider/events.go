@@ -504,15 +504,22 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_not_found chat=%s sender=%s is_group=%t", chatJID.String(), senderJID.String(), isGroupJID(chatJID))
 	}
 	contactObj := map[string]any{"profile": profile}
+	// wa_id must always be the participant phone (digits) for Chatwoot to build a Contact with E.164
+	contactObj["wa_id"] = contactPhone
 	if isGroupJID(chatJID) {
-		// Uno identifica contatos de grupo pelo JID do grupo.
-		contactObj["wa_id"] = chatJID.String()
+		// Group metadata Chatwoot expects to switch the conversation context to group
 		contactObj["group_id"] = chatJID.String()
+		contactObj["group_subject"] = dispName
+		if pic, _ := profile["picture"].(string); strings.TrimSpace(pic) != "" {
+			contactObj["group_picture"] = pic
+		}
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
-			"contact_group built wa_id=%s name=%q", chatJID.String(), dispName,
+			"contact_group built group_id=%s subject=%q wa_id=%s", chatJID.String(), dispName, contactPhone,
 		)
 	} else {
-		contactObj["wa_id"] = contactPhone
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
+			"contact_user built wa_id=%s name=%q", contactPhone, dispName,
+		)
 	}
 
 	payload := cloudEnvelope(phone)

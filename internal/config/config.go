@@ -24,6 +24,9 @@ type Config struct {
 	// consumed by this service.  If empty, a server-generated name is
 	// used.
 	AMQPQueue string
+	// AMQPWebhookExchange is the exchange to which Cloud webhook payloads
+	// will be published for UnoAPI to consume. Default: "unoapi.broker".
+	AMQPWebhookExchange string
 	// WebhookBase is the base URL to which webhook payloads should be
 	// delivered.  If left empty the service will not emit webhooks.
 	WebhookBase string
@@ -79,6 +82,7 @@ func NewConfig() *Config {
 	cfg.AMQPExchange = getEnv("AMQP_EXCHANGE", "unoapi.outgoing")
 	cfg.AMQPBinding = getEnv("AMQP_BINDING", "provider.whatsmeow.*")
 	cfg.AMQPQueue = getEnv("AMQP_QUEUE", "outgoing.whatsmeow")
+	cfg.AMQPWebhookExchange = getEnv("AMQP_WEBHOOK_EXCHANGE", "unoapi.broker")
 	cfg.WebhookBase = getEnv("WEBHOOK_BASE", "http://localhost/webhooks/whatsapp")
 	cfg.SessionStore = getEnv("SESSION_STORE", "./state/whatsmeow")
 	cfg.HTTPAddr = getEnv("HTTP_ADDR", ":8080")

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
+	broker "your.org/provider-whatsmeow/internal/broker"
 	"your.org/provider-whatsmeow/internal/config"
 	httpserver "your.org/provider-whatsmeow/internal/http"
 	ilog "your.org/provider-whatsmeow/internal/log"
@@ -64,11 +65,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure the exchange and durable queue exist so that publishers can
-	// send messages even if the adapter is temporarily offline.
-	if err := amqpconsumer.InitExchange(cfg); err != nil {
-		ilog.Errorf("failed to initialize AMQP exchange: %v", err)
-		os.Exit(1)
+	// Initialize AMQP webhook publisher (UnoAPI broker)
+	if err := broker.InitWebhookPublisher(cfg); err != nil {
+		ilog.Errorf("failed to initialize AMQP webhook publisher: %v", err)
+		// Do not exit: keep running; HTTP fallback may be used.
 	}
 
 	// Initialize the AMQP consumer.  The consumer will connect to the

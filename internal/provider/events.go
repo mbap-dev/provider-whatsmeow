@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	amqppub "your.org/provider-whatsmeow/internal/broker"
 	"your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/status"
 
@@ -1125,29 +1126,33 @@ func (m *ClientManager) markReadEvent(sessionID string, client *whatsmeow.Client
 
 func (m *ClientManager) deliverWebhook(sessionID string, payload any) error {
 	entry := log.WithSession(sessionID)
+	rk := normalizePhone(sessionID)
+	// Prefer AMQP publication to UnoAPI broker; fallback to HTTP if AMQP not initialised
+	if err := amqppub.PublishWebhook(rk, payload); err == nil {
+		entry.Info("webhook amqp publish ok rk=%s", rk)
+		return nil
+	} else {
+		entry.Error("webhook amqp publish error: %v", err)
+	}
 
+	// HTTP fallback when AMQP not available
 	if m.webhookBase == "" {
 		entry.Info("webhook disabled (WEBHOOK_BASE empty), dropping")
 		return nil
 	}
-
 	url := strings.TrimRight(m.webhookBase, "/") + "/" + sessionID
-
 	body, err := json.Marshal(payload)
 	if err != nil {
 		entry.Error("webhook marshal error: %v", err)
 		return err
 	}
-
 	entry.Info("webhook post start url=%s bytes=%d", url, len(body))
-
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		entry.Error("webhook build request error: %v", err)
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	go func() {
 		resp, err := webhookHTTPClient.Do(req.WithContext(context.Background()))
 		if err != nil {
@@ -1155,18 +1160,15 @@ func (m *ClientManager) deliverWebhook(sessionID string, payload any) error {
 			return
 		}
 		defer resp.Body.Close()
-
 		snippet := ""
 		if b, _ := io.ReadAll(io.LimitReader(resp.Body, 512)); len(b) > 0 {
 			snippet = string(b)
 		}
-
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			entry.Info("webhook post done status=%d", resp.StatusCode)
 		} else {
 			entry.Error("webhook post non-2xx status=%d body=%q", resp.StatusCode, snippet)
 		}
 	}()
-
 	return nil
 }

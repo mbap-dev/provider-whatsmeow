@@ -705,6 +705,15 @@ func isGroupJID(j types.JID) bool {
 	return strings.HasSuffix(j.Server, "g.us")
 }
 
+// isCommunityJID reports whether the JID belongs to a Community entity.
+// Communities are not the same as regular groups (g.us) and require
+// different query parameters for profile picture lookups in whatsmeow.
+// Keep this conservative to avoid breaking regular group lookups.
+func isCommunityJID(j types.JID) bool {
+	// Known server for communities in WhatsApp.
+	return j.Server == "communities"
+}
+
 func isStatusBroadcastJID(j types.JID) bool {
 	return j.Server == types.BroadcastServer && j.User == types.StatusBroadcastJID.User
 }
@@ -1032,7 +1041,8 @@ func getAvatarURL(cli *whatsmeow.Client, jid types.JID) (string, bool) {
 	if url, ok := try(&whatsmeow.GetProfilePictureParams{Preview: true}); ok {
 		return url, true
 	}
-	if isGroupJID(jid) {
+	// Communities (not regular groups) require a different parameter
+	if isCommunityJID(jid) {
 		if url, ok := try(&whatsmeow.GetProfilePictureParams{IsCommunity: true, Preview: true}); ok {
 			return url, true
 		}

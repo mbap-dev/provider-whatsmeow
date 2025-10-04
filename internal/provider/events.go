@@ -142,6 +142,34 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		return nil
 	}
 
+	// Unwrap wrapper envelopes (ephemeral/view-once/documentWithCaption) to reach the real content,
+	unwrap := func(mg *waE2E.Message) *waE2E.Message {
+		// Try a few layers defensively
+		for i := 0; i < 4 && mg != nil; i++ {
+			switch {
+			case mg.GetViewOnceMessage() != nil && mg.GetViewOnceMessage().GetMessage() != nil:
+				mg = mg.GetViewOnceMessage().GetMessage()
+				continue
+			case mg.GetViewOnceMessageV2() != nil && mg.GetViewOnceMessageV2().GetMessage() != nil:
+				mg = mg.GetViewOnceMessageV2().GetMessage()
+				continue
+			case mg.GetViewOnceMessageV2Extension() != nil && mg.GetViewOnceMessageV2Extension().GetMessage() != nil:
+				mg = mg.GetViewOnceMessageV2Extension().GetMessage()
+				continue
+			case mg.GetEphemeralMessage() != nil && mg.GetEphemeralMessage().GetMessage() != nil:
+				mg = mg.GetEphemeralMessage().GetMessage()
+				continue
+			case mg.GetDocumentWithCaptionMessage() != nil && mg.GetDocumentWithCaptionMessage().GetMessage() != nil:
+				mg = mg.GetDocumentWithCaptionMessage().GetMessage()
+				continue
+			default:
+				return mg
+			}
+		}
+		return mg
+	}
+	msg = unwrap(msg)
+
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender

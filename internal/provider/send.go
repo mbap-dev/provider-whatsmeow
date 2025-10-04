@@ -228,10 +228,15 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				if msg.Context != nil {
 					qt = strings.TrimSpace(msg.Context.QuotedText)
 				}
-				// Only include QuotedMessage when we have a non-empty snippet.
-				// Sending an empty quoted message leads to an empty quote bubble in WA.
+				// Include quoted content when available; otherwise include empty to trigger reply UI (Wuzapi behavior)
 				if qt != "" {
 					ci.QuotedMessage = &goE2E.Message{Conversation: proto.String(qt)}
+				} else if ci.QuotedMessage == nil {
+					ci.QuotedMessage = &goE2E.Message{Conversation: proto.String("")}
+				}
+				// Ensure participant presence for 1:1 replies. For groups, if not provided by client, leave empty (cannot infer safely without context).
+				if (ci.Participant == nil || *ci.Participant == "") && !strings.HasSuffix(jid.Server, "g.us") {
+					ci.Participant = proto.String(jid.String())
 				}
 			}
 			if len(mentioned) > 0 {

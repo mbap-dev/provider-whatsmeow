@@ -189,6 +189,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				stanzaID = msg.Context.MessageID
 			}
 		}
+		entry.Debug("reply_ctx_select stanza_id=%q ctx_in={id:%q message_id:%q stanzaId:%q stanza_id:%q participant:%q}", stanzaID, msg.Context.GetID(), msg.Context.GetMessageID(), msg.Context.GetStanzaId(), msg.Context.GetStanza_id(), msg.Context.Participant)
 		var mList []string
 		if msg.Context != nil {
 			mList = append(mList, msg.Context.MentionedJid...)
@@ -225,6 +226,17 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				ci.MentionedJID = mentioned
 			}
 			ctxInfo = ci
+			entry.Debug("reply_ctx_built stanza_id=%q participant=%q mentioned=%d quoted_text_len=%d dest_is_group=%t dest_jid=%s", stanzaID, func() string {
+				if ci.Participant != nil {
+					return *ci.Participant
+				}
+				return ""
+			}(), len(mentioned), func() int {
+				if msg.Context != nil {
+					return len(strings.TrimSpace(msg.Context.QuotedText))
+				}
+				return 0
+			}(), strings.HasSuffix(jid.Server, "g.us"), jid.String())
 		}
 	}
 

@@ -228,7 +228,11 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				if msg.Context != nil {
 					qt = strings.TrimSpace(msg.Context.QuotedText)
 				}
-				ci.QuotedMessage = &goE2E.Message{Conversation: proto.String(qt)}
+				// Only include QuotedMessage when we have a non-empty snippet.
+				// Sending an empty quoted message leads to an empty quote bubble in WA.
+				if qt != "" {
+					ci.QuotedMessage = &goE2E.Message{Conversation: proto.String(qt)}
+				}
 			}
 			if len(mentioned) > 0 {
 				ci.MentionedJID = mentioned

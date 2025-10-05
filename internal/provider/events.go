@@ -982,21 +982,29 @@ func messageContextInfo(m *waE2E.Message) map[string]any {
 	if ci == nil {
 		return nil
 	}
-	stanzaID := strings.TrimSpace(ci.GetStanzaID())
-	if stanzaID == "" && ci.GetQuotedMessage() != nil {
-		// se veio quotedMessage mas sem stanzaId, ainda assim envia context pra compat
-		return map[string]any{
-			"message_id": stanzaID,
-			"id":         stanzaID,
-		}
+
+	ctx := make(map[string]any)
+	if stanzaID := strings.TrimSpace(ci.GetStanzaID()); stanzaID != "" {
+		ctx["message_id"] = stanzaID
+		ctx["id"] = stanzaID
 	}
-	if stanzaID == "" {
+
+	if ci.GetIsForwarded() {
+		ctx["forwarded"] = true
+	}
+
+	if len(ctx) == 0 {
+		if ci.GetQuotedMessage() != nil {
+			// se veio quotedMessage mas sem stanzaId, ainda assim envia context pra compat
+			return map[string]any{
+				"message_id": "",
+				"id":         "",
+			}
+		}
 		return nil
 	}
-	return map[string]any{
-		"message_id": stanzaID,
-		"id":         stanzaID,
-	}
+
+	return ctx
 }
 
 func mapReceiptStatus(t events.ReceiptType) string {

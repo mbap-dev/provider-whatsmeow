@@ -13,7 +13,7 @@ require (
 	github.com/rabbitmq/amqp091-go v1.10.0
 	github.com/redis/go-redis/v9 v9.15.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	go.mau.fi/whatsmeow v0.0.0-20251003094735-cec60d440b19
+	go.mau.fi/whatsmeow v0.0.0-20251008162918-54a1f619e047
 	google.golang.org/protobuf v1.36.10
 	layeh.com/gopus v0.0.0-20210501142526-1ee02d434e32
 	modernc.org/sqlite v1.38.2

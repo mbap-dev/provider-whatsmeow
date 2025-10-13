@@ -89,11 +89,18 @@ func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.
 	to := callCreator
 	shouldSend := true
 
-	// Strip device suffix if present (e.g., "1234567890:10" -> "1234567890")
-	// This is important for companion device calls
+	// Strip device suffix if present (e.g., "1234567890:10@s.whatsapp.net" -> "1234567890@s.whatsapp.net")
+	// This is important for companion device calls - we need to create a new JID without the device part
 	if strings.Contains(to.User, ":") {
 		parts := strings.Split(to.User, ":")
-		to.User = parts[0]
+		// Create a new JID with the user part without device suffix
+		to = types.JID{
+			User:       parts[0],
+			RawAgent:   to.RawAgent,
+			Device:     0, // No device suffix
+			Integrator: to.Integrator,
+			Server:     to.Server,
+		}
 		log.WithSession(sessionID).Info("call_reply_strip_device original=%s stripped=%s", callCreator.String(), to.String())
 	}
 

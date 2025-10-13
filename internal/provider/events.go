@@ -96,17 +96,30 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 				if msgText != "" {
 					// Support literal \n already handled in config; just send
 					wire := &waE2E.Message{Conversation: proto.String(msgText)}
-					// Send to the caller JID (non-AD if applicable)
+					// Resolve LID to AD if necessary to avoid bans
 					to := e.CallCreator
-					resp, err := client.SendMessage(context.Background(), to, wire)
-					if err != nil {
-						log.WithSession(sessionID).Error("call reply send error: %v", err)
-					} else {
-						// Emit webhook 'message' (outgoing) to UnoAPI
-						_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
-						// Emit webhook 'sent' status to UnoAPI
-						_ = m.emitCloudSent(sessionID, to, resp.ID)
-						log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
+					shouldSend := true
+					if isLIDJID(to) {
+						if resolved, ok := resolveLIDToAD(sessionID, client, to, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
+							to = resolved
+							log.WithSession(sessionID).Info("call_reply_lid_resolved from=%s to=%s", e.CallCreator.String(), to.String())
+						} else {
+							log.WithSession(sessionID).Error("call_reply_lid_resolve_failed from=%s, skipping message send", e.CallCreator.String())
+							// Skip sending message if we can't resolve LID to avoid bans
+							shouldSend = false
+						}
+					}
+					if shouldSend {
+						resp, err := client.SendMessage(context.Background(), to, wire)
+						if err != nil {
+							log.WithSession(sessionID).Error("call reply send error: %v", err)
+						} else {
+							// Emit webhook 'message' (outgoing) to UnoAPI
+							_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
+							// Emit webhook 'sent' status to UnoAPI
+							_ = m.emitCloudSent(sessionID, to, resp.ID)
+							log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
+						}
 					}
 				}
 			}

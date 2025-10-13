@@ -62,6 +62,66 @@ func cloudMediaID(phone, msgID string) string {
 	return p + "/" + msgID
 }
 
+// handleCallRejection rejects an incoming call and optionally sends a reply message.
+// It handles both LID and AD JIDs correctly to avoid bans.
+func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.Client, callCreator types.JID, callID string) {
+	if !m.rejectCalls {
+		return
+	}
+
+	// Reject the call
+	if err := client.RejectCall(callCreator, callID); err != nil {
+		log.WithSession(sessionID).Error("call reject error: %v", err)
+	} else {
+		log.WithSession(sessionID).Info("evt=call_reject from=%s call_id=%s", callCreator.String(), callID)
+	}
+
+	// Optionally send a message to the caller
+	msgText := strings.TrimSpace(m.rejectMsg)
+	if msgText == "" {
+		return
+	}
+
+	// Support literal \n already handled in config; just send
+	wire := &waE2E.Message{Conversation: proto.String(msgText)}
+
+	// Resolve LID to AD if necessary to avoid bans
+	to := callCreator
+	shouldSend := true
+
+	// Strip device suffix if present (e.g., "1234567890:10" -> "1234567890")
+	// This is important for companion device calls
+	if strings.Contains(to.User, ":") {
+		parts := strings.Split(to.User, ":")
+		to.User = parts[0]
+		log.WithSession(sessionID).Info("call_reply_strip_device original=%s stripped=%s", callCreator.String(), to.String())
+	}
+
+	if isLIDJID(to) {
+		if resolved, ok := resolveLIDToAD(sessionID, client, to, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
+			to = resolved
+			log.WithSession(sessionID).Info("call_reply_lid_resolved from=%s to=%s", callCreator.String(), to.String())
+		} else {
+			log.WithSession(sessionID).Error("call_reply_lid_resolve_failed from=%s, skipping message send", callCreator.String())
+			// Skip sending message if we can't resolve LID to avoid bans
+			shouldSend = false
+		}
+	}
+
+	if shouldSend {
+		resp, err := client.SendMessage(context.Background(), to, wire)
+		if err != nil {
+			log.WithSession(sessionID).Error("call reply send error: %v", err)
+		} else {
+			// Emit webhook 'message' (outgoing) to UnoAPI
+			_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
+			// Emit webhook 'sent' status to UnoAPI
+			_ = m.emitCloudSent(sessionID, to, resp.ID)
+			log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
+		}
+	}
+}
+
 func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionID string) {
 	if client == nil {
 		return
@@ -85,44 +145,21 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			m.stopAlwaysOnline(sessionID)
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
-			if m.rejectCalls {
-				if err := client.RejectCall(e.CallCreator, e.CallID); err != nil {
-					log.WithSession(sessionID).Error("call reject error: %v", err)
-				} else {
-					log.WithSession(sessionID).Info("evt=call_reject from=%s call_id=%s", e.CallCreator.String(), e.CallID)
-				}
-				// Optionally send a message to the caller
-				msgText := strings.TrimSpace(m.rejectMsg)
-				if msgText != "" {
-					// Support literal \n already handled in config; just send
-					wire := &waE2E.Message{Conversation: proto.String(msgText)}
-					// Resolve LID to AD if necessary to avoid bans
-					to := e.CallCreator
-					shouldSend := true
-					if isLIDJID(to) {
-						if resolved, ok := resolveLIDToAD(sessionID, client, to, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
-							to = resolved
-							log.WithSession(sessionID).Info("call_reply_lid_resolved from=%s to=%s", e.CallCreator.String(), to.String())
-						} else {
-							log.WithSession(sessionID).Error("call_reply_lid_resolve_failed from=%s, skipping message send", e.CallCreator.String())
-							// Skip sending message if we can't resolve LID to avoid bans
-							shouldSend = false
-						}
-					}
-					if shouldSend {
-						resp, err := client.SendMessage(context.Background(), to, wire)
-						if err != nil {
-							log.WithSession(sessionID).Error("call reply send error: %v", err)
-						} else {
-							// Emit webhook 'message' (outgoing) to UnoAPI
-							_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
-							// Emit webhook 'sent' status to UnoAPI
-							_ = m.emitCloudSent(sessionID, to, resp.ID)
-							log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
-						}
-					}
-				}
-			}
+			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s", e.CallCreator.String(), e.CallID)
+			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
+		case *events.CallOfferNotice:
+			// Group calls or calls from companion devices
+			log.WithSession(sessionID).Info("evt=call_offer_notice from=%s call_id=%s media=%s type=%s", e.CallCreator.String(), e.CallID, e.Media, e.Type)
+			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
+		case *events.CallAccept:
+			// Log when a call is accepted (might be from another device)
+			log.WithSession(sessionID).Info("evt=call_accept from=%s call_id=%s", e.CallCreator.String(), e.CallID)
+		case *events.CallTerminate:
+			// Log when a call terminates
+			log.WithSession(sessionID).Info("evt=call_terminate call_id=%s reason=%s", e.CallID, e.Reason)
+		case *events.UnknownCallEvent:
+			// Log unknown call events for debugging
+			log.WithSession(sessionID).Info("evt=unknown_call_event node=%v", e.Node)
 		case *events.AppStateSyncComplete:
 			if e.Name == "critical_block" || e.Name == "regular_high" {
 				_ = client.SendPresence(types.PresenceAvailable)

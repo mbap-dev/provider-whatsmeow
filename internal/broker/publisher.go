@@ -110,5 +110,6 @@ func PublishWebhook(routingKey string, cloudPayload any) error {
 		return fmt.Errorf("publish: %w", err)
 	}
 	ilog.Debugf("amqp webhook published rk=%s bytes=%d", routingKey, len(body))
+	ilog.Infof("amqp webhook published successfully rk=%s bytes=%d", routingKey, len(body))
 	return nil
 }

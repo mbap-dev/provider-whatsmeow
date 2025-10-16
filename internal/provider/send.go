@@ -732,45 +732,63 @@ func convertMP3ToOGG(data []byte) ([]byte, uint32, []byte, error) {
 
 // buildWaveform computes a 32-bar WhatsApp waveform (0..31) from PCM samples
 func buildWaveform(samples []int16) []byte {
-	const bars = 32
+	const bars = 64
 	if len(samples) == 0 {
 		return nil
 	}
-	seg := len(samples) / bars
-	if seg == 0 {
-		seg = len(samples)
+	blockSize := len(samples) / bars
+	if blockSize == 0 {
+		blockSize = 1
 	}
-	wf := make([]byte, bars)
+	filtered := make([]float64, bars)
+	var maxAmp float64
+
 	for i := 0; i < bars; i++ {
-		start := i * seg
-		end := start + seg
+		start := i * blockSize
+		end := start + blockSize
+
 		if start >= len(samples) {
-			wf[i] = 0
+			filtered[i] = 0
 			continue
 		}
 		if end > len(samples) {
 			end = len(samples)
 		}
-		var maxAbs int32
+
+		var sum float64
+		chunkLen := end - start
 		for _, s := range samples[start:end] {
-			v := int32(s)
+			v := float64(s)
 			if v < 0 {
 				v = -v
 			}
-			if v > maxAbs {
-				maxAbs = v
-			}
+			sum += v
 		}
-		level := int(math.Round(float64(maxAbs) / 32767.0 * 31.0))
-		if level < 0 {
-			level = 0
+		var avg float64
+		if chunkLen > 0 {
+			avg = sum / float64(chunkLen)
 		}
-		if level > 31 {
-			level = 31
+		filtered[i] = avg
+		if avg > maxAmp {
+			maxAmp = avg
 		}
-		wf[i] = byte(level)
 	}
-	return wf
+	out := make([]byte, bars)
+	if maxAmp == 0 {
+		return out
+	}
+	for i := 0; i < bars; i++ {
+		val := (filtered[i] / maxAmp) * 100.0
+		if val < 0 {
+			val = 0
+		}
+		if val > 100 {
+			val = 100
+		}
+		out[i] = byte(math.Round(val))
+	}
+
+	return out
 }
 
 // bytesToInt16 converts little-endian bytes into int16 samples.

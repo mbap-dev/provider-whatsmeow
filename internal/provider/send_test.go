@@ -60,15 +60,18 @@ func TestDigitsOnly(t *testing.T) {
 }
 
 func TestBuildWaveformBounds(t *testing.T) {
-	// 1 second of silence at 16kHz
+	// 1 segundo de silêncio a 16 kHz
 	samples := make([]int16, 16000)
 	wf := buildWaveform(samples)
-	if len(wf) != 32 {
-		t.Fatalf("waveform length = %d", len(wf))
+	if len(wf) != 64 {
+		t.Fatalf("waveform length = %d, want 64", len(wf))
 	}
 	for i, v := range wf {
-		if v > 31 {
-			t.Fatalf("wf[%d]=%d >31", i, v)
+		if v > 100 {
+			t.Fatalf("wf[%d]=%d > 100", i, v)
+		}
+		if v < 0 {
+			t.Fatalf("wf[%d]=%d < 0", i, v)
 		}
 	}
 }

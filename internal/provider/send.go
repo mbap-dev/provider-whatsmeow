@@ -622,25 +622,6 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 }
 
-func makeWaveform(seconds uint32) []byte {
-	const n = 32
-	wf := make([]byte, n)
-	minA, maxA := 6.0, 31.0
-	for i := 0; i < n; i++ {
-		phase := 2.0 * math.Pi * float64(i) / float64(n)
-		s := (math.Sin(phase) + 1.0) / 2.0
-		v := minA + s*(maxA-minA)
-		if v < 0 {
-			v = 0
-		}
-		if v > 31 {
-			v = 31
-		}
-		wf[i] = byte(int(v + 0.5))
-	}
-	return wf
-}
-
 const (
 	targetSampleRate = 16000
 	opusFrameMs      = 20

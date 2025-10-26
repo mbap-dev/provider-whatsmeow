@@ -15,6 +15,7 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/status"
 )
 
@@ -337,6 +338,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	if cli.Store != nil && cli.Store.ID != nil {
 		// Load per-session overrides (best-effort) before registering handlers
 		m.loadSessionOverrides(sessionID)
+		m.logSessionConfig(sessionID)
 
 		// handlers (eventos → webhook)
 		m.registerEventHandlers(cli, sessionID)
@@ -370,6 +372,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 
 	// Load per-session overrides (best-effort) before registering handlers
 	m.loadSessionOverrides(sessionID)
+	m.logSessionConfig(sessionID)
 
 	// handlers (eventos → webhook)
 	m.registerEventHandlers(cli, sessionID)
@@ -393,6 +396,59 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	}()
 
 	return cli, nil
+}
+
+func (m *ClientManager) logSessionConfig(sessionID string) {
+	entry := ilog.WithSession(sessionID)
+	rc := m.getRejectCalls(sessionID)
+	msg := strings.TrimSpace(m.getRejectMsg(sessionID))
+	amr := m.getAutoMarkRead(sessionID)
+	isb := m.getIgnoreStatusBroadcast(sessionID)
+	inl := m.getIgnoreNewsletters(sessionID)
+	// Resolve always-online effective
+	should := m.alwaysOnline
+	interval := m.alwaysOnlineEvery
+	if ov, ok := m.overrides[sessionID]; ok {
+		if ov.alwaysOnline != nil {
+			should = *ov.alwaysOnline
+		}
+		if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
+			interval = *ov.alwaysOnlineEvery
+		}
+	}
+	// Sources: env set?
+	envRC, _ := os.LookupEnv("REJECT_CALLS")
+	envRCM, _ := os.LookupEnv("REJECT_CALLS_MESSAGE")
+	envAMR, _ := os.LookupEnv("MARK_READ_ON_MESSAGE")
+	envISB, _ := os.LookupEnv("IGNORE_STATUS_BROADCAST")
+	envINL, _ := os.LookupEnv("IGNORE_NEWSLETTERS")
+	envAO, _ := os.LookupEnv("ALWAYS_ONLINE")
+	entry.Info(
+		"session_config reject_calls=%t source_reject_calls=%s reject_msg_set=%t source_reject_msg=%s mark_read_on_message=%t source_mark_read=%s ignore_status_broadcast=%t source_isb=%s ignore_newsletters=%t source_inl=%s always_online=%t source_always_online=%s always_online_interval_s=%d",
+		rc,
+		source(envRC, m.overrides[sessionID].rejectCalls != nil),
+		msg != "",
+		source(envRCM, m.overrides[sessionID].rejectMsg != nil),
+		amr,
+		source(envAMR, m.overrides[sessionID].autoMarkRead != nil),
+		isb,
+		source(envISB, m.overrides[sessionID].ignoreStatusBroadcast != nil),
+		inl,
+		source(envINL, m.overrides[sessionID].ignoreNewsletters != nil),
+		should,
+		source(envAO, m.overrides[sessionID].alwaysOnline != nil || m.overrides[sessionID].alwaysOnlineEvery != nil),
+		int(interval/time.Second),
+	)
+}
+
+func source(envVal string, hasOverride bool) string {
+	if strings.TrimSpace(envVal) != "" {
+		return "env"
+	}
+	if hasOverride {
+		return "redis"
+	}
+	return "default"
 }
 
 func (m *ClientManager) Disconnect(sessionID string) error {

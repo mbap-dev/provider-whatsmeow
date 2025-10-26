@@ -44,6 +44,7 @@ func main() {
 		cfg.PNResolverURL,
 		cfg.IgnoreStatusBroadcast,
 		cfg.IgnoreNewsletters,
+		cfg.RedisURL,
 	)
 	if cfg.AlwaysOnline {
 		clientManager.EnableAlwaysOnline(time.Duration(cfg.AlwaysOnlineIntervalSeconds) * time.Second)

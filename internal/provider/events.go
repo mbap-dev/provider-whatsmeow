@@ -65,7 +65,7 @@ func cloudMediaID(phone, msgID string) string {
 // handleCallRejection rejects an incoming call and optionally sends a reply message.
 // It handles both LID and AD JIDs correctly to avoid bans.
 func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.Client, callCreator types.JID, callID string) {
-	if !m.rejectCalls {
+	if !m.getRejectCalls(sessionID) {
 		return
 	}
 
@@ -77,7 +77,7 @@ func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.
 	}
 
 	// Optionally send a message to the caller
-	msgText := strings.TrimSpace(m.rejectMsg)
+	msgText := strings.TrimSpace(m.getRejectMsg(sessionID))
 	if msgText == "" {
 		return
 	}
@@ -177,7 +177,7 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
 			}
-			if m.autoMarkRead {
+			if m.getAutoMarkRead(sessionID) {
 				go m.markReadEvent(sessionID, client, e)
 			}
 		case *events.Receipt:
@@ -208,11 +208,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 
 	// Ignore optional channels per configuration
-	if m.ignoreStatusBroadcast && (isStatusBroadcastJID(chatJID) || isStatusBroadcastJID(senderJID)) {
+	if m.getIgnoreStatusBroadcast(sessionID) && (isStatusBroadcastJID(chatJID) || isStatusBroadcastJID(senderJID)) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: status_broadcast")
 		return nil
 	}
-	if m.ignoreNewsletters && (isNewsletterJID(chatJID) || isNewsletterJID(senderJID)) {
+	if m.getIgnoreNewsletters(sessionID) && (isNewsletterJID(chatJID) || isNewsletterJID(senderJID)) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: newsletter")
 		return nil
 	}

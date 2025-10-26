@@ -51,9 +51,26 @@ type ClientManager struct {
 	// inbound filters
 	ignoreStatusBroadcast bool
 	ignoreNewsletters     bool
+
+	// redis url for UNO config (optional)
+	redisURL string
+
+	// per-session overrides loaded from UNO redis config
+	overrides map[string]sessionOverrides
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string, ignoreStatusBroadcast, ignoreNewsletters bool) *ClientManager {
+type sessionOverrides struct {
+	// if nil, use manager default
+	rejectCalls           *bool
+	rejectMsg             *string
+	autoMarkRead          *bool
+	ignoreStatusBroadcast *bool
+	ignoreNewsletters     *bool
+	alwaysOnline          *bool
+	alwaysOnlineEvery     *time.Duration
+}
+
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string, ignoreStatusBroadcast, ignoreNewsletters bool, redisURL string) *ClientManager {
 	return &ClientManager{
 		clients:               make(map[string]*clientEntry),
 		sessionStore:          sessionStore,
@@ -66,6 +83,8 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		pnCache:               make(map[string]pnCacheItem),
 		ignoreStatusBroadcast: ignoreStatusBroadcast,
 		ignoreNewsletters:     ignoreNewsletters,
+		redisURL:              redisURL,
+		overrides:             make(map[string]sessionOverrides),
 	}
 }
 
@@ -80,7 +99,21 @@ func (m *ClientManager) EnableAlwaysOnline(interval time.Duration) {
 }
 
 func (m *ClientManager) maybeStartAlwaysOnline(sessionID string, cli *whatsmeow.Client) {
-	if !m.alwaysOnline || cli == nil {
+	if cli == nil {
+		return
+	}
+	// Resolve whether this session should run always-online
+	should := m.alwaysOnline
+	interval := m.alwaysOnlineEvery
+	if ov, ok := m.overrides[sessionID]; ok {
+		if ov.alwaysOnline != nil {
+			should = *ov.alwaysOnline
+		}
+		if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
+			interval = *ov.alwaysOnlineEvery
+		}
+	}
+	if !should {
 		return
 	}
 	m.mu.Lock()
@@ -97,7 +130,7 @@ func (m *ClientManager) maybeStartAlwaysOnline(sessionID string, cli *whatsmeow.
 	ctx, cancel := context.WithCancel(context.Background())
 	ent.presenceCancel = cancel
 	m.clients[sessionID] = ent
-	interval := m.alwaysOnlineEvery
+	// interval resolved above
 	log := ent.Log
 	m.mu.Unlock()
 
@@ -133,6 +166,99 @@ func (m *ClientManager) stopAlwaysOnline(sessionID string) {
 		ent.presenceCancel()
 		ent.presenceCancel = nil
 	}
+}
+
+// ===== Effective config getters (consider per-session overrides) =====
+
+func (m *ClientManager) getRejectCalls(sessionID string) bool {
+	if ov, ok := m.overrides[sessionID]; ok && ov.rejectCalls != nil {
+		return *ov.rejectCalls
+	}
+	return m.rejectCalls
+}
+
+func (m *ClientManager) getRejectMsg(sessionID string) string {
+	if ov, ok := m.overrides[sessionID]; ok && ov.rejectMsg != nil {
+		return *ov.rejectMsg
+	}
+	return m.rejectMsg
+}
+
+func (m *ClientManager) getAutoMarkRead(sessionID string) bool {
+	if ov, ok := m.overrides[sessionID]; ok && ov.autoMarkRead != nil {
+		return *ov.autoMarkRead
+	}
+	return m.autoMarkRead
+}
+
+func (m *ClientManager) getIgnoreStatusBroadcast(sessionID string) bool {
+	if ov, ok := m.overrides[sessionID]; ok && ov.ignoreStatusBroadcast != nil {
+		return *ov.ignoreStatusBroadcast
+	}
+	return m.ignoreStatusBroadcast
+}
+
+func (m *ClientManager) getIgnoreNewsletters(sessionID string) bool {
+	if ov, ok := m.overrides[sessionID]; ok && ov.ignoreNewsletters != nil {
+		return *ov.ignoreNewsletters
+	}
+	return m.ignoreNewsletters
+}
+
+// loadSessionOverrides fetches UnoAPI config for the given session from Redis
+// (if configured) and stores per-session overrides only for flags that were not
+// explicitly set via environment variables.
+func (m *ClientManager) loadSessionOverrides(sessionID string) {
+	if strings.TrimSpace(m.redisURL) == "" {
+		return
+	}
+	phone := digitsOnly(sessionID)
+	if phone == "" {
+		return
+	}
+	cfg, ok := fetchUnoConfig(m.redisURL, phone)
+	if !ok {
+		return
+	}
+	// Prepare override record
+	ov := m.overrides[sessionID]
+
+	// Env presence checks: only override when env var not explicitly set
+	// REJECT_CALLS and REJECT_CALLS_MESSAGE
+	if _, set := os.LookupEnv("REJECT_CALLS"); !set {
+		val := strings.TrimSpace(cfg.rejectCalls)
+		b := val != ""
+		ov.rejectCalls = &b
+		if _, setMsg := os.LookupEnv("REJECT_CALLS_MESSAGE"); !setMsg && val != "" {
+			// Prefer Uno message when available
+			ov.rejectMsg = &val
+		}
+	}
+	if _, set := os.LookupEnv("MARK_READ_ON_MESSAGE"); !set {
+		if v, okb := cfg.readOnReceipt, cfg.hasReadOnReceipt; okb {
+			ov.autoMarkRead = &v
+		}
+	}
+	if _, set := os.LookupEnv("IGNORE_STATUS_BROADCAST"); !set {
+		if v, okb := cfg.ignoreBroadcastStatuses, cfg.hasIgnoreBroadcastStatuses; okb {
+			ov.ignoreStatusBroadcast = &v
+		}
+	}
+	if _, set := os.LookupEnv("IGNORE_NEWSLETTERS"); !set {
+		if v, okb := cfg.ignoreNewsletterMessages, cfg.hasIgnoreNewsletterMessages; okb {
+			ov.ignoreNewsletters = &v
+		}
+	}
+	if _, set := os.LookupEnv("ALWAYS_ONLINE"); !set {
+		if v, okb := cfg.alwaysOnline, cfg.hasAlwaysOnline; okb {
+			ov.alwaysOnline = &v
+		}
+		if v, okb := cfg.alwaysOnlineEverySeconds, cfg.hasAlwaysOnlineEverySeconds; okb && v > 0 {
+			d := time.Duration(v) * time.Second
+			ov.alwaysOnlineEvery = &d
+		}
+	}
+	m.overrides[sessionID] = ov
 }
 
 // Connect cria/recupera cliente e inicia conexão (emite QR se for 1o login)
@@ -209,6 +335,9 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	// Se já existe ID no store, a sessão já foi pareada antes -> conecta direto
 	// Caso contrário, liga o canal de QR ANTES de conectar.
 	if cli.Store != nil && cli.Store.ID != nil {
+		// Load per-session overrides (best-effort) before registering handlers
+		m.loadSessionOverrides(sessionID)
+
 		// handlers (eventos → webhook)
 		m.registerEventHandlers(cli, sessionID)
 
@@ -238,6 +367,9 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 		return nil, fmt.Errorf("get QR channel: %w", err)
 	}
 	m.startQRWatcher(sessionID, qrCh)
+
+	// Load per-session overrides (best-effort) before registering handlers
+	m.loadSessionOverrides(sessionID)
 
 	// handlers (eventos → webhook)
 	m.registerEventHandlers(cli, sessionID)

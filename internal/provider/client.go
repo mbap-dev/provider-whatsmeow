@@ -225,13 +225,17 @@ func (m *ClientManager) loadSessionOverrides(sessionID string) {
 	ov := m.overrides[sessionID]
 
 	// Env presence checks: only override when env var not explicitly set
-	// REJECT_CALLS and REJECT_CALLS_MESSAGE
+	// REJECT_CALLS: only override enable/disable when env not set
 	if _, set := os.LookupEnv("REJECT_CALLS"); !set {
 		val := strings.TrimSpace(cfg.rejectCalls)
 		b := val != ""
 		ov.rejectCalls = &b
-		if _, setMsg := os.LookupEnv("REJECT_CALLS_MESSAGE"); !setMsg && val != "" {
-			// Prefer Uno message when available
+	}
+	// REJECT_CALLS_MESSAGE: allow message from Redis if env message not set,
+	// regardless of REJECT_CALLS env state
+	if _, setMsg := os.LookupEnv("REJECT_CALLS_MESSAGE"); !setMsg {
+		val := strings.TrimSpace(cfg.rejectCalls)
+		if val != "" {
 			ov.rejectMsg = &val
 		}
 	}

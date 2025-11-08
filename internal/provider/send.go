@@ -45,6 +45,11 @@ type DocumentContent struct {
 	FileName string `json:"filename,omitempty"`
 }
 
+type VideoContent struct {
+	Link    string `json:"link"`
+	Caption string `json:"caption,omitempty"`
+}
+
 type AudioContent struct {
 	Link    string  `json:"link"`
 	Caption string  `json:"caption,omitempty"`
@@ -90,6 +95,7 @@ type OutgoingMessage struct {
 	Text             *TextContent     `json:"text,omitempty"`
 	Image            *ImageContent    `json:"image,omitempty"`
 	Document         *DocumentContent `json:"document,omitempty"`
+	Video            *VideoContent    `json:"video,omitempty"`
 	Audio            *AudioContent    `json:"audio,omitempty"`
 	Sticker          *StickerContent  `json:"sticker,omitempty"`
 	Contacts         []ContactEntry   `json:"contacts,omitempty"`
@@ -394,6 +400,55 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Info("document sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+		return m.emitCloudSent(sessionID, jid, resp.ID)
+
+	case "video":
+		var link, caption string
+		if msg.Video != nil {
+			link = strings.TrimSpace(msg.Video.Link)
+			caption = strings.TrimSpace(msg.Video.Caption)
+		}
+		if link == "" {
+			link = strings.TrimSpace(msg.MediaURL)
+		}
+		if caption == "" {
+			caption = strings.TrimSpace(msg.Caption)
+		}
+		if link == "" {
+			return fmt.Errorf("video requires a link or media_url")
+		}
+		data, mime, err := downloadBytes(ctx, link)
+		if err != nil {
+			return fmt.Errorf("failed to download media: %w", err)
+		}
+		uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaVideo)
+		if err != nil {
+			entry.Error("video upload failed: %v", err)
+			return err
+		}
+		vidMsg := &goE2E.VideoMessage{
+			URL:           proto.String(uploaded.URL),
+			DirectPath:    proto.String(uploaded.DirectPath),
+			MediaKey:      uploaded.MediaKey,
+			FileEncSHA256: uploaded.FileEncSHA256,
+			FileSHA256:    uploaded.FileSHA256,
+			FileLength:    proto.Uint64(uint64(len(data))),
+			Mimetype:      proto.String(mime),
+		}
+		if caption != "" {
+			vidMsg.Caption = proto.String(caption)
+		}
+		if ctxInfo != nil {
+			vidMsg.ContextInfo = ctxInfo
+		}
+		wire := &goE2E.Message{VideoMessage: vidMsg}
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+		if err != nil {
+			entry.Error("send video failed: %v", err)
+			return err
+		}
+		entry.Info("video sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "audio":

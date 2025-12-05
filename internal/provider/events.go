@@ -655,6 +655,41 @@ func (m *ClientManager) emitCloudSent(sessionID string, to types.JID, id types.M
 	return m.deliverWebhook(sessionID, payload)
 }
 
+// emitCloudFailed publishes a status event for a failed outgoing message,
+// following the same shape used by the Baileys provider in unoapi-cloud.
+func (m *ClientManager) emitCloudFailed(sessionID string, to string, messageID string, code int, title string) error {
+	phone := normalizePhone(sessionID)
+	recipient := digitsOnly(strings.ReplaceAll(strings.TrimSpace(to), "+", ""))
+	if recipient == "" {
+		recipient = strings.TrimSpace(to)
+	}
+
+	msgID := strings.TrimSpace(messageID)
+	if msgID == "" {
+		msgID = fmt.Sprintf("WARN-%d", time.Now().UnixNano())
+	}
+
+	status := map[string]any{
+		"id":           msgID,
+		"recipient_id": recipient,
+		"status":       "failed",
+		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	if code != 0 || strings.TrimSpace(title) != "" {
+		status["errors"] = []any{map[string]any{
+			"code":  code,
+			"title": title,
+		}}
+	}
+
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["statuses"] = []any{status}
+
+	log.WithSession(sessionID).WithMessageID(msgID).Info("evt=failed cloud payload ready to=%s code=%d", to, code)
+	return m.deliverWebhook(sessionID, payload)
+}
+
 // emitCloudDeleted publishes a status event for a message deletion (revoke)
 // in the Cloud-like format UnoAPI expects.
 func (m *ClientManager) emitCloudDeleted(sessionID string, client *whatsmeow.Client, e *events.Message, revokedID string) error {

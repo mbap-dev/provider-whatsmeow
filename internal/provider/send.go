@@ -178,6 +178,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			entry.Info("whatsapp_check_failed to=%q err=%v; falling back to legacy normalisation", rawTo, checkErr)
 		} else if !found {
 			entry.Info("whatsapp_check_not_found to=%q", rawTo)
+			failTitle := fmt.Sprintf("The phone number %s does not have WhatsApp account!", rawTo)
+			if err := m.emitCloudFailed(sessionID, rawTo, msg.MessageID, 2, failTitle); err != nil {
+				entry.Error("emit_failed_status_error to=%q err=%v", rawTo, err)
+			}
 			return fmt.Errorf("number %s is not registered on WhatsApp", rawTo)
 		} else {
 			jid = rjid

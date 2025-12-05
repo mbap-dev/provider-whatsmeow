@@ -45,6 +45,7 @@ func main() {
 		cfg.IgnoreStatusBroadcast,
 		cfg.IgnoreNewsletters,
 		cfg.RedisURL,
+		cfg.CheckUserExists,
 	)
 	if cfg.AlwaysOnline {
 		clientManager.EnableAlwaysOnline(time.Duration(cfg.AlwaysOnlineIntervalSeconds) * time.Second)

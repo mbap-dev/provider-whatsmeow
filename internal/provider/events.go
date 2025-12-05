@@ -70,7 +70,7 @@ func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.
 	}
 
 	// Reject the call
-	if err := client.RejectCall(callCreator, callID); err != nil {
+	if err := client.RejectCall(context.Background(), callCreator, callID); err != nil {
 		log.WithSession(sessionID).Error("call reject error: %v", err)
 	} else {
 		log.WithSession(sessionID).Info("evt=call_reject from=%s call_id=%s", callCreator.String(), callID)
@@ -169,10 +169,10 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			log.WithSession(sessionID).Info("evt=unknown_call_event node=%v", e.Node)
 		case *events.AppStateSyncComplete:
 			if e.Name == "critical_block" || e.Name == "regular_high" {
-				_ = client.SendPresence(types.PresenceAvailable)
+				_ = client.SendPresence(context.Background(), types.PresenceAvailable)
 			}
 		case *events.PushNameSetting:
-			_ = client.SendPresence(types.PresenceAvailable)
+			_ = client.SendPresence(context.Background(), types.PresenceAvailable)
 		case *events.Message:
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
@@ -275,7 +275,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			wireMsg["type"] = "text"
 			wireMsg["text"] = map[string]any{"body": body}
 			if pm.GetKey() != nil {
-				rid := strings.TrimSpace(pm.GetKey().GetId())
+				rid := strings.TrimSpace(pm.GetKey().GetID())
 				if rid != "" {
 					// Log edit detection with snippet
 					snippet := body
@@ -294,7 +294,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			// Message deletion (revoke). Emit a status 'deleted' similar to UnoAPI.
 			rid := ""
 			if pm.GetKey() != nil {
-				rid = strings.TrimSpace(pm.GetKey().GetId())
+				rid = strings.TrimSpace(pm.GetKey().GetID())
 			}
 			if rid == "" {
 				// Without the original id, do nothing
@@ -395,7 +395,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		wireMsg["text"] = map[string]any{"body": emoji}
 		// reply to the original message that was reacted
 		if rk := r.GetKey(); rk != nil {
-			rid := strings.TrimSpace(rk.GetId())
+			rid := strings.TrimSpace(rk.GetID())
 			if rid != "" {
 				wireMsg["context"] = map[string]any{
 					"message_id": rid,
@@ -1079,7 +1079,7 @@ func mapReceiptStatus(t events.ReceiptType) string {
 	}
 }
 
-// safeGetGroupName chama Client.GetGroupInfo com reflexão, suportando (ctx,jid) e (jid).
+// safeGetGroupName obtém o nome do grupo com um pequeno cache.
 func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 	if cli == nil {
 		return "", false
@@ -1090,7 +1090,9 @@ func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 	}
 	// Try a couple of times with a small delay to allow metadata to load
 	for i := 0; i < 2; i++ {
-		info, err := cli.GetGroupInfo(gid)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		info, err := cli.GetGroupInfo(ctx, gid)
+		cancel()
 		if err == nil && info != nil && strings.TrimSpace(info.Name) != "" {
 			name := strings.TrimSpace(info.Name)
 			cachePutGroupName(gid.String(), name)
@@ -1116,7 +1118,9 @@ func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (strin
 	}
 	// Try a few combinations (prefer preview for speed)
 	try := func(label string, p *whatsmeow.GetProfilePictureParams) (string, bool) {
-		info, err := cli.GetProfilePictureInfo(jid, p)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		info, err := cli.GetProfilePictureInfo(ctx, jid, p)
+		cancel()
 		if err != nil {
 			log.WithSession(sessionID).Debug("avatar_try label=%s jid=%s err=%v", label, jid.String(), err)
 			return "", false
@@ -1180,7 +1184,7 @@ func (m *ClientManager) markReadEvent(sessionID string, client *whatsmeow.Client
 	// Pequeno atraso para permitir que o consumidor processe o webhook primeiro
 	time.Sleep(200 * time.Millisecond)
 	ids := []types.MessageID{types.MessageID(e.Info.ID)}
-	if err := client.MarkRead(ids, time.Now(), chat, sender); err != nil {
+	if err := client.MarkRead(context.Background(), ids, time.Now(), chat, sender, types.ReceiptTypeRead); err != nil {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("mark_read error: %v", err)
 	} else {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("mark_read success chat=%s sender=%s", chat.String(), sender.String())

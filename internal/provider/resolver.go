@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ func (m *ClientManager) resolvePNtoJID(ctx context.Context, cli *whatsmeow.Clien
 	candidates := candidatesBR(e164)
 	for _, cand := range candidates {
 		// whatsmeow provides IsOnWhatsApp to check registration and canonical JID
-		res, err := cli.IsOnWhatsApp([]string{cand})
+		res, err := cli.IsOnWhatsApp(ctx, []string{cand})
 		if err != nil || len(res) == 0 {
 			continue
 		}
@@ -42,6 +43,59 @@ func (m *ClientManager) resolvePNtoJID(ctx context.Context, cli *whatsmeow.Clien
 		}
 	}
 	return types.EmptyJID, false
+}
+
+// checkUserExistsOnWhatsApp verifies whether a given phone is registered on WhatsApp.
+// It mirrors the behaviour from evolution-go:
+//   - on network/API errors it returns an error so the caller can decide to
+//     proceed without blocking the send;
+//   - when the check succeeds and the number is not registered, it returns
+//     (empty, false, nil) so the caller can reject the send explicitly.
+func (m *ClientManager) checkUserExistsOnWhatsApp(ctx context.Context, cli *whatsmeow.Client, phone string) (types.JID, bool, error) {
+	e164 := normalizeE164Local(phone)
+	cacheKey := e164
+	if e164 == "" {
+		e164 = phone
+		cacheKey = phone
+	}
+
+	// Reuse cache when available
+	if it, ok := m.pnCache[cacheKey]; ok && time.Now().Before(it.exp) {
+		if j, err := types.ParseJID(it.val); err == nil {
+			return j, true, nil
+		}
+	}
+
+	candidates := candidatesBR(e164)
+	var lastErr error
+	for _, cand := range candidates {
+		res, err := cli.IsOnWhatsApp(ctx, []string{cand})
+		if err != nil {
+			lastErr = fmt.Errorf("failed to check if number %s exists on WhatsApp: %w", cand, err)
+			continue
+		}
+		if len(res) == 0 {
+			lastErr = fmt.Errorf("number %s not found in WhatsApp response", cand)
+			continue
+		}
+		info := res[0]
+		if !info.IsIn {
+			// Explicitly not registered for this candidate; try next, if any.
+			continue
+		}
+		if info.JID.Server == types.DefaultUserServer && info.JID.User != "" {
+			m.pnCache[cacheKey] = pnCacheItem{val: info.JID.String(), exp: time.Now().Add(24 * time.Hour)}
+			return info.JID, true, nil
+		}
+	}
+
+	// If all candidates failed due to errors or empty responses, surface the last error.
+	if lastErr != nil {
+		return types.EmptyJID, false, lastErr
+	}
+
+	// Check succeeded but no candidate is registered on WhatsApp.
+	return types.EmptyJID, false, nil
 }
 
 func normalizeE164Local(input string) string {

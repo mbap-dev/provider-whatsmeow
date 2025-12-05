@@ -158,24 +158,50 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		msg.Audio != nil && strings.TrimSpace(msg.Audio.Link) != "",
 	)
 
-	// Normalize destination: resolve via server when possible, fallback to local PN JID
+	// Normalize destination: optionally verify user existence via server, then
+	// resolve to a canonical JID. If the existence check fails due to network
+	// issues we fall back to the previous behaviour and still attempt delivery.
 	rawTo := strings.TrimSpace(msg.To)
-	// Try resolving PN -> canonical JID via server (handles BR 9th digit cases robustly)
 	var jid types.JID
 	var err error
-	if rjid, ok := m.resolvePNtoJID(ctx, cli, rawTo); ok {
-		jid = rjid
-	} else {
-		// Fallback: local normalization -> PN JID
-		digits := phoneNumberToJIDDigits(rawTo)
-		if strings.Contains(rawTo, "@") {
-			jid, err = toJID(rawTo)
+
+	// Decide whether to enforce WhatsApp existence check for this destination.
+	shouldCheck := m.getCheckUserExists(sessionID)
+	if strings.Contains(rawTo, "@g.us") || strings.Contains(rawTo, "@broadcast") || strings.Contains(rawTo, "@lid") {
+		// Groups, broadcast lists and LIDs are not checked with IsOnWhatsApp
+		shouldCheck = false
+	}
+
+	if shouldCheck {
+		rjid, found, checkErr := m.checkUserExistsOnWhatsApp(ctx, cli, rawTo)
+		if checkErr != nil {
+			entry.Info("whatsapp_check_failed to=%q err=%v; falling back to legacy normalisation", rawTo, checkErr)
+		} else if !found {
+			entry.Info("whatsapp_check_not_found to=%q", rawTo)
+			return fmt.Errorf("number %s is not registered on WhatsApp", rawTo)
 		} else {
-			jid, err = toUserJID(digits)
+			jid = rjid
 		}
-		if err != nil {
-			entry.Error("recipient_parse_error to=%q err=%v", msg.To, err)
-			return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
+	}
+
+	// If we still don't have a JID (check disabled or failed), use the existing
+	// resolution logic: server‑side PN resolver when possible, with local
+	// normalisation as fallback.
+	if jid == (types.JID{}) {
+		if rjid, ok := m.resolvePNtoJID(ctx, cli, rawTo); ok {
+			jid = rjid
+		} else {
+			// Fallback: local normalization -> PN JID
+			digits := phoneNumberToJIDDigits(rawTo)
+			if strings.Contains(rawTo, "@") {
+				jid, err = toJID(rawTo)
+			} else {
+				jid, err = toUserJID(digits)
+			}
+			if err != nil {
+				entry.Error("recipient_parse_error to=%q err=%v", msg.To, err)
+				return fmt.Errorf("invalid recipient %q: %w", msg.To, err)
+			}
 		}
 	}
 	entry.Info("dest_jid=%s", jid.String())

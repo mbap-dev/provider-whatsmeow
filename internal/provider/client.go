@@ -58,6 +58,10 @@ type ClientManager struct {
 
 	// per-session overrides loaded from UNO redis config
 	overrides map[string]sessionOverrides
+
+	// checkUserExists controls whether we should verify that a
+	// destination number is registered on WhatsApp before sending.
+	checkUserExists bool
 }
 
 type sessionOverrides struct {
@@ -71,7 +75,7 @@ type sessionOverrides struct {
 	alwaysOnlineEvery     *time.Duration
 }
 
-func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string, ignoreStatusBroadcast, ignoreNewsletters bool, redisURL string) *ClientManager {
+func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, rejectCalls bool, rejectMsg string, autoMarkRead bool, pnResolverURL string, ignoreStatusBroadcast, ignoreNewsletters bool, redisURL string, checkUserExists bool) *ClientManager {
 	return &ClientManager{
 		clients:               make(map[string]*clientEntry),
 		sessionStore:          sessionStore,
@@ -86,6 +90,7 @@ func NewClientManager(sessionStore, webhookBase string, defaultAudioPTT bool, re
 		ignoreNewsletters:     ignoreNewsletters,
 		redisURL:              redisURL,
 		overrides:             make(map[string]sessionOverrides),
+		checkUserExists:       checkUserExists,
 	}
 }
 
@@ -139,7 +144,7 @@ func (m *ClientManager) maybeStartAlwaysOnline(sessionID string, cli *whatsmeow.
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		// send immediately once
-		if err := cli.SendPresence(types.PresenceAvailable); err != nil {
+		if err := cli.SendPresence(ctx, types.PresenceAvailable); err != nil {
 			log.Errorf("presence available error: %v", err)
 		} else {
 			log.Infof("presence set to available, interval=%s", interval)
@@ -152,7 +157,7 @@ func (m *ClientManager) maybeStartAlwaysOnline(sessionID string, cli *whatsmeow.
 				if !cli.IsConnected() {
 					continue
 				}
-				if err := cli.SendPresence(types.PresenceAvailable); err != nil {
+				if err := cli.SendPresence(ctx, types.PresenceAvailable); err != nil {
 					log.Errorf("presence refresh error: %v", err)
 				}
 			}
@@ -204,6 +209,12 @@ func (m *ClientManager) getIgnoreNewsletters(sessionID string) bool {
 		return *ov.ignoreNewsletters
 	}
 	return m.ignoreNewsletters
+}
+
+func (m *ClientManager) getCheckUserExists(sessionID string) bool {
+	// For now there is only a global setting. Session‑level overrides
+	// can be added later if Uno config exposes this flag.
+	return m.checkUserExists
 }
 
 // loadSessionOverrides fetches UnoAPI config for the given session from Redis

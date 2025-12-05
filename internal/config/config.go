@@ -71,6 +71,13 @@ type Config struct {
 	// IgnoreNewsletters drops incoming Newsletter messages (server=newsletter).
 	// Default: true.
 	IgnoreNewsletters bool
+
+	// CheckUserExists, when true, verifies if the destination number
+	// is registered on WhatsApp before sending a message. If the
+	// check fails due to network or API errors, the adapter falls
+	// back to the previous behaviour and still attempts delivery.
+	// Default: true.
+	CheckUserExists bool
 }
 
 // NewConfig reads configuration from the environment and returns a
@@ -119,6 +126,9 @@ func NewConfig() *Config {
 	// Inbound filters (defaults: ignore both)
 	cfg.IgnoreStatusBroadcast = getEnvBool("IGNORE_STATUS_BROADCAST", true)
 	cfg.IgnoreNewsletters = getEnvBool("IGNORE_NEWSLETTERS", true)
+
+	// Outbound behaviour: validate destination on WhatsApp before sending
+	cfg.CheckUserExists = getEnvBool("CHECK_USER_EXISTS", true)
 
 	return cfg
 }

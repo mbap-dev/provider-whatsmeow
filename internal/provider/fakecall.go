@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -49,7 +50,7 @@ func (m *ClientManager) FakeCall(sessionID, to string, ringMS int) (string, erro
 			offer,
 		},
 	}
-	if err := cli.DangerousInternals().SendNode(node); err != nil {
+	if err := cli.DangerousInternals().SendNode(context.Background(), node); err != nil {
 		return "", fmt.Errorf("send offer failed: %w", err)
 	}
 
@@ -71,7 +72,7 @@ func (m *ClientManager) FakeCall(sessionID, to string, ringMS int) (string, erro
 			Attrs:   waBinary.Attrs{"id": cli.GenerateMessageID(), "from": own, "to": dest},
 			Content: []waBinary.Node{term},
 		}
-		_ = cli.DangerousInternals().SendNode(tnode)
+		_ = cli.DangerousInternals().SendNode(context.Background(), tnode)
 	}()
 
 	ent.Log.Infof("fake_call started to=%s call_id=%s ring_ms=%d", dest.String(), callID, ringMS)

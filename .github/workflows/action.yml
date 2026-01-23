@@ -9,7 +9,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }} # ghcr.io/<owner>/<repo>
-  GO_VERSION: 1.24.6
+  GO_VERSION: 1.25.5
 
 permissions:
   contents: read

@@ -4,3 +4,4 @@
 /.gocache/
 /bin/whatsmeow-adapter
 /.gopath/
+.DS_Store

@@ -45,7 +45,7 @@ func (m *ClientManager) startQRWatcher(sessionID string, ch <-chan whatsmeow.QRC
 				delete(qrBySession, sessionID)
 				qrMu.Unlock()
 				if item.Event == "success" {
-					// Update UNO status: now online
+					// Update session status: now online
 					status.Set(sessionID, "online")
 				}
 
@@ -65,4 +65,11 @@ func (m *ClientManager) GetQR(sessionID string) (string, error) {
 		return "", errors.New("qr not ready or session not connected")
 	}
 	return state.pngBase64, nil
+}
+
+func hasQR(sessionID string) bool {
+	qrMu.RLock()
+	defer qrMu.RUnlock()
+	state, ok := qrBySession[sessionID]
+	return ok && state != nil && state.pngBase64 != ""
 }

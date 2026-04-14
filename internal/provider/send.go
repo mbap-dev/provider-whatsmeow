@@ -36,22 +36,26 @@ type TextContent struct {
 
 type ImageContent struct {
 	Link    string `json:"link"`
+	ID      string `json:"id,omitempty"`
 	Caption string `json:"caption,omitempty"`
 }
 
 type DocumentContent struct {
 	Link     string `json:"link"`
+	ID       string `json:"id,omitempty"`
 	Caption  string `json:"caption,omitempty"`
 	FileName string `json:"filename,omitempty"`
 }
 
 type VideoContent struct {
 	Link    string `json:"link"`
+	ID      string `json:"id,omitempty"`
 	Caption string `json:"caption,omitempty"`
 }
 
 type AudioContent struct {
 	Link    string  `json:"link"`
+	ID      string  `json:"id,omitempty"`
 	Caption string  `json:"caption,omitempty"`
 	PTT     *bool   `json:"ptt,omitempty"`
 	Seconds *uint32 `json:"seconds,omitempty"`
@@ -59,6 +63,7 @@ type AudioContent struct {
 
 type StickerContent struct {
 	Link string `json:"link"`
+	ID   string `json:"id,omitempty"`
 }
 
 // Contacts payload (Cloud-compatible)
@@ -142,6 +147,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	if sessionID == "" {
 		return fmt.Errorf("missing session_id (not in context nor payload)")
 	}
+	if !m.AllowsSession(sessionID) {
+		return fmt.Errorf("session %s is not assigned to worker %s", sessionID, m.WorkerID())
+	}
+	normalizeOutgoingMessageIDs(sessionID, &msg)
 
 	cli, ok := m.GetClient(sessionID)
 	if !ok || cli == nil {
@@ -162,6 +171,18 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	// resolve to a canonical JID. If the existence check fails due to network
 	// issues we fall back to the previous behaviour and still attempt delivery.
 	rawTo := strings.TrimSpace(msg.To)
+	if rawTo == "" {
+		entry.Error(
+			"send_input_missing_recipient type=%q media_url=%q has_text=%v has_image=%v has_doc=%v has_audio=%v",
+			strings.TrimSpace(msg.Type),
+			strings.TrimSpace(msg.MediaURL),
+			msg.Text != nil && strings.TrimSpace(msg.Text.Body) != "",
+			msg.Image != nil && strings.TrimSpace(msg.Image.Link) != "",
+			msg.Document != nil && strings.TrimSpace(msg.Document.Link) != "",
+			msg.Audio != nil && strings.TrimSpace(msg.Audio.Link) != "",
+		)
+		return fmt.Errorf("missing recipient: use to/recipient_id/source_id")
+	}
 	var jid types.JID
 	var err error
 
@@ -329,9 +350,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "image":
-		var link, caption string
+		var link, caption, mediaID string
 		if msg.Image != nil {
 			link = strings.TrimSpace(msg.Image.Link)
+			mediaID = strings.TrimSpace(msg.Image.ID)
 			caption = strings.TrimSpace(msg.Image.Caption)
 		}
 		if link == "" {
@@ -340,12 +362,29 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
-		if link == "" {
-			return fmt.Errorf("image requires a link or media_url")
-		}
-		data, mime, err := downloadBytes(ctx, link)
-		if err != nil {
-			return fmt.Errorf("failed to download media: %w", err)
+		var (
+			data []byte
+			mime string
+		)
+		if link == "" && mediaID != "" {
+			stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+			if err != nil {
+				return fmt.Errorf("failed to load media id %q: %w", mediaID, err)
+			}
+			data = stored
+			mime = meta.MIMEType
+			if strings.TrimSpace(mime) == "" {
+				mime = http.DetectContentType(data)
+			}
+		} else {
+			if link == "" {
+				return fmt.Errorf("image requires a link/media_url or image.id")
+			}
+			var err error
+			data, mime, err = downloadBytes(ctx, link)
+			if err != nil {
+				return fmt.Errorf("failed to download media: %w", err)
+			}
 		}
 		uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaImage)
 		if err != nil {
@@ -378,9 +417,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "document":
-		var link, caption, filename string
+		var link, caption, filename, mediaID string
 		if msg.Document != nil {
 			link = strings.TrimSpace(msg.Document.Link)
+			mediaID = strings.TrimSpace(msg.Document.ID)
 			caption = strings.TrimSpace(msg.Document.Caption)
 			filename = strings.TrimSpace(msg.Document.FileName)
 		}
@@ -390,16 +430,39 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
+		var (
+			data []byte
+			mime string
+		)
+		if link == "" && mediaID != "" {
+			stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+			if err != nil {
+				return fmt.Errorf("failed to load media id %q: %w", mediaID, err)
+			}
+			data = stored
+			mime = meta.MIMEType
+			if strings.TrimSpace(mime) == "" {
+				mime = http.DetectContentType(data)
+			}
+			if filename == "" {
+				filename = strings.TrimSpace(meta.Filename)
+			}
+		} else {
+			if link == "" {
+				return fmt.Errorf("document requires a link/media_url or document.id")
+			}
+			var err error
+			data, mime, err = downloadBytes(ctx, link)
+			if err != nil {
+				return fmt.Errorf("failed to download media: %w", err)
+			}
+		}
 		if filename == "" {
 			parts := strings.Split(strings.TrimRight(link, "/"), "/")
 			filename = parts[len(parts)-1]
-		}
-		if link == "" {
-			return fmt.Errorf("document requires a link or media_url")
-		}
-		data, mime, err := downloadBytes(ctx, link)
-		if err != nil {
-			return fmt.Errorf("failed to download media: %w", err)
+			if filename == "" && mediaID != "" {
+				filename = mediaID
+			}
 		}
 		uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaDocument)
 		if err != nil {
@@ -433,9 +496,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "video":
-		var link, caption string
+		var link, caption, mediaID string
 		if msg.Video != nil {
 			link = strings.TrimSpace(msg.Video.Link)
+			mediaID = strings.TrimSpace(msg.Video.ID)
 			caption = strings.TrimSpace(msg.Video.Caption)
 		}
 		if link == "" {
@@ -444,12 +508,29 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
-		if link == "" {
-			return fmt.Errorf("video requires a link or media_url")
-		}
-		data, mime, err := downloadBytes(ctx, link)
-		if err != nil {
-			return fmt.Errorf("failed to download media: %w", err)
+		var (
+			data []byte
+			mime string
+		)
+		if link == "" && mediaID != "" {
+			stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+			if err != nil {
+				return fmt.Errorf("failed to load media id %q: %w", mediaID, err)
+			}
+			data = stored
+			mime = meta.MIMEType
+			if strings.TrimSpace(mime) == "" {
+				mime = http.DetectContentType(data)
+			}
+		} else {
+			if link == "" {
+				return fmt.Errorf("video requires a link/media_url or video.id")
+			}
+			var err error
+			data, mime, err = downloadBytes(ctx, link)
+			if err != nil {
+				return fmt.Errorf("failed to download media: %w", err)
+			}
 		}
 		uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaVideo)
 		if err != nil {
@@ -482,37 +563,41 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "audio":
-		// Mirror Evolution API: fetch URL content and convert PTT voice notes to ogg/opus with metadata.
-		var src string
+		// Mirror Evolution API: accepts URL (link/media_url) or previously uploaded media id.
+		var src, mediaID string
 		if msg.Audio != nil {
 			src = strings.TrimSpace(msg.Audio.Link)
+			mediaID = strings.TrimSpace(msg.Audio.ID)
 		}
 		if src == "" {
 			src = strings.TrimSpace(msg.MediaURL)
 		}
-		if src == "" {
-			return fmt.Errorf("audio requires a URL (http/https)")
-		}
-		if !(strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://")) {
-			return fmt.Errorf("audio link must be an http(s) URL")
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
-		if err != nil {
-			return err
-		}
-		httpResp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		if httpResp.StatusCode != http.StatusOK {
-			defer httpResp.Body.Close()
-			return fmt.Errorf("failed to fetch audio: %s", httpResp.Status)
-		}
-		defer httpResp.Body.Close()
-
-		original, err := io.ReadAll(httpResp.Body)
-		if err != nil {
-			return fmt.Errorf("reading audio content: %w", err)
+		var (
+			original   []byte
+			header     http.Header
+			sourceMime string
+		)
+		if src == "" && mediaID != "" {
+			data, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+			if err != nil {
+				return fmt.Errorf("failed to load media id %q: %w", mediaID, err)
+			}
+			original = data
+			sourceMime = strings.TrimSpace(meta.MIMEType)
+		} else {
+			if src == "" {
+				return fmt.Errorf("audio requires a URL (http/https) or audio.id")
+			}
+			if !(strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://")) {
+				return fmt.Errorf("audio link must be an http(s) URL")
+			}
+			data, mime, hdr, err := downloadBytesWithHeader(ctx, src)
+			if err != nil {
+				return fmt.Errorf("failed to fetch audio: %w", err)
+			}
+			original = data
+			sourceMime = strings.TrimSpace(mime)
+			header = hdr
 		}
 
 		ptt := m.defaultAudioPTT
@@ -547,10 +632,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			if msg.Audio != nil {
 				payloadSeconds = msg.Audio.Seconds
 			}
-			secs = pickSeconds(payloadSeconds, httpResp.Header, ptt)
+			secs = pickSeconds(payloadSeconds, header, ptt)
 		}
 
-		mime := httpResp.Header.Get("Content-Type")
+		mime := sourceMime
 		if ptt {
 			mime = "audio/ogg; codecs=opus"
 		} else {
@@ -599,19 +684,37 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "sticker":
-		var link string
+		var link, mediaID string
 		if msg.Sticker != nil {
 			link = strings.TrimSpace(msg.Sticker.Link)
+			mediaID = strings.TrimSpace(msg.Sticker.ID)
 		}
 		if link == "" {
 			link = strings.TrimSpace(msg.MediaURL)
 		}
-		if link == "" {
-			return fmt.Errorf("sticker requires a link or media_url")
-		}
-		data, mime, err := downloadBytes(ctx, link)
-		if err != nil {
-			return fmt.Errorf("failed to download media: %w", err)
+		var (
+			data []byte
+			mime string
+		)
+		if link == "" && mediaID != "" {
+			stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+			if err != nil {
+				return fmt.Errorf("failed to load media id %q: %w", mediaID, err)
+			}
+			data = stored
+			mime = meta.MIMEType
+			if strings.TrimSpace(mime) == "" {
+				mime = http.DetectContentType(data)
+			}
+		} else {
+			if link == "" {
+				return fmt.Errorf("sticker requires a link/media_url or sticker.id")
+			}
+			var err error
+			data, mime, err = downloadBytes(ctx, link)
+			if err != nil {
+				return fmt.Errorf("failed to download media: %w", err)
+			}
 		}
 		uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaStickerPack)
 		if err != nil {

@@ -10,7 +10,7 @@ import (
 	ilog "your.org/provider-whatsmeow/internal/log"
 )
 
-// WebhookPublisher publishes Cloud webhook payloads to UnoAPI via RabbitMQ.
+// WebhookPublisher publishes Cloud webhook payloads to RabbitMQ.
 // It maintains a single shared connection/channel and declares the
 // destination exchange on first use.
 type WebhookPublisher struct {
@@ -61,8 +61,7 @@ func (p *WebhookPublisher) ensure() error {
 		return fmt.Errorf("open channel: %w", err)
 	}
 	// Ensure exchange exists
-	// UnoAPI expects webhooks on the bridge exchange (direct type),
-	// routing key is the session phone (digits only).
+	// Webhooks are published on a direct exchange using session phone/id as routing key.
 	if err := ch.ExchangeDeclare(
 		p.exchange,
 		"direct",
@@ -82,7 +81,7 @@ func (p *WebhookPublisher) ensure() error {
 	return nil
 }
 
-// PublishWebhook publishes the given Cloud webhook payload to UnoAPI.
+// PublishWebhook publishes the given Cloud webhook payload.
 // routingKey must be the session phone number (digits only).
 func PublishWebhook(routingKey string, cloudPayload any) error {
 	if webhookPub == nil {

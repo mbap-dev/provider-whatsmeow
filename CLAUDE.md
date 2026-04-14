@@ -28,3 +28,15 @@ Style & Scope
 - Do not introduce unrelated refactors in the same patch.
 - Prefer adding tests when changing logic that affects routing, normalization, or message composition.
 
+Documentation Is Mandatory
+- Any change that adds, removes, or modifies:
+  - environment variables
+  - endpoints/routes/contracts
+  - worker/queue/deploy behavior
+  - CI/CD or operational flow
+  MUST include corresponding documentation updates in the same change.
+- At minimum, review and update when applicable:
+  - `README.md`
+  - `docs/ENVIRONMENT.md`
+  - `.env.example`
+  - `deploy/` examples and READMEs

@@ -10,6 +10,13 @@ import (
 // InitExchange declares the exchange and queue consumed by this service.
 // It is safe to call multiple times as declarations are idempotent.
 func InitExchange(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("missing config")
+	}
+	if !cfg.AMQPConsumerEnabled {
+		ilog.Infof("AMQP consumer disabled; skipping exchange initialization")
+		return nil
+	}
 	if cfg.AMQPURL == "" {
 		ilog.Infof("AMQP URL is empty; skipping exchange initialization")
 		return nil
@@ -51,16 +58,28 @@ func InitExchange(cfg *config.Config) error {
 			return fmt.Errorf("failed to declare queue: %w", err)
 		}
 
-		if err := ch.QueueBind(
-			cfg.AMQPQueue,
-			cfg.AMQPBinding,
-			cfg.AMQPExchange,
-			false,
-			nil,
-		); err != nil {
-			return fmt.Errorf("failed to bind queue: %w", err)
+		for _, binding := range configuredBindings(cfg) {
+			if err := ch.QueueBind(
+				cfg.AMQPQueue,
+				binding,
+				cfg.AMQPExchange,
+				false,
+				nil,
+			); err != nil {
+				return fmt.Errorf("failed to bind queue to %q: %w", binding, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+func configuredBindings(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.AMQPBindings) > 0 {
+		return cfg.AMQPBindings
+	}
+	return []string{cfg.AMQPBinding}
 }

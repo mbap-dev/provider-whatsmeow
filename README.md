@@ -1,64 +1,481 @@
-# WhatsMeow Adapter (Provider UNOAPI Cloud)
+# Provider WhatsMeow (Standalone, 100% Go)
 
-Microserviço **Go** que:
-- consome mensagens **AMQP/RabbitMQ** (rota `provider.whatsmeow.*`, fila `provider.whatsmeow` criada automaticamente);
-- publica webhooks no exchange de bridge do UnoAPI (default `unoapi.brigde`, tipo `direct`), com routing key igual ao número da sessão (somente dígitos) e corpo `{ "payload": <cloud_api_webhook_payload> }`.
-- envia via **WhatsMeow** (WhatsApp MD);
-- publica **webhooks** (Cloud-like) se `WEBHOOK_BASE` estiver definido;
-- expõe HTTP para gerenciar sessões e health checks.
-- para mensagens com mídia, não armazena mais em S3/MinIO; o webhook inclui `direct_path`, `media_key`, `mime_type`, `sha256` e `file_length` para que o serviço consumidor faça o download e a descriptografia.
-- envio de áudio: converte para OGG/Opus mono via `ffmpeg`, calcula `seconds` e `waveform` e envia como PTT por padrão.
-   - controle de PTT por env: defina `AUDIO_PTT_DEFAULT=false` para desabilitar PTT por padrão (se ausente, é `true`). O campo `audio.ptt` no payload pode sobrescrever por mensagem.
-- rejeita ligações recebidas automaticamente e, opcionalmente, envia uma mensagem de resposta ao chamador.
-- opção para marcar como lidas as conversas assim que uma mensagem é recebida (`MARK_READ_ON_MESSAGE=true`).
+Provider WhatsApp baseado em [WhatsMeow](https://github.com/tulir/whatsmeow), com foco em alta performance e operação independente.
 
+## O que mudou
 
-> Este provider integra com [unoapi-cloud](https://github.com/mbap-dev/unoapi-cloud) usando o padrão Cloud/Graph-like de payloads.
+- `provider-whatsmeow` agora pode rodar **sem depender do unoapi-cloud**.
+- Suporte nativo a **workers por números/sessões** (`WORKER_NUMBERS`).
+- Dashboard web moderno embutido no binário Go (sem Node).
+- Configuração de sessões diretamente no dashboard (sem obrigatoriedade de `WORKER_NUMBERS` em env).
+- API HTTP para:
+  - gestão de sessão (`connect`, `disconnect`, `reload`, `qr`, `status`)
+  - envio direto (`POST /api/v1/sessions/{id}/messages`)
+  - endpoints de mídia compatíveis com Cloud/UnoAPI (`upload`, `metadata`, `download`)
+  - observabilidade de worker (`GET /api/v1/worker`)
+  - listagem de sessões (`GET /api/v1/sessions`)
+- Storage de mídia com fallback automático: `S3 via env` ou `filesystem local`.
+- CI/CD atualizado para **build/test** + **publish multi-arch no GHCR**.
 
 ---
 
-## Endpoints HTTP
+## Arquitetura
 
-- `POST /sessions/{id}/connect` — inicia/recupera cliente e, se 1º login, gera QR.
-- `POST /sessions/{id}/disconnect` — encerra sessão.
-- `POST /sessions/{id}/reload` — reinicia a sessão.
-- `GET /sessions/{id}/qr` — **base64** do PNG do QR (durante pareamento).
-- `GET /healthz` — liveness (200).
-- `GET /readyz` — readiness (200 quando servidor iniciou).
-- `GET /sessions/{id}/resolve?to=VALUE` — resolve o destino aplicando overrides/heurística e mapeamento PN→LID; retorna `{ input, normalized_pn, pn_jid, lid_jid?, dest_jid, used_lid }`.
+```mermaid
+flowchart LR
+    A[Produtor de Mensagens]
+    B[RabbitMQ topic<br/>provider.whatsmeow.outgoing]
+    C[Worker A<br/>WORKER_NUMBERS=5511...,5522...]
+    D[Worker B<br/>WORKER_NUMBERS=5533...,5544...]
+    E[WhatsApp via WhatsMeow]
+    F[Webhook Sink HTTP]
+    G[Webhook AMQP Exchange<br/>provider.whatsmeow.webhooks]
+    H[Dashboard + API HTTP]
 
-### Exemplos
+    A -->|routing key provider.whatsmeow.NUMERO| B
+    B --> C
+    B --> D
+    C --> E
+    D --> E
+    C --> G
+    D --> G
+    C --> F
+    D --> F
+    C --> H
+```
+
+### Modelo de worker por número
+
+Cada worker pode receber um subconjunto de números/sessões:
+
+- `WORKER_NUMBERS=5562991111111,5562992222222`
+- bindings AMQP são gerados automaticamente por sessão:
+  - `provider.whatsmeow.5562991111111`
+  - `provider.whatsmeow.5562992222222`
+
+Com isso você escala horizontalmente sem colisão de responsabilidade entre workers.
+
+---
+
+## Dashboard (frontend)
+
+Acesse `GET /`.
+
+Funcionalidades:
+
+- visão do worker (`id`, fila, bindings, sessões atribuídas)
+- listagem de sessões com status
+- ações rápidas: `connect`, `reload`, `disconnect`, `QR`
+- envio rápido de mensagem de texto por sessão
+- atribuição e desatribuição de sessões ao worker atual
+- configuração por sessão via frontend/API:
+  - rejeitar ligações
+  - mensagem de rejeição
+  - marcar conversa como lida
+  - ignorar status/newsletters
+  - always-online por sessão
+- cadastro de múltiplos webhooks por sessão (estilo UnoAPI), com filtros:
+  - incoming
+  - outgoing
+  - update/status
+  - group
+  - newsletter
+- mensagens próprias da sessão (`fromMe`) seguem formato UnoAPI em `messages[]` (com `from` igual ao número da sessão) e respeitam o filtro `send_outgoing_messages`.
+
+Tudo servido pelo próprio binário Go (`go:embed`), sem dependências JS de build.
+
+---
+
+## Endpoints
+
+### Gestão de sessão
+
+- `POST /sessions/{id}/connect`
+- `POST /sessions/{id}/disconnect`
+- `POST /sessions/{id}/reload`
+- `GET /sessions/{id}/qr`
+- `GET /sessions/{id}/status`
+- `GET /sessions/{id}/resolve?to=VALUE`
+
+### API standalone
+
+- `GET /api/{version}/worker`
+- `GET /api/{version}/sessions`
+- `POST /api/{version}/sessions`
+- `POST /api/{version}/sessions/{id}/messages`
+- `POST /api/{version}/sessions/{id}/media`
+- `GET /api/{version}/sessions/{id}/media/{media_id}`
+- `GET /api/{version}/download/{id}/{file}`
+- `GET /api/{version}/sessions/{id}/config`
+- `PUT /api/{version}/sessions/{id}/config`
+- `DELETE /api/{version}/sessions/{id}/config`
+- `GET /api/{version}/sessions/{id}/webhooks`
+- `POST /api/{version}/sessions/{id}/webhooks`
+- `PUT /api/{version}/sessions/{id}/webhooks/{webhook_id}`
+- `DELETE /api/{version}/sessions/{id}/webhooks/{webhook_id}`
+- `POST /api/{version}/worker/assignments`
+- `DELETE /api/{version}/worker/assignments/{id}`
+
+Compatibilidade:
+
+- Continua aceitando `/api/v1/...`.
+- Também aceita qualquer versão em URL (ex.: `/api/v2/...`, `/api/v19.0/...`).
+- Endpoint estilo Meta para envio:
+  - `POST /{version}/{phone_number_id}/messages`  
+    Ex.: `/v19.0/5562991111111/messages`
+- Endpoint de mídia (compat Cloud/UnoAPI):
+  - `POST /{version}/{phone_number_id}/media` (multipart upload)
+  - `GET /{version}/{phone_number_id}/{media_id}` (metadados + URL)
+  - `GET /{version}/download/{phone_number_id}/{file}` (download/stream)
+
+### Saúde
+
+- `GET /healthz`
+- `GET /readyz`
+
+---
+
+## Exemplo de envio via HTTP (sem Uno)
 
 ```bash
-# Conectar/abrir sessão
-curl -X POST http://localhost:8080/sessions/main/connect
+curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "text",
+    "to": "5562999999999",
+    "text": { "body": "Olá!" }
+  }'
+```
 
-# Ler QR atual (base64)
-curl http://localhost:8080/sessions/main/qr
-## Ligações (auto-reject)
+Compatibilidade de destinatário no payload: o endpoint aceita `to` (preferencial) e fallback para `recipient_id`/`source_id`.
 
-- `REJECT_CALLS` (padrão `true`): quando uma ligação é recebida, ela é automaticamente rejeitada.
-- `REJECT_CALLS_MESSAGE` (opcional): texto de resposta enviado para quem ligou após a rejeição. Suporta `\n` para quebra de linha.
-  - Ex.: `REJECT_CALLS_MESSAGE="Não aceitamos ligações pelo WhatsApp.\nPor favor, envie uma mensagem."`
-  - Quando a mensagem é enviada, um webhook de `statuses` (status `sent`) é publicado para o UnoAPI informando o envio dessa resposta.
-## Variáveis de ambiente úteis
-- `AUDIO_PTT_DEFAULT` (bool, default `true`)
-- `IGNORE_STATUS_BROADCAST` (bool, default `true`) — ignora mensagens de "Atualizações/Status" (status@broadcast) recebidas; defina `false` para processar essas mensagens normalmente.
-- `IGNORE_NEWSLETTERS` (bool, default `true`) — ignora mensagens de canais/Newsletters (servidor `newsletter`); defina `false` para processá-las.
- 
- 
+Exemplo estilo Meta com versão dinâmica:
 
-## Testes
-- `go test ./...` roda testes unitários (helpers de envio, normalização de MIME, waveform etc.).
-- O Dockerfile executa `go test ./...` no estágio de build e falha a imagem se os testes falharem.
+```bash
+curl -X POST http://localhost:8080/v19.0/5562991111111/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messaging_product": "whatsapp",
+    "type": "text",
+    "to": "5562999999999",
+    "text": { "body": "Olá!" }
+}'
+```
 
-## Dev (Check Rápido)
-- Makefile incluso:
-  - `make check` → `go mod tidy`, `go vet`, `go test ./...`
-  - `make build` → compila binário em `bin/whatsmeow-adapter`
-  - `make docker-build` → build Docker local
-  - Sem pkg-config (se preferir): `make test-nopkg` / `make build-nopkg`
+Com token de API habilitado:
 
-## Logs
-- Controle por `LOG_LEVEL`: `error` (default), `info`, `debug`.
-- `debug`: inclui payloads e detalhes; `info`: resumos; `error`: apenas erros.
+```bash
+curl -X POST http://localhost:8080/v19.0/5562991111111/messages \
+  -H 'Authorization: Bearer SEU_TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"messaging_product":"whatsapp","type":"text","to":"5562999999999","text":{"body":"Olá!"}}'
+```
+
+Exemplo upload de mídia (multipart, estilo Cloud API):
+
+```bash
+curl -X POST http://localhost:8080/v19.0/5562991111111/media \
+  -F 'messaging_product=whatsapp' \
+  -F 'file=@/tmp/foto.jpg;type=image/jpeg'
+```
+
+Resposta esperada:
+
+```json
+{"id":"A1B2C3D4E5F6..."}
+```
+
+Exemplo consulta de metadados da mídia:
+
+```bash
+curl http://localhost:8080/v19.0/5562991111111/A1B2C3D4E5F6...
+```
+
+Exemplo envio de imagem usando `id` de mídia (sem `link`):
+
+```bash
+curl -X POST http://localhost:8080/v19.0/5562991111111/messages \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messaging_product": "whatsapp",
+    "to": "5562999999999",
+    "type": "image",
+    "image": { "id": "A1B2C3D4E5F6..." }
+  }'
+```
+
+## Exemplo de criação/conexão de sessão
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"5562991111111","connect":true}'
+```
+
+## Exemplo de configuração por sessão (sem env)
+
+```bash
+curl -X PUT http://localhost:8080/api/v1/sessions/5562991111111/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "reject_calls": true,
+    "reject_calls_message": "Nao atendemos ligacoes. Envie mensagem.",
+    "mark_read_on_message": true,
+    "ignore_status_broadcast": true,
+    "ignore_newsletters": true,
+    "outgoing_messages_coex": true,
+    "always_online": false,
+    "always_online_interval_seconds": 60
+  }'
+```
+
+## Exemplo de cadastro de webhook por sessão
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/webhooks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "chatwoot-main",
+    "name": "Chatwoot principal",
+    "url": "https://seu-app.com/webhooks/whatsapp",
+    "append_session": true,
+    "enabled": true,
+    "timeout_ms": 5000,
+    "send_incoming_messages": true,
+    "send_outgoing_messages": true,
+    "send_update_messages": true,
+    "send_group_messages": true,
+    "send_newsletter_messages": false,
+    "header": "Authorization",
+    "token": "Bearer xxxxx"
+  }'
+```
+
+---
+
+## Variáveis de ambiente
+
+Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md](/Users/mbppereira/projetos/Envolve-conectores/provider-whatsmeow/docs/ENVIRONMENT.md).
+
+### Core
+
+- `HTTP_ADDR` (default `:8080`)
+- `SESSION_STORE` (default `./state/whatsmeow`)
+- `LOG_LEVEL` (`error|info|debug`)
+
+### AMQP ingestão (outgoing)
+
+- `AMQP_CONSUMER_ENABLED` (default `true`)
+- `AMQP_URL` (ex.: `amqp://guest:guest@rabbitmq:5672/`)
+- `AMQP_EXCHANGE` (default `provider.whatsmeow.outgoing`)
+- `AMQP_QUEUE` (default `outgoing.whatsmeow` ou `outgoing.whatsmeow.<worker>`)
+- `AMQP_BINDING` (default `provider.whatsmeow.*`)
+- `AMQP_BINDINGS` (lista CSV opcional; sobrepõe `AMQP_BINDING`)
+- `AMQP_BINDING_PREFIX` (default derivado de `AMQP_BINDING`)
+
+### Worker por sessão
+
+- `WORKER_ID` (default hostname)
+- `WORKER_NUMBERS` (CSV; bootstrap opcional de sessões atribuídas ao worker)
+- `WORKER_STRICT_ASSIGNMENT` (default `true`)
+- `WORKER_AUTOCONNECT_ASSIGNED` (default `true`)
+
+> Você pode deixar `WORKER_NUMBERS` vazio e atribuir sessões pelo dashboard.  
+> As atribuições são persistidas em `SESSION_STORE/_worker_assignments.json`.
+> As configurações por sessão são persistidas em `SESSION_STORE/_session_overrides.json`.
+> Os webhooks por sessão são persistidos em `SESSION_STORE/_session_webhooks.json`.
+
+### Webhook de saída
+
+- `AMQP_WEBHOOK_EXCHANGE` (default `provider.whatsmeow.webhooks`)
+- `WEBHOOK_BASE` (fallback HTTP opcional, usado quando não há webhook cadastrado por sessão)
+
+### Dashboard
+
+- `UI_ENABLED` (default `true`)
+- `UI_TITLE` (default `WhatsMeow Control Center`)
+- `UI_AUTH_ENABLED` (default `false`, ou habilitado automaticamente quando user/pass forem definidos)
+- `UI_AUTH_USER`
+- `UI_AUTH_PASS`
+- `UI_AUTH_REALM` (default `WhatsMeow Dashboard`)
+- `API_AUTH_ENABLED` (token obrigatório nos endpoints de API)
+- `API_AUTH_TOKEN` (Bearer token)
+- `UNOAPI_AUTH_TOKEN` (alias de compatibilidade)
+- `API_AUTH_ALLOW_QUERY` (aceita `?access_token=...`, default `true`)
+
+Quando a autenticação UI está ativa, ficam protegidas as rotas:
+
+- `/`
+- `/assets/*`
+- `/api/*`
+- `/sessions/*`
+
+Quando o token de API está ativo:
+
+- envie `Authorization: Bearer <TOKEN>` nas requisições;
+- ou use `?access_token=<TOKEN>` se `API_AUTH_ALLOW_QUERY=true`.
+
+### Armazenamento de mídia
+
+- `MEDIA_STORAGE_MODE` (`auto|local|s3`, default `auto`)
+- `MEDIA_STORE_DIR` (default `./state/whatsmeow/_media`)
+- `MEDIA_REGISTRY_FILE` (default `./state/whatsmeow/_media_registry.json`)
+- `MEDIA_URL_TTL_SECONDS` (default `259200`)
+- `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT`
+- `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`
+- `S3_FORCE_PATH_STYLE`, `S3_PREFIX`
+
+Observação:
+
+- Em `MEDIA_STORAGE_MODE=auto`, o provider usa S3 somente quando bucket + credenciais estiverem configurados. Se não estiverem, faz fallback automático para local.
+
+### Recursos WhatsApp
+
+- `AUDIO_PTT_DEFAULT` (default `true`)
+- `REJECT_CALLS` (default `true`)
+- `REJECT_CALLS_MESSAGE` (opcional)
+- `MARK_READ_ON_MESSAGE` (default `false`)
+- `CHECK_USER_EXISTS` (default `true`)
+- `IGNORE_STATUS_BROADCAST` (default `true`)
+- `IGNORE_NEWSLETTERS` (default `true`)
+- `OUTGOING_MESSAGES_COEX` (default `false`)
+- `ALWAYS_ONLINE` (default `false`)
+- `ALWAYS_ONLINE_INTERVAL_SECONDS` (default `60`)
+
+### Redis opcional
+
+- `REDIS_URL` (status + config distribuída)
+- `STATUS_PREFIX` (default `provider-whatsmeow-status:`)
+- `SESSION_CONFIG_PREFIX` (default `provider-whatsmeow-config:`)
+
+---
+
+## Executando localmente
+
+```bash
+make check
+make build
+./bin/whatsmeow-adapter
+```
+
+Se faltar pkg-config/opus local:
+
+```bash
+make test-nopkg
+make build-nopkg
+```
+
+---
+
+## Deploy com Docker
+
+### Build da imagem
+
+```bash
+docker build -t provider-whatsmeow:local .
+```
+
+### Single worker
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e AMQP_URL='amqp://guest:guest@host.docker.internal:5672/' \
+  -e AMQP_EXCHANGE='provider.whatsmeow.outgoing' \
+  -e AMQP_QUEUE='outgoing.whatsmeow.worker-a' \
+  -e WORKER_ID='worker-a' \
+  -e WORKER_NUMBERS='5562991111111,5562992222222' \
+  -e WORKER_STRICT_ASSIGNMENT='true' \
+  -e SESSION_STORE='/var/lib/whatsmeow' \
+  -v $(pwd)/data/worker-a:/var/lib/whatsmeow \
+  provider-whatsmeow:local
+```
+
+### Multi-worker (compose)
+
+Use o `docker-compose.yml` deste repositório:
+
+```bash
+docker compose up -d --build
+```
+
+Serviços incluídos por padrão:
+
+- `rabbitmq`
+- `worker-a` (com UI em `:8080`)
+
+Worker extra (headless) para cenário multi-worker:
+
+```bash
+docker compose --profile multi-worker up -d --build
+```
+
+### Deploy completo com Traefik (TLS + roteamento)
+
+Arquivos prontos em `deploy/traefik/`:
+
+- `deploy/traefik/docker-compose.traefik.yml`
+- `deploy/traefik/.env.example`
+- `deploy/traefik/README.md`
+
+Passo rápido:
+
+```bash
+cd deploy/traefik
+cp .env.example .env
+mkdir -p data/letsencrypt && touch data/letsencrypt/acme.json && chmod 600 data/letsencrypt/acme.json
+docker compose -f docker-compose.traefik.yml --env-file .env up -d
+```
+
+Esse cenário sobe:
+
+- Traefik com Let's Encrypt automático
+- RabbitMQ interno
+- `worker-a` exposto em `https://<PROVIDER_HOST>` (dashboard/API)
+- `worker-b` interno para processamento
+
+---
+
+## CI/CD (GitHub Actions)
+
+Workflow: `.github/workflows/ci-cd.yml`
+
+### Pipeline
+
+1. `checks`
+- `go mod tidy`
+- `go vet ./...`
+- `go test ./...`
+- `go build`
+
+2. `docker` (push em `main`, tags `v*.*.*` ou manual)
+- build multi-arch (`linux/amd64`, `linux/arm64`)
+- publish em `ghcr.io/<owner>/<repo>`
+- tags automáticas: `latest` (main), branch, sha, semver
+
+---
+
+## Compatibilidade com UnoAPI Cloud
+
+Apesar de standalone, ainda é possível manter integração com UnoAPI ajustando envs para nomes de exchange/keys compatíveis.
+
+Exemplo:
+
+- `AMQP_EXCHANGE=unoapi.outgoing`
+- `AMQP_WEBHOOK_EXCHANGE=unoapi.brigde`
+- `STATUS_PREFIX=unoapi-status:`
+- `SESSION_CONFIG_PREFIX=unoapi-config:`
+
+---
+
+## Comandos úteis
+
+```bash
+# health
+curl -i http://localhost:8080/healthz
+
+# worker info
+curl -s http://localhost:8080/api/v1/worker | jq
+
+# sessões
+curl -s http://localhost:8080/api/v1/sessions | jq
+```

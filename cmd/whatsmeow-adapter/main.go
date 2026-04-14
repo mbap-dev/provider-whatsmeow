@@ -27,26 +27,42 @@ func main() {
 	// for details on each field.
 	cfg := config.NewConfig()
 
-	// Init Redis status writer (no-op if REDIS_URL empty)
-	status.Init(cfg.RedisURL)
+	// Init status writer (in-memory + optional Redis mirror)
+	status.Init(cfg.RedisURL, cfg.StatusPrefix)
 
 	// Create a manager for WhatsApp clients.  The manager is responsible
 	// for bootstrapping new sessions, keeping track of connected clients
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
-	clientManager := provider.NewClientManager(
-		cfg.SessionStore,
-		cfg.WebhookBase,
-		cfg.AudioPTTDefault,
-		cfg.RejectCalls,
-		cfg.RejectCallsMessage,
-		cfg.AutoMarkReadOnMessage,
-		cfg.PNResolverURL,
-		cfg.IgnoreStatusBroadcast,
-		cfg.IgnoreNewsletters,
-		cfg.RedisURL,
-		cfg.CheckUserExists,
-	)
+	clientManager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore:          cfg.SessionStore,
+		WebhookBase:           cfg.WebhookBase,
+		DefaultAudioPTT:       cfg.AudioPTTDefault,
+		RejectCalls:           cfg.RejectCalls,
+		RejectMessage:         cfg.RejectCallsMessage,
+		AutoMarkRead:          cfg.AutoMarkReadOnMessage,
+		PNResolverURL:         cfg.PNResolverURL,
+		IgnoreStatusBroadcast: cfg.IgnoreStatusBroadcast,
+		IgnoreNewsletters:     cfg.IgnoreNewsletters,
+		OutgoingMessagesCoex:  cfg.OutgoingMessagesCoex,
+		RedisURL:              cfg.RedisURL,
+		SessionConfigPrefix:   cfg.SessionConfigPrefix,
+		CheckUserExists:       cfg.CheckUserExists,
+		WorkerID:              cfg.WorkerID,
+		AssignedSessions:      cfg.WorkerNumbers,
+		WorkerStrict:          cfg.WorkerStrict,
+		MediaStoreDir:         cfg.MediaStoreDir,
+		MediaRegistryFile:     cfg.MediaRegistryFile,
+		MediaStorageMode:      cfg.MediaStorageMode,
+		MediaURLTTLSeconds:    cfg.MediaURLTTLSeconds,
+		S3Bucket:              cfg.S3Bucket,
+		S3Region:              cfg.S3Region,
+		S3Endpoint:            cfg.S3Endpoint,
+		S3AccessKeyID:         cfg.S3AccessKeyID,
+		S3SecretAccessKey:     cfg.S3SecretAccess,
+		S3ForcePathStyle:      cfg.S3ForcePathStyle,
+		S3Prefix:              cfg.S3Prefix,
+	})
 	if cfg.AlwaysOnline {
 		clientManager.EnableAlwaysOnline(time.Duration(cfg.AlwaysOnlineIntervalSeconds) * time.Second)
 	}
@@ -59,27 +75,45 @@ func main() {
 	} else {
 		ilog.Infof("no saved sessions to restore")
 	}
+	if cfg.WorkerAutoConnectAssigned && len(cfg.WorkerNumbers) > 0 {
+		auto := clientManager.AutoConnectAssignedSessions()
+		if len(auto) > 0 {
+			ilog.Infof("worker auto-connect enabled: %d assigned session(s) scheduled: %v", len(auto), auto)
+		}
+	}
 
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.
 	if err := amqpconsumer.InitExchange(cfg); err != nil {
 		ilog.Errorf("failed to initialize AMQP exchange: %v", err)
-		os.Exit(1)
+		if cfg.AMQPConsumerEnabled {
+			os.Exit(1)
+		}
 	}
 
-	// Initialize AMQP webhook publisher (UnoAPI broker)
-	if err := broker.InitWebhookPublisher(cfg); err != nil {
-		ilog.Errorf("failed to initialize AMQP webhook publisher: %v", err)
-		// Do not exit: keep running; HTTP fallback may be used.
+	// Initialize AMQP webhook publisher (optional sink)
+	if cfg.AMQPURL != "" {
+		if err := broker.InitWebhookPublisher(cfg); err != nil {
+			ilog.Errorf("failed to initialize AMQP webhook publisher: %v", err)
+			// Do not exit: keep running; HTTP fallback may be used.
+		}
+	} else {
+		ilog.Infof("AMQP webhook publisher skipped (AMQP_URL empty)")
 	}
 
 	// Initialize the AMQP consumer.  The consumer will connect to the
 	// broker, bind the configured queue to the exchange and routing key and
 	// then dispatch all incoming messages to the provider send function.
-	consumer, err := amqpconsumer.NewConsumer(cfg, clientManager)
-	if err != nil {
-		ilog.Errorf("failed to initialise AMQP consumer: %v", err)
-		os.Exit(1)
+	var consumer *amqpconsumer.Consumer
+	var err error
+	if cfg.AMQPConsumerEnabled {
+		consumer, err = amqpconsumer.NewConsumer(cfg, clientManager)
+		if err != nil {
+			ilog.Errorf("failed to initialise AMQP consumer: %v", err)
+			os.Exit(1)
+		}
+	} else {
+		ilog.Infof("running in standalone mode (AMQP consumer disabled)")
 	}
 
 	// Spin up the HTTP server exposing health checks, QR code
@@ -97,6 +131,9 @@ func main() {
 	// an error it will be logged.  The consumer blocks until the
 	// context is cancelled.
 	go func() {
+		if consumer == nil {
+			return
+		}
 		if err := consumer.Start(ctx); err != nil {
 			ilog.Errorf("AMQP consumer stopped: %v", err)
 		}

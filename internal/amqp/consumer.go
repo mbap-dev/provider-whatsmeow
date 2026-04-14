@@ -35,22 +35,20 @@ func NewConsumer(cfg *config.Config, provider *provider.ClientManager) (*Consume
 	return &Consumer{cfg: cfg, provider: provider}, nil
 }
 
-func suffixFromRoutingKey(binding, rk string) string {
-	prefix := binding
-	if i := strings.IndexAny(binding, "*#"); i >= 0 {
-		prefix = strings.TrimSuffix(binding[:i], ".")
-	}
-	if prefix != "" && strings.HasPrefix(rk, prefix+".") {
-		return strings.TrimPrefix(rk, prefix+".")
-	}
+func sessionFromRoutingKey(rk string) string {
 	parts := strings.Split(rk, ".")
 	if len(parts) > 0 {
 		return parts[len(parts)-1]
 	}
-	return rk
+	return strings.TrimSpace(rk)
 }
 
 func (c *Consumer) Start(ctx context.Context) error {
+	if !c.cfg.AMQPConsumerEnabled {
+		ilog.Infof("AMQP consumer disabled by AMQP_CONSUMER_ENABLED=false")
+		<-ctx.Done()
+		return nil
+	}
 	if c.cfg.AMQPURL == "" {
 		ilog.Infof("AMQP URL is empty; skipping consumer startup")
 		<-ctx.Done()
@@ -92,14 +90,17 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 	c.queue = queue
 
-	if err := ch.QueueBind(
-		c.cfg.AMQPQueue,
-		c.cfg.AMQPBinding,
-		c.cfg.AMQPExchange,
-		false,
-		nil,
-	); err != nil {
-		return fmt.Errorf("failed to bind queue: %w", err)
+	bindings := configuredBindings(c.cfg)
+	for _, binding := range bindings {
+		if err := ch.QueueBind(
+			c.cfg.AMQPQueue,
+			binding,
+			c.cfg.AMQPExchange,
+			false,
+			nil,
+		); err != nil {
+			return fmt.Errorf("failed to bind queue to %q: %w", binding, err)
+		}
 	}
 
 	deliveries, err := ch.Consume(
@@ -115,7 +116,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to consume from queue: %w", err)
 	}
 
-	ilog.Infof("AMQP consumer connected: exchange=%s queue=%s binding=%s", c.cfg.AMQPExchange, c.cfg.AMQPQueue, c.cfg.AMQPBinding)
+	ilog.Infof("AMQP consumer connected: exchange=%s queue=%s bindings=%v worker_id=%s", c.cfg.AMQPExchange, c.cfg.AMQPQueue, bindings, c.provider.WorkerID())
 
 	for {
 		select {
@@ -176,7 +177,18 @@ func (c *Consumer) Start(ctx context.Context) error {
 			}
 
 			// Resolve a sessão: sufixo do routing key (ex.: provider.whatsmeow.<sess>)
-			phoneID := suffixFromRoutingKey(c.cfg.AMQPBinding, d.RoutingKey)
+			phoneID := sessionFromRoutingKey(d.RoutingKey)
+			if phoneID == "" {
+				phoneID = strings.TrimSpace(env.Payload.SessionID)
+			}
+			if phoneID == "" {
+				ilog.Errorf("failed to resolve session from routing key=%q", d.RoutingKey)
+				continue
+			}
+			if !c.provider.AllowsSession(phoneID) {
+				ilog.Debugf("skipping message for unassigned session=%s routing_key=%s", phoneID, d.RoutingKey)
+				continue
+			}
 
 			// Log de entrada (sanitizado)
 			toPreview := strings.TrimSpace(env.Payload.To)
@@ -188,21 +200,22 @@ func (c *Consumer) Start(ctx context.Context) error {
 			mediaURL := strings.TrimSpace(env.Payload.MediaURL)
 			ilog.Debugf("amqp message decoded phoneID=%s id=%s type=%q to=%q media_url=%q text=%v image=%v doc=%v audio=%v", phoneID, env.Payload.MessageID, typ, toPreview, mediaURL, hasText, hasImage, hasDoc, hasAudio)
 
-			go func(msg provider.OutgoingMessage, phone string) {
+			rawBody := append([]byte(nil), d.Body...)
+			go func(msg provider.OutgoingMessage, phone string, rawBody []byte) {
 				ctxSend := context.WithValue(context.Background(), provider.CtxKeyPhoneNumberID, phone)
 				if err := c.provider.Send(ctxSend, msg); err != nil {
 					to := strings.TrimSpace(msg.To)
 					media := strings.TrimSpace(msg.MediaURL)
 					ilog.Errorf("failed to send message (phoneID=%s id=%s type=%q to=%q media_url=%q): %v", phone, msg.MessageID, strings.TrimSpace(msg.Type), to, media, err)
 					if to == "" {
-						raw := string(d.Body)
+						raw := string(rawBody)
 						if len(raw) > 1500 {
 							raw = raw[:1500] + "...(truncated)"
 						}
 						ilog.Debugf("payload_raw: %s", raw)
 					}
 				}
-			}(env.Payload, phoneID)
+			}(env.Payload, phoneID, rawBody)
 		}
 	}
 }

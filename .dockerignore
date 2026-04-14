@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+.claude
+.gocache
+.gomodcache
+.gopath
+bin
+data
+state
+*.log
+*.tmp
+.DS_Store

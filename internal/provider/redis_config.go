@@ -10,8 +10,8 @@ import (
 	redis "github.com/redis/go-redis/v9"
 )
 
-// unoConfigPayload holds a subset of UnoAPI config fields we care about.
-type unoConfigPayload struct {
+// sessionConfigPayload holds a subset of distributed config fields we care about.
+type sessionConfigPayload struct {
 	// raw fields with presence information
 	rejectCalls                 string
 	readOnReceipt               bool
@@ -24,14 +24,19 @@ type unoConfigPayload struct {
 	hasAlwaysOnline             bool
 	alwaysOnlineEverySeconds    int
 	hasAlwaysOnlineEverySeconds bool
+	outgoingMessagesCoex        bool
+	hasOutgoingMessagesCoex     bool
 }
 
-// fetchUnoConfig reads UnoAPI config for a given phone (digits) from Redis.
+// fetchSessionConfig reads session config for a given phone/session key from Redis.
 // It returns (payload, true) if found and parsed, otherwise (_, false).
-func fetchUnoConfig(redisURL, phone string) (unoConfigPayload, bool) {
-	out := unoConfigPayload{}
+func fetchSessionConfig(redisURL, keyPrefix, phone string) (sessionConfigPayload, bool) {
+	out := sessionConfigPayload{}
 	if strings.TrimSpace(redisURL) == "" || strings.TrimSpace(phone) == "" {
 		return out, false
+	}
+	if strings.TrimSpace(keyPrefix) == "" {
+		keyPrefix = "provider-whatsmeow-config:"
 	}
 	opt, err := redis.ParseURL(redisURL)
 	if err != nil {
@@ -41,7 +46,7 @@ func fetchUnoConfig(redisURL, phone string) (unoConfigPayload, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	defer c.Close()
-	key := "unoapi-config:" + phone
+	key := strings.TrimSpace(keyPrefix) + phone
 	s, err := c.Get(ctx, key).Result()
 	if err != nil || strings.TrimSpace(s) == "" {
 		return out, false
@@ -88,6 +93,12 @@ func fetchUnoConfig(redisURL, phone string) (unoConfigPayload, bool) {
 		if n, ok2 := asInt(v); ok2 {
 			out.alwaysOnlineEverySeconds = n
 			out.hasAlwaysOnlineEverySeconds = true
+		}
+	}
+	if v, ok := m["outgoingMessagesCoex"]; ok {
+		if b, ok2 := asBool(v); ok2 {
+			out.outgoingMessagesCoex = b
+			out.hasOutgoingMessagesCoex = true
 		}
 	}
 	return out, true
@@ -139,4 +150,8 @@ func asInt(v any) (int, bool) {
 // small wrapper to avoid importing encoding/json everywhere in this package file
 func jsonUnmarshal(b []byte, v any) error {
 	return json.Unmarshal(b, v)
+}
+
+func jsonMarshalIndent(v any) ([]byte, error) {
+	return json.MarshalIndent(v, "", "  ")
 }

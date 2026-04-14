@@ -120,10 +120,14 @@ func (m *ClientManager) handleCallRejection(sessionID string, client *whatsmeow.
 		if err != nil {
 			log.WithSession(sessionID).Error("call reply send error: %v", err)
 		} else {
-			// Emit webhook 'message' (outgoing) to UnoAPI
-			_ = m.emitCloudOutgoingText(sessionID, to, resp.ID, msgText)
-			// Emit webhook 'sent' status to UnoAPI
-			_ = m.emitCloudSent(sessionID, to, resp.ID)
+			// UnoAPI behavior: when reject-call auto-reply is sent, emit the
+			// outgoing message payload (messages[]) in addition to statuses.
+			if err := m.emitCloudOutgoingText(sessionID, client, to, resp.ID, msgText); err != nil {
+				log.WithSession(sessionID).WithMessageID(string(resp.ID)).Error("call reply webhook message emit error: %v", err)
+			}
+			if err := m.emitCloudSent(sessionID, to, resp.ID); err != nil {
+				log.WithSession(sessionID).WithMessageID(string(resp.ID)).Error("call reply webhook status emit error: %v", err)
+			}
 			log.WithSession(sessionID).WithMessageID(string(resp.ID)).Info("evt=call_reply_sent to=%s", to.String())
 		}
 	}
@@ -193,19 +197,51 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 // =========== Emissão de mensagens no formato Cloud ===========
 
 func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Client, e *events.Message) error {
-	phone := normalizePhone(sessionID) // Uno usa “phone” como id/metadata.* sem "+"
+	phone := normalizePhone(sessionID)
 	msg := e.Message
 	if msg == nil {
+		return nil
+	}
+	if cacheConsumeSyntheticOutgoing(sessionID, e.Info.ID) {
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: synthetic_outgoing_already_emitted")
 		return nil
 	}
 
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
+	ownMessage := fromMe || e.Info.DeviceSentMeta != nil
+	if !ownMessage {
+		ownMessage = isOwnJID(sessionID, client, senderJID) || isOwnJID(sessionID, client, e.Info.SenderAlt)
+	}
+	if ownMessage && e.Info.DeviceSentMeta != nil {
+		if dst := strings.TrimSpace(e.Info.DeviceSentMeta.DestinationJID); dst != "" {
+			if parsed, err := types.ParseJID(dst); err == nil && parsed.User != "" && parsed.Server != "" {
+				chatJID = parsed
+			}
+		}
+	}
+	// When the message is ours, WhatsMeow may keep Chat as own JID and expose
+	// the real recipient in RecipientAlt. Prefer RecipientAlt in this case.
+	if ownMessage && e.Info.RecipientAlt != (types.JID{}) && e.Info.RecipientAlt.Server != "" {
+		if chatJID.User == "" || isOwnJID(sessionID, client, chatJID) || isLIDJID(chatJID) {
+			chatJID = e.Info.RecipientAlt
+		}
+	}
 	// Preferir JID alternativo (AD) quando a lib expõe SenderAlt não‑LID
 	if e.Info.SenderAlt != (types.JID{}) && !isLIDJID(e.Info.SenderAlt) && e.Info.SenderAlt.Server != "" {
 		senderJID = e.Info.SenderAlt
 	}
+	log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
+		"msg_source own=%t from_me=%t device_sent=%t chat=%s sender=%s sender_alt=%s recipient_alt=%s",
+		ownMessage,
+		fromMe,
+		e.Info.DeviceSentMeta != nil,
+		chatJID.String(),
+		senderJID.String(),
+		e.Info.SenderAlt.String(),
+		e.Info.RecipientAlt.String(),
+	)
 
 	// Ignore optional channels per configuration
 	if m.getIgnoreStatusBroadcast(sessionID) && (isStatusBroadcastJID(chatJID) || isStatusBroadcastJID(senderJID)) {
@@ -236,7 +272,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		contactPhone = resolveDisplay(senderJID)
 	}
 	fromField := phone
-	if !fromMe {
+	if !ownMessage {
 		fromField = resolveDisplay(senderJID)
 	}
 
@@ -417,6 +453,10 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
 		imgExt := extensionByMime(mimeType)
+		fileName := ""
+		if strings.TrimSpace(imgExt) != "" {
+			fileName = e.Info.ID + imgExt
+		}
 		image := map[string]any{
 			"caption":     im.GetCaption(),
 			"mime_type":   splitMime(mimeType),
@@ -424,11 +464,24 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"media_key":   b64(im.GetMediaKey()),
 			"direct_path": im.GetDirectPath(),
 		}
-		if strings.TrimSpace(imgExt) != "" {
-			image["filename"] = e.Info.ID + imgExt
+		if fileName != "" {
+			image["filename"] = fileName
 		}
+		fileSize := int64(0)
 		if im.FileLength != nil {
 			image["file_length"] = im.GetFileLength()
+			fileSize = int64(im.GetFileLength())
+		}
+		if media, err := m.persistInboundMediaFromWA(sessionID, client, e.Info.ID, im, MediaSaveInput{
+			MessagingProduct: "whatsapp",
+			MIMEType:         splitMime(mimeType),
+			SHA256:           b64(im.GetFileSHA256()),
+			FileSize:         fileSize,
+			Filename:         fileName,
+		}); err == nil {
+			image["id"] = media.ID
+		} else {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store image skipped: %v", err)
 		}
 		wireMsg["image"] = image
 
@@ -436,16 +489,30 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		d := msg.GetDocumentMessage()
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
+		fileName := firstNonEmpty(d.GetFileName(), d.GetTitle())
 		document := map[string]any{
 			"caption":     d.GetCaption(),
-			"filename":    firstNonEmpty(d.GetFileName(), d.GetTitle()),
+			"filename":    fileName,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(d.GetFileSHA256()),
 			"media_key":   b64(d.GetMediaKey()),
 			"direct_path": d.GetDirectPath(),
 		}
+		fileSize := int64(0)
 		if d.FileLength != nil {
 			document["file_length"] = d.GetFileLength()
+			fileSize = int64(d.GetFileLength())
+		}
+		if media, err := m.persistInboundMediaFromWA(sessionID, client, e.Info.ID, d, MediaSaveInput{
+			MessagingProduct: "whatsapp",
+			MIMEType:         splitMime(mimeType),
+			SHA256:           b64(d.GetFileSHA256()),
+			FileSize:         fileSize,
+			Filename:         fileName,
+		}); err == nil {
+			document["id"] = media.ID
+		} else {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store document skipped: %v", err)
 		}
 		wireMsg["document"] = document
 
@@ -453,6 +520,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		v := msg.GetVideoMessage()
 		wireMsg["type"] = "video"
 		mimeType := v.GetMimetype()
+		videoExt := extensionByMime(mimeType)
+		videoFileName := ""
+		if strings.TrimSpace(videoExt) != "" {
+			videoFileName = e.Info.ID + videoExt
+		}
 		video := map[string]any{
 			"caption":     v.GetCaption(),
 			"mime_type":   splitMime(mimeType),
@@ -460,8 +532,24 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"media_key":   b64(v.GetMediaKey()),
 			"direct_path": v.GetDirectPath(),
 		}
+		if videoFileName != "" {
+			video["filename"] = videoFileName
+		}
+		fileSize := int64(0)
 		if v.FileLength != nil {
 			video["file_length"] = v.GetFileLength()
+			fileSize = int64(v.GetFileLength())
+		}
+		if media, err := m.persistInboundMediaFromWA(sessionID, client, e.Info.ID, v, MediaSaveInput{
+			MessagingProduct: "whatsapp",
+			MIMEType:         splitMime(mimeType),
+			SHA256:           b64(v.GetFileSHA256()),
+			FileSize:         fileSize,
+			Filename:         videoFileName,
+		}); err == nil {
+			video["id"] = media.ID
+		} else {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store video skipped: %v", err)
 		}
 		wireMsg["video"] = video
 
@@ -469,6 +557,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		a := msg.GetAudioMessage()
 		wireMsg["type"] = "audio"
 		mimeType := a.GetMimetype()
+		audioExt := extensionByMime(mimeType)
+		audioFileName := ""
+		if strings.TrimSpace(audioExt) != "" {
+			audioFileName = e.Info.ID + audioExt
+		}
 		audio := map[string]any{
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(a.GetFileSHA256()),
@@ -488,6 +581,21 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		if len(a.GetWaveform()) > 0 {
 			audio["waveform"] = base64.StdEncoding.EncodeToString(a.GetWaveform())
 		}
+		fileSize := int64(0)
+		if a.FileLength != nil {
+			fileSize = int64(a.GetFileLength())
+		}
+		if media, err := m.persistInboundMediaFromWA(sessionID, client, e.Info.ID, a, MediaSaveInput{
+			MessagingProduct: "whatsapp",
+			MIMEType:         splitMime(mimeType),
+			SHA256:           b64(a.GetFileSHA256()),
+			FileSize:         fileSize,
+			Filename:         audioFileName,
+		}); err == nil {
+			audio["id"] = media.ID
+		} else {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store audio skipped: %v", err)
+		}
 		wireMsg["audio"] = audio
 
 	case msg.GetStickerMessage() != nil:
@@ -505,6 +613,21 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 		if s.FileLength != nil {
 			sticker["file_length"] = s.GetFileLength()
+		}
+		fileSize := int64(0)
+		if s.FileLength != nil {
+			fileSize = int64(s.GetFileLength())
+		}
+		if media, err := m.persistInboundMediaFromWA(sessionID, client, e.Info.ID, s, MediaSaveInput{
+			MessagingProduct: "whatsapp",
+			MIMEType:         splitMime(mimeType),
+			SHA256:           b64(s.GetFileSHA256()),
+			FileSize:         fileSize,
+			Filename:         filename,
+		}); err == nil {
+			sticker["id"] = media.ID
+		} else {
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store sticker skipped: %v", err)
 		}
 		wireMsg["sticker"] = sticker
 
@@ -526,7 +649,6 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			return nil
 		}
 	}
-
 	// Contato com nome amigável:
 	// - Grupo: usar nome do grupo
 	// - 1:1: se a mensagem é minha (fromMe), não usar PushName; usar o número (contactPhone)
@@ -539,7 +661,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			dispName = chatJID.User
 		}
 	} else {
-		if fromMe {
+		if ownMessage {
 			dispName = contactPhone
 		} else {
 			dispName = strings.TrimSpace(e.Info.PushName)
@@ -548,19 +670,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			}
 		}
 	}
-	// Monta profile com name e, se disponível, avatar (Cloud-like)
-	profile := map[string]any{"name": dispName}
-	if av, ok := getAvatarURL(sessionID, client, func() types.JID {
-		if isGroupJID(chatJID) {
-			return chatJID
-		}
-		return chatJID
-	}()); ok && strings.TrimSpace(av) != "" {
-		profile["picture"] = av
-		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_set url=%s chat=%s sender=%s", av, chatJID.String(), senderJID.String())
-	} else {
-		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("avatar_not_found chat=%s sender=%s is_group=%t", chatJID.String(), senderJID.String(), isGroupJID(chatJID))
-	}
+	profile := buildCloudProfile(sessionID, client, chatJID, dispName, e.Info.ID)
 	contactObj := map[string]any{"profile": profile}
 	// wa_id must always be the participant phone (digits) for Chatwoot to build a Contact with E.164
 	contactObj["wa_id"] = contactPhone
@@ -581,12 +691,13 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 
 	payload := cloudEnvelope(phone)
-	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	change := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
+	val := change["value"].(map[string]any)
 	val["contacts"] = []any{contactObj}
 	val["messages"] = []any{wireMsg}
 
 	log.WithSession(sessionID).WithMessageID(e.Info.ID).
-		Info("evt=message cloud payload ready type=%s", wireMsg["type"])
+		Info("evt=message cloud payload ready field=messages type=%s", wireMsg["type"])
 
 	return m.deliverWebhook(sessionID, payload)
 }
@@ -611,12 +722,31 @@ func (m *ClientManager) emitCloudReceipt(sessionID string, client *whatsmeow.Cli
 	if recipient == "" && e.Sender != (types.JID{}) {
 		recipient = jidToPhoneNumberIfUser(e.Sender)
 	}
+	recipient = strings.ReplaceAll(recipient, "+", "")
+	conversationID := ""
+	if e.Chat != (types.JID{}) {
+		conversationID = e.Chat.String()
+	}
 
 	states := make([]any, 0, len(e.MessageIDs))
 	for _, id := range e.MessageIDs {
+		msgID := string(id)
+		receiptKey := strings.Join([]string{
+			sessionID,
+			status,
+			msgID,
+			recipient,
+			conversationID,
+		}, "|")
+		if !cacheTryPutReceipt(receiptKey) {
+			log.WithSession(sessionID).WithMessageID(msgID).
+				Debug("evt=receipt duplicate skipped type=%s recipient=%s conversation=%s", e.Type, recipient, conversationID)
+			continue
+		}
+
 		st := map[string]any{
 			"id":           id,
-			"recipient_id": strings.ReplaceAll(recipient, "+", ""),
+			"recipient_id": recipient,
 			"status":       status,
 		}
 		if !e.Timestamp.IsZero() {
@@ -624,9 +754,12 @@ func (m *ClientManager) emitCloudReceipt(sessionID string, client *whatsmeow.Cli
 		}
 		// conversation.id ajuda o Uno a agrupar
 		if e.Chat != (types.JID{}) {
-			st["conversation"] = map[string]any{"id": e.Chat.String()}
+			st["conversation"] = map[string]any{"id": conversationID}
 		}
 		states = append(states, st)
+	}
+	if len(states) == 0 {
+		return nil
 	}
 
 	payload := cloudEnvelope(phone)
@@ -691,7 +824,7 @@ func (m *ClientManager) emitCloudFailed(sessionID string, to string, messageID s
 }
 
 // emitCloudDeleted publishes a status event for a message deletion (revoke)
-// in the Cloud-like format UnoAPI expects.
+// in a Cloud-like webhook format.
 func (m *ClientManager) emitCloudDeleted(sessionID string, client *whatsmeow.Client, e *events.Message, revokedID string) error {
 	phone := normalizePhone(sessionID)
 
@@ -727,7 +860,7 @@ func (m *ClientManager) emitCloudDeleted(sessionID string, client *whatsmeow.Cli
 // emitCloudOutgoingText publishes an outgoing text message event in the same
 // Cloud-like format used for incoming messages, so downstreams can see the
 // content that was sent automatically (e.g., call rejection reply).
-func (m *ClientManager) emitCloudOutgoingText(sessionID string, to types.JID, id types.MessageID, body string) error {
+func (m *ClientManager) emitCloudOutgoingText(sessionID string, client *whatsmeow.Client, to types.JID, id types.MessageID, body string) error {
 	phone := normalizePhone(sessionID)
 	recipient := jidToPhoneNumberIfUser(to)
 
@@ -743,7 +876,7 @@ func (m *ClientManager) emitCloudOutgoingText(sessionID string, to types.JID, id
 	// Contact entry for the recipient (group or user)
 	contactPhone := recipient
 	contactObj := map[string]any{
-		"profile": map[string]any{"name": contactPhone},
+		"profile": buildCloudProfile(sessionID, client, to, contactPhone, string(id)),
 		"wa_id":   contactPhone,
 	}
 	if isGroupJID(to) {
@@ -756,8 +889,9 @@ func (m *ClientManager) emitCloudOutgoingText(sessionID string, to types.JID, id
 	val["messages"] = []any{wireMsg}
 
 	log.WithSession(sessionID).WithMessageID(string(id)).
-		Info("evt=message_out cloud payload ready type=text to=%s", to.String())
+		Info("evt=message_out cloud payload ready field=messages type=text to=%s", to.String())
 
+	cacheMarkSyntheticOutgoing(sessionID, string(id))
 	return m.deliverWebhook(sessionID, payload)
 }
 
@@ -791,7 +925,12 @@ func cloudEnvelope(phone string) map[string]any {
 }
 
 func normalizePhone(s string) string {
-	return digitsOnly(s)
+	if looksLikePhoneIdentifier(s) {
+		if d := digitsOnly(s); d != "" {
+			return d
+		}
+	}
+	return strings.TrimSpace(s)
 }
 
 func jidToPhoneNumberIfUser(j any) string {
@@ -844,6 +983,36 @@ func normalizeFromField(s string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, "+", "")
+}
+
+// isOwnJID reports whether j represents the current session account.
+// We compare against:
+// - normalized session id digits
+// - connected device PN user
+// - connected device LID user
+func isOwnJID(sessionID string, cli *whatsmeow.Client, j types.JID) bool {
+	if j.User == "" {
+		return false
+	}
+
+	if sid := digitsOnly(normalizePhone(sessionID)); sid != "" && digitsOnly(j.User) == sid {
+		return true
+	}
+
+	if cli != nil && cli.Store != nil && cli.Store.ID != nil {
+		own := cli.Store.ID.ToNonAD()
+		if own.User != "" && (j.User == own.User || digitsOnly(j.User) == digitsOnly(own.User)) {
+			return true
+		}
+	}
+
+	if cli != nil {
+		if ownLID := cli.DangerousInternals().GetOwnLID(); ownLID.User != "" && j.User == ownLID.User {
+			return true
+		}
+	}
+
+	return false
 }
 
 // jidDisplayMaybeResolve returns a displayable identifier for the given JID:
@@ -916,6 +1085,20 @@ func b64(b []byte) string {
 		return ""
 	}
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+func (m *ClientManager) persistInboundMediaFromWA(sessionID string, client *whatsmeow.Client, mediaID string, msg whatsmeow.DownloadableMessage, input MediaSaveInput) (MediaMetadata, error) {
+	if m == nil || client == nil || msg == nil {
+		return MediaMetadata{}, fmt.Errorf("media persistence unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	data, err := client.Download(ctx, msg)
+	if err != nil {
+		return MediaMetadata{}, err
+	}
+	return m.StoreInboundMedia(ctx, sessionID, mediaID, data, input)
 }
 
 func extensionByMime(m string) string {
@@ -1194,6 +1377,23 @@ func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (strin
 	return "", false
 }
 
+func buildCloudProfile(sessionID string, cli *whatsmeow.Client, avatarJID types.JID, displayName string, messageID string) map[string]any {
+	profile := map[string]any{
+		"name":    displayName,
+		"picture": "",
+	}
+	if avatarJID == (types.JID{}) {
+		return profile
+	}
+	if av, ok := getAvatarURL(sessionID, cli, avatarJID); ok && strings.TrimSpace(av) != "" {
+		profile["picture"] = av
+		log.WithSession(sessionID).WithMessageID(messageID).Debug("avatar_set url=%s chat=%s", av, avatarJID.String())
+	} else {
+		log.WithSession(sessionID).WithMessageID(messageID).Debug("avatar_not_found chat=%s is_group=%t", avatarJID.String(), isGroupJID(avatarJID))
+	}
+	return profile
+}
+
 // markReadEvent marks the given message as read when configured to do so.
 func (m *ClientManager) markReadEvent(sessionID string, client *whatsmeow.Client, e *events.Message) {
 	if client == nil || e == nil || e.Info.IsFromMe {
@@ -1231,12 +1431,26 @@ func (m *ClientManager) markReadEvent(sessionID string, client *whatsmeow.Client
 func (m *ClientManager) deliverWebhook(sessionID string, payload any) error {
 	entry := log.WithSession(sessionID)
 	rk := normalizePhone(sessionID)
-	// Prefer AMQP publication to UnoAPI broker; fallback to HTTP if AMQP not initialised
+	if data, ok := payload.(map[string]any); ok {
+		applyInstanceMessageIDs(rk, data)
+	}
+	amqpErr := error(nil)
+	// Prefer AMQP publication; fallback to HTTP if AMQP is unavailable
 	if err := amqppub.PublishWebhook(rk, payload); err == nil {
 		entry.Info("webhook amqp publish ok rk=%s", rk)
-		return nil
 	} else {
+		amqpErr = err
 		entry.Error("webhook amqp publish error: %v", err)
+	}
+
+	// Registered per-session webhooks (UnoAPI-like) have priority for HTTP delivery.
+	if m.dispatchRegisteredWebhooks(sessionID, payload) {
+		return nil
+	}
+
+	// If AMQP worked and there are no registered webhooks we are done.
+	if amqpErr == nil {
+		return nil
 	}
 
 	// HTTP fallback when AMQP not available

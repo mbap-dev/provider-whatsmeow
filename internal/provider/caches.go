@@ -25,11 +25,19 @@ var (
 	avatarCache    = map[string]stringEntry{}
 	groupNameCache = map[string]stringEntry{}
 	lidADCache     = map[string]jidEntry{}
+	receiptCache   = map[string]time.Time{}
+	syntheticCache = map[string]time.Time{}
 
 	// Tuned TTLs: names/avatars can change, but not frequently.
 	avatarTTL    = 10 * time.Minute
 	groupNameTTL = 10 * time.Minute
 	lidMapTTL    = 30 * time.Minute
+	// Keep receipt dedupe entries long enough to collapse repeated WA receipt
+	// fan-out, while eventually releasing memory.
+	receiptTTL = 6 * time.Hour
+	// Synthetic outgoing message webhook entries are short-lived and only used
+	// to skip the equivalent native event once.
+	syntheticTTL = 15 * time.Minute
 )
 
 func cacheGetAvatar(key string) (string, bool) {
@@ -81,4 +89,70 @@ func cachePutLID(key string, v types.JID) {
 	cacheMu.Lock()
 	lidADCache[key] = jidEntry{val: v, expiry: time.Now().Add(lidMapTTL)}
 	cacheMu.Unlock()
+}
+
+// cacheTryPutReceipt returns true when the receipt key is new/expired and should
+// be emitted. It returns false when the same receipt was seen recently.
+func cacheTryPutReceipt(key string) bool {
+	now := time.Now()
+
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+
+	if exp, ok := receiptCache[key]; ok && now.Before(exp) {
+		return false
+	}
+	receiptCache[key] = now.Add(receiptTTL)
+
+	// Opportunistic cleanup to avoid unbounded growth.
+	if len(receiptCache)%1024 == 0 {
+		for k, exp := range receiptCache {
+			if now.After(exp) {
+				delete(receiptCache, k)
+			}
+		}
+	}
+	return true
+}
+
+// cacheMarkSyntheticOutgoing stores a short-lived marker for a synthetic
+// outgoing message payload that was already emitted to webhook.
+func cacheMarkSyntheticOutgoing(sessionID, msgID string) {
+	if sessionID == "" || msgID == "" {
+		return
+	}
+	now := time.Now()
+	key := sessionID + "|" + msgID
+
+	cacheMu.Lock()
+	syntheticCache[key] = now.Add(syntheticTTL)
+	// Opportunistic cleanup.
+	if len(syntheticCache)%256 == 0 {
+		for k, exp := range syntheticCache {
+			if now.After(exp) {
+				delete(syntheticCache, k)
+			}
+		}
+	}
+	cacheMu.Unlock()
+}
+
+// cacheConsumeSyntheticOutgoing returns true when a matching synthetic marker
+// exists and consumes it (single use).
+func cacheConsumeSyntheticOutgoing(sessionID, msgID string) bool {
+	if sessionID == "" || msgID == "" {
+		return false
+	}
+	key := sessionID + "|" + msgID
+	now := time.Now()
+
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+
+	exp, ok := syntheticCache[key]
+	if !ok {
+		return false
+	}
+	delete(syntheticCache, key)
+	return now.Before(exp)
 }

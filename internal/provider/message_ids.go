@@ -2,6 +2,13 @@ package provider
 
 import "strings"
 
+// WithInstanceMessageID returns the public-facing message ID used by
+// UnoAPI-compatible webhooks and API responses, prefixed with the
+// phone/session identifier when needed.
+func WithInstanceMessageID(phone, id string) string {
+	return withInstanceMessageID(phone, id)
+}
+
 func instanceMessagePrefix(phone string) string {
 	normalized := strings.TrimPrefix(normalizePhone(phone), "+")
 	if normalized == "" {

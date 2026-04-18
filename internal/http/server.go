@@ -505,10 +505,14 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		},
 		"messages": []map[string]string{
 			{
-				"id": msg.MessageID,
+				"id": apiResponseMessageID(sessionID, msg.MessageID),
 			},
 		},
 	})
+}
+
+func apiResponseMessageID(sessionID, messageID string) string {
+	return provider.WithInstanceMessageID(sessionID, messageID)
 }
 
 func (s *Server) handleCloudStatusUpdate(w http.ResponseWriter, raw map[string]any) bool {

@@ -537,12 +537,14 @@ func (s *Server) handleCloudStatusUpdate(w http.ResponseWriter, raw map[string]a
 func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
+		ilog.WithSession("").Error("evt=media_upload_api failed reason=missing_phone_number_id")
 		writeJSONError(w, http.StatusBadRequest, "missing phone number id")
 		return
 	}
 
 	const maxMediaUpload = 64 << 20 // 64 MiB
 	if err := r.ParseMultipartForm(maxMediaUpload); err != nil {
+		ilog.WithSession(sessionID).Error("evt=media_upload_api failed step=parse_multipart err=%v", err)
 		writeJSONError(w, http.StatusBadRequest, "invalid multipart payload")
 		return
 	}
@@ -550,6 +552,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		file, header, err = r.FormFile("media")
 		if err != nil {
+			ilog.WithSession(sessionID).Error("evt=media_upload_api failed reason=missing_file_field err=%v", err)
 			writeJSONError(w, http.StatusBadRequest, "missing multipart file field 'file'")
 			return
 		}
@@ -558,14 +561,22 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 
 	data, err := io.ReadAll(io.LimitReader(file, maxMediaUpload+1))
 	if err != nil {
+		ilog.WithSession(sessionID).Error("evt=media_upload_api failed step=read_upload filename=%q err=%v", strings.TrimSpace(header.Filename), err)
 		writeJSONError(w, http.StatusBadRequest, "failed to read upload")
 		return
 	}
 	if len(data) == 0 {
+		ilog.WithSession(sessionID).Error("evt=media_upload_api failed reason=empty_file filename=%q", strings.TrimSpace(header.Filename))
 		writeJSONError(w, http.StatusBadRequest, "empty file")
 		return
 	}
 	if len(data) > maxMediaUpload {
+		ilog.WithSession(sessionID).Error(
+			"evt=media_upload_api failed reason=file_too_large filename=%q bytes=%d limit=%d",
+			strings.TrimSpace(header.Filename),
+			len(data),
+			maxMediaUpload,
+		)
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "file too large")
 		return
 	}
@@ -579,9 +590,25 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	media, err := s.provider.StoreUploadedMedia(r.Context(), sessionID, strings.TrimSpace(header.Filename), mimeType, data)
 	if err != nil {
+		ilog.WithSession(sessionID).Error(
+			"evt=media_upload_api failed step=store_upload filename=%q mime=%s bytes=%d mode=%s err=%v",
+			strings.TrimSpace(header.Filename),
+			mimeType,
+			len(data),
+			s.provider.MediaMode(),
+			err,
+		)
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	ilog.WithSession(sessionID).WithMessageID(media.MediaID).Info(
+		"evt=media_upload_api success filename=%q mime=%s bytes=%d public_id=%s mode=%s",
+		strings.TrimSpace(header.Filename),
+		mimeType,
+		len(data),
+		media.ID,
+		s.provider.MediaMode(),
+	)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": media.MediaID,
@@ -594,25 +621,37 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	mediaID := strings.TrimSpace(vars["media_id"])
 	version := strings.Trim(strings.TrimSpace(vars["version"]), "/")
 	if sessionID == "" {
+		ilog.WithSession("").Error("evt=media_get_api failed reason=missing_phone_number_id media_ref=%s", mediaID)
 		writeJSONError(w, http.StatusBadRequest, "missing phone number id")
 		return
 	}
 	if mediaID == "" {
+		ilog.WithSession(sessionID).Error("evt=media_get_api failed reason=missing_media_id")
 		writeJSONError(w, http.StatusBadRequest, "missing media id")
 		return
 	}
 
 	meta, ok := s.provider.GetMediaMetadata(sessionID, mediaID)
 	if !ok {
+		ilog.WithSession(sessionID).WithMessageID(mediaID).Error("evt=media_get_api failed reason=metadata_not_found")
 		writeJSONError(w, http.StatusNotFound, "media not found")
 		return
 	}
 	baseURL := requestBaseURL(r)
 	url := s.provider.MediaURL(r.Context(), baseURL, version, meta)
 	if url == "" {
+		ilog.WithSession(sessionID).WithMessageID(meta.MediaID).Error("evt=media_get_api failed reason=empty_media_url public_id=%s", meta.ID)
 		writeJSONError(w, http.StatusInternalServerError, "failed to resolve media URL")
 		return
 	}
+	ilog.WithSession(sessionID).WithMessageID(meta.MediaID).Info(
+		"evt=media_get_api success requested_ref=%s public_id=%s mime=%s file_size=%d mode=%s",
+		mediaID,
+		meta.ID,
+		meta.MIMEType,
+		meta.FileSize,
+		s.provider.MediaMode(),
+	)
 
 	resp := map[string]any{
 		"messaging_product": "whatsapp",
@@ -636,6 +675,7 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(vars["id"])
 	filePath := strings.TrimSpace(vars["file"])
 	if sessionID == "" || filePath == "" {
+		ilog.WithSession(sessionID).Error("evt=media_download_api failed reason=missing_download_path file=%q", filePath)
 		writeJSONError(w, http.StatusBadRequest, "missing download path")
 		return
 	}
@@ -643,9 +683,11 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 	reader, meta, err := s.provider.OpenMediaForDownload(r.Context(), sessionID, filePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			ilog.WithSession(sessionID).WithMessageID(filePath).Error("evt=media_download_api failed reason=not_found file=%q", filePath)
 			writeJSONError(w, http.StatusNotFound, "media not found")
 			return
 		}
+		ilog.WithSession(sessionID).WithMessageID(filePath).Error("evt=media_download_api failed file=%q err=%v", filePath, err)
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -658,6 +700,14 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(meta.Filename, `"`, "")+`"`)
 	}
 	w.WriteHeader(http.StatusOK)
+	ilog.WithSession(sessionID).WithMessageID(meta.MediaID).Info(
+		"evt=media_download_api success file=%q public_id=%s mime=%s filename=%q mode=%s",
+		filePath,
+		meta.ID,
+		meta.MIMEType,
+		meta.Filename,
+		s.provider.MediaMode(),
+	)
 	_, _ = io.Copy(w, reader)
 }
 

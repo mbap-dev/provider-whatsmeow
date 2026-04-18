@@ -1094,11 +1094,35 @@ func (m *ClientManager) persistInboundMediaFromWA(sessionID string, client *what
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
+	log.WithSession(sessionID).WithMessageID(mediaID).Debug(
+		"evt=media_inbound download_start mime=%s filename=%q declared_size=%d",
+		strings.TrimSpace(input.MIMEType),
+		strings.TrimSpace(input.Filename),
+		input.FileSize,
+	)
 	data, err := client.Download(ctx, msg)
 	if err != nil {
+		log.WithSession(sessionID).WithMessageID(mediaID).Error("evt=media_inbound download_failed err=%v", err)
 		return MediaMetadata{}, err
 	}
-	return m.StoreInboundMedia(ctx, sessionID, mediaID, data, input)
+	log.WithSession(sessionID).WithMessageID(mediaID).Info(
+		"evt=media_inbound download_ok bytes=%d mime=%s filename=%q",
+		len(data),
+		strings.TrimSpace(input.MIMEType),
+		strings.TrimSpace(input.Filename),
+	)
+	meta, err := m.StoreInboundMedia(ctx, sessionID, mediaID, data, input)
+	if err != nil {
+		log.WithSession(sessionID).WithMessageID(mediaID).Error("evt=media_inbound persist_failed err=%v", err)
+		return MediaMetadata{}, err
+	}
+	log.WithSession(sessionID).WithMessageID(mediaID).Info(
+		"evt=media_inbound persist_ok public_id=%s relative_path=%s mode=%s",
+		meta.ID,
+		meta.RelativePath,
+		m.MediaMode(),
+	)
+	return meta, nil
 }
 
 func extensionByMime(m string) string {

@@ -328,6 +328,8 @@ Quando o token de API está ativo:
 Observação:
 
 - Em `MEDIA_STORAGE_MODE=auto`, o provider usa S3 somente quando bucket + credenciais estiverem configurados. Se não estiverem, faz fallback automático para local.
+- Com `LOG_LEVEL=info`, o provider registra os eventos principais do fluxo de mídia: `media_store`, `media_registry`, `media_save`, `media_inbound`, `media_direct_url`, `media_url`, `media_upload_api`, `media_get_api` e `media_download_api`.
+- Com `LOG_LEVEL=debug`, além dos eventos acima, aparecem os logs de início/skip do fluxo, úteis para identificar onde o processo parou antes do upload ou antes da geração da URL.
 
 ### Recursos WhatsApp
 

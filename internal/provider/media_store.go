@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	ilog "your.org/provider-whatsmeow/internal/log"
 )
 
 type MediaStoreOptions struct {
@@ -130,7 +131,13 @@ func newMediaStore(opts MediaStoreOptions) *mediaStore {
 		}
 	}
 
-	_ = store.loadRegistry()
+	store.logInit(mode, opts)
+	if err := store.loadRegistry(); err != nil {
+		ilog.Errorf("evt=media_registry load_failed file=%s err=%v", store.registryFile, err)
+	} else {
+		records, index, paths := store.registryCounts()
+		ilog.Infof("evt=media_registry load_ok file=%s records=%d index=%d paths=%d", store.registryFile, records, index, paths)
+	}
 	return store
 }
 
@@ -164,6 +171,73 @@ func buildS3Client(opts MediaStoreOptions) (*s3.Client, *s3.PresignClient, strin
 		}
 	})
 	return client, s3.NewPresignClient(client), bucket, strings.Trim(strings.TrimSpace(opts.S3Prefix), "/"), true
+}
+
+func (s *mediaStore) logInit(requestedMode string, opts MediaStoreOptions) {
+	region := strings.TrimSpace(opts.S3Region)
+	if region == "" {
+		region = "us-east-1"
+	}
+	switch s.mode {
+	case "s3":
+		ilog.Infof(
+			"evt=media_store init requested_mode=%s resolved_mode=s3 bucket=%s region=%s endpoint=%s prefix=%s force_path_style=%t local_dir=%s registry_file=%s ttl=%s",
+			requestedMode,
+			s.s3Bucket,
+			region,
+			strings.TrimSpace(opts.S3Endpoint),
+			s.s3Prefix,
+			opts.S3ForcePathStyle,
+			s.localDir,
+			s.registryFile,
+			s.urlTTL,
+		)
+	default:
+		reason := "local_default"
+		if requestedMode == "auto" {
+			reason = "s3_config_absent"
+			if hasS3Config(opts) {
+				reason = "s3_init_fallback"
+			}
+		} else if requestedMode == "s3" {
+			reason = "missing_s3_config"
+		} else if requestedMode != "local" {
+			reason = "unsupported_mode"
+		}
+		missing := missingS3ConfigFields(opts)
+		ilog.Infof(
+			"evt=media_store init requested_mode=%s resolved_mode=local reason=%s missing_s3_fields=%v local_dir=%s registry_file=%s ttl=%s",
+			requestedMode,
+			reason,
+			missing,
+			s.localDir,
+			s.registryFile,
+			s.urlTTL,
+		)
+		if requestedMode == "s3" && len(missing) > 0 {
+			ilog.Errorf("evt=media_store s3_disabled requested_mode=s3 missing_s3_fields=%v", missing)
+		}
+	}
+}
+
+func missingS3ConfigFields(opts MediaStoreOptions) []string {
+	var missing []string
+	if strings.TrimSpace(opts.S3Bucket) == "" {
+		missing = append(missing, "S3_BUCKET")
+	}
+	if strings.TrimSpace(opts.S3AccessKeyID) == "" {
+		missing = append(missing, "S3_ACCESS_KEY_ID")
+	}
+	if strings.TrimSpace(opts.S3SecretAccess) == "" {
+		missing = append(missing, "S3_SECRET_ACCESS_KEY")
+	}
+	return missing
+}
+
+func (s *mediaStore) registryCounts() (int, int, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.state.Records), len(s.state.Index), len(s.state.Paths)
 }
 
 func (s *mediaStore) Mode() string {
@@ -210,12 +284,41 @@ func (s *mediaStore) Save(ctx context.Context, sessionID, mediaID string, data [
 		storageKey = s.s3ObjectKey(relativePath)
 	}
 
+	entry := ilog.WithSession(sessionID).WithMessageID(mediaID)
+	entry.Debug(
+		"evt=media_save start mode=%s bytes=%d mime=%s filename=%q relative_path=%s storage_key=%s",
+		s.mode,
+		len(data),
+		mimeType,
+		filename,
+		relativePath,
+		storageKey,
+	)
+
 	if s.mode == "s3" {
 		if err := s.writeS3(ctx, storageKey, data, mimeType); err != nil {
+			entry.Error(
+				"evt=media_save failed step=write_s3 mode=%s bucket=%s storage_key=%s bytes=%d mime=%s err=%v",
+				s.mode,
+				s.s3Bucket,
+				storageKey,
+				len(data),
+				mimeType,
+				err,
+			)
 			return MediaMetadata{}, err
 		}
 	} else {
 		if err := s.writeLocal(relativePath, data); err != nil {
+			entry.Error(
+				"evt=media_save failed step=write_local mode=%s relative_path=%s full_path=%s bytes=%d mime=%s err=%v",
+				s.mode,
+				relativePath,
+				filepath.Join(s.localDir, filepath.FromSlash(relativePath)),
+				len(data),
+				mimeType,
+				err,
+			)
 			return MediaMetadata{}, err
 		}
 	}
@@ -251,8 +354,20 @@ func (s *mediaStore) Save(ctx context.Context, sessionID, mediaID string, data [
 	err := s.persistRegistryLocked()
 	s.mu.Unlock()
 	if err != nil {
+		entry.Error("evt=media_save failed step=persist_registry file=%s err=%v", s.registryFile, err)
 		return MediaMetadata{}, err
 	}
+	entry.Info(
+		"evt=media_save success mode=%s media_id=%s public_id=%s bytes=%d mime=%s relative_path=%s storage_key=%s filename=%q",
+		s.mode,
+		mediaID,
+		rec.ID,
+		sz,
+		mimeType,
+		relativePath,
+		storageKey,
+		filename,
+	)
 	return rec.toMetadata(), nil
 }
 
@@ -307,12 +422,27 @@ func (s *mediaStore) Load(ctx context.Context, sessionID, mediaRef string) ([]by
 	rec, ok := s.findRecordLocked(sessionID, mediaRef)
 	s.mu.RUnlock()
 	if !ok {
+		ilog.WithSession(sessionID).WithMessageID(mediaRef).Debug("evt=media_load not_found ref=%s", mediaRef)
 		return nil, MediaMetadata{}, os.ErrNotExist
 	}
 	data, err := s.readRecord(ctx, rec)
 	if err != nil {
+		ilog.WithSession(rec.SessionID).WithMessageID(rec.MediaID).Error(
+			"evt=media_load failed mode=%s storage_key=%s relative_path=%s err=%v",
+			s.mode,
+			rec.StorageKey,
+			rec.RelativePath,
+			err,
+		)
 		return nil, MediaMetadata{}, err
 	}
+	ilog.WithSession(rec.SessionID).WithMessageID(rec.MediaID).Info(
+		"evt=media_load success mode=%s bytes=%d storage_key=%s relative_path=%s",
+		s.mode,
+		len(data),
+		rec.StorageKey,
+		rec.RelativePath,
+	)
 	return data, rec.toMetadata(), nil
 }
 
@@ -342,16 +472,40 @@ func (s *mediaStore) OpenByRelativePath(ctx context.Context, relative string) (i
 			Key:    aws.String(storageKey),
 		})
 		if err != nil {
+			ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
+				"evt=media_open failed mode=s3 bucket=%s storage_key=%s relative_path=%s err=%v",
+				s.s3Bucket,
+				storageKey,
+				relative,
+				err,
+			)
 			return nil, MediaMetadata{}, err
 		}
+		ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
+			"evt=media_open success mode=s3 bucket=%s storage_key=%s relative_path=%s",
+			s.s3Bucket,
+			storageKey,
+			relative,
+		)
 		return obj.Body, meta, nil
 	}
 
 	fullPath := filepath.Join(s.localDir, filepath.FromSlash(relative))
 	f, err := os.Open(fullPath)
 	if err != nil {
+		ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
+			"evt=media_open failed mode=local full_path=%s relative_path=%s err=%v",
+			fullPath,
+			relative,
+			err,
+		)
 		return nil, MediaMetadata{}, err
 	}
+	ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
+		"evt=media_open success mode=local full_path=%s relative_path=%s",
+		fullPath,
+		relative,
+	)
 	return f, meta, nil
 }
 
@@ -364,9 +518,18 @@ func (s *mediaStore) DirectURL(ctx context.Context, meta MediaMetadata) (string,
 	s.mu.RUnlock()
 
 	if mode != "s3" || presigner == nil {
+		ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Debug(
+			"evt=media_direct_url skipped mode=%s reason=unsupported_mode relative_path=%s",
+			mode,
+			meta.RelativePath,
+		)
 		return "", errors.New("direct URL not supported for local mode")
 	}
 	if strings.TrimSpace(meta.storageKey) == "" {
+		ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
+			"evt=media_direct_url failed reason=missing_storage_key relative_path=%s",
+			meta.RelativePath,
+		)
 		return "", errors.New("missing storage key")
 	}
 
@@ -381,8 +544,21 @@ func (s *mediaStore) DirectURL(ctx context.Context, meta MediaMetadata) (string,
 		o.Expires = ttl
 	})
 	if err != nil {
+		ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
+			"evt=media_direct_url failed mode=s3 bucket=%s storage_key=%s ttl=%s err=%v",
+			bucket,
+			meta.storageKey,
+			ttl,
+			err,
+		)
 		return "", err
 	}
+	ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
+		"evt=media_direct_url success mode=s3 bucket=%s storage_key=%s ttl=%s",
+		bucket,
+		meta.storageKey,
+		ttl,
+	)
 	return out.URL, nil
 }
 
@@ -721,9 +897,26 @@ func (m *ClientManager) MediaURLTTL() time.Duration {
 }
 
 func (m *ClientManager) MediaURL(ctx context.Context, baseURL, version string, meta MediaMetadata) string {
+	mode := "local"
 	if m != nil && m.mediaStore != nil {
-		if u, err := m.mediaStore.DirectURL(ctx, meta); err == nil && strings.TrimSpace(u) != "" {
-			return u
+		mode = m.mediaStore.Mode()
+		if mode == "s3" {
+			if u, err := m.mediaStore.DirectURL(ctx, meta); err == nil && strings.TrimSpace(u) != "" {
+				ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
+					"evt=media_url resolved mode=s3 transport=direct public_id=%s relative_path=%s",
+					meta.ID,
+					meta.RelativePath,
+				)
+				return u
+			} else if err != nil {
+				ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
+					"evt=media_url direct_failed mode=s3 public_id=%s relative_path=%s storage_key=%s err=%v fallback=proxy",
+					meta.ID,
+					meta.RelativePath,
+					meta.storageKey,
+					err,
+				)
+			}
 		}
 	}
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -740,7 +933,15 @@ func (m *ClientManager) MediaURL(ctx context.Context, baseURL, version string, m
 	if filePart == "" {
 		filePart = normalizePathToken(meta.MediaID)
 	}
-	return fmt.Sprintf("%s/%s/download/%s/%s", baseURL, version, sessionID, filePart)
+	url := fmt.Sprintf("%s/%s/download/%s/%s", baseURL, version, sessionID, filePart)
+	ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
+		"evt=media_url resolved mode=%s transport=proxy public_id=%s relative_path=%s version=%s",
+		mode,
+		meta.ID,
+		meta.RelativePath,
+		version,
+	)
+	return url
 }
 
 func (m *ClientManager) LoadMediaContent(ctx context.Context, sessionID, mediaRef string) ([]byte, MediaMetadata, error) {

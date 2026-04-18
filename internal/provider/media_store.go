@@ -93,6 +93,8 @@ type mediaStore struct {
 	s3Presigner *s3.PresignClient
 	s3Bucket    string
 	s3Prefix    string
+	s3Endpoint  string
+	s3PathStyle bool
 
 	state mediaRegistryState
 }
@@ -128,6 +130,8 @@ func newMediaStore(opts MediaStoreOptions) *mediaStore {
 			store.s3Presigner = presigner
 			store.s3Bucket = bucket
 			store.s3Prefix = prefix
+			store.s3Endpoint = strings.TrimSpace(opts.S3Endpoint)
+			store.s3PathStyle = opts.S3ForcePathStyle
 		}
 	}
 
@@ -192,6 +196,13 @@ func (s *mediaStore) logInit(requestedMode string, opts MediaStoreOptions) {
 			s.registryFile,
 			s.urlTTL,
 		)
+		if strings.TrimSpace(s.s3Endpoint) != "" && !s.s3PathStyle {
+			ilog.Infof(
+				"evt=media_store s3_addressing mode=virtual_host bucket_host=%s hint=%q",
+				virtualHostBucketEndpoint(s.s3Bucket, s.s3Endpoint),
+				"Set S3_FORCE_PATH_STYLE=true if this endpoint does not resolve bucket subdomains",
+			)
+		}
 	default:
 		reason := "local_default"
 		if requestedMode == "auto" {
@@ -580,6 +591,15 @@ func (s *mediaStore) writeS3(ctx context.Context, key string, data []byte, conte
 		in.ContentType = aws.String(contentType)
 	}
 	_, err := s.s3Client.PutObject(ctx, in)
+	if err != nil && strings.TrimSpace(s.s3Endpoint) != "" && !s.s3PathStyle && strings.Contains(strings.ToLower(err.Error()), "no such host") {
+		ilog.Errorf(
+			"evt=media_store s3_hint action=put_object bucket=%s endpoint=%s bucket_host=%s suggestion=%q",
+			s.s3Bucket,
+			s.s3Endpoint,
+			virtualHostBucketEndpoint(s.s3Bucket, s.s3Endpoint),
+			"Enable S3_FORCE_PATH_STYLE=true or configure DNS/TLS for bucket subdomains",
+		)
+	}
 	return err
 }
 
@@ -825,6 +845,21 @@ func normalizeRelativePath(v string) string {
 		return ""
 	}
 	return clean
+}
+
+func virtualHostBucketEndpoint(bucket, endpoint string) string {
+	bucket = strings.TrimSpace(bucket)
+	endpoint = strings.TrimSpace(endpoint)
+	if bucket == "" || endpoint == "" {
+		return ""
+	}
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	endpoint = strings.TrimRight(endpoint, "/")
+	if endpoint == "" {
+		return ""
+	}
+	return bucket + "." + endpoint
 }
 
 func mimeTypeBase(v string) string {

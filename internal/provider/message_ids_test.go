@@ -116,3 +116,25 @@ func TestNormalizeOutgoingMessageIDs(t *testing.T) {
 		t.Fatalf("context stanza_id = %q", msg.Context.Stanza_id)
 	}
 }
+
+func TestCompatibleMediaIDPrefersRawMediaID(t *testing.T) {
+	meta := MediaMetadata{
+		SessionID: "553121159080",
+		MediaID:   "3B0D861C2EE5F41B2A7A",
+		ID:        "553121159080/3B0D861C2EE5F41B2A7A",
+	}
+
+	if got := CompatibleMediaID(meta); got != "3B0D861C2EE5F41B2A7A" {
+		t.Fatalf("CompatibleMediaID() = %q", got)
+	}
+}
+
+func TestCompatibleMediaIDFallsBackToPublicRef(t *testing.T) {
+	meta := MediaMetadata{
+		ID: "553121159080/3B0D861C2EE5F41B2A7A",
+	}
+
+	if got := CompatibleMediaID(meta); got != "3B0D861C2EE5F41B2A7A" {
+		t.Fatalf("CompatibleMediaID() = %q", got)
+	}
+}

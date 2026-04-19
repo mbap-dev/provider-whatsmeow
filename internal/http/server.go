@@ -76,6 +76,8 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/{version:[^/]+}/download/{id}/{file:.+}/", s.handleDownloadMedia).Methods(http.MethodGet)
 	router.HandleFunc("/{version:[^/]+}/{id}/{media_id}", s.handleGetMedia).Methods(http.MethodGet)
 	router.HandleFunc("/{version:[^/]+}/{id}/{media_id}/", s.handleGetMedia).Methods(http.MethodGet)
+	router.HandleFunc("/{version:[^/]+}/{media_id}", s.handleGetMedia).Methods(http.MethodGet)
+	router.HandleFunc("/{version:[^/]+}/{media_id}/", s.handleGetMedia).Methods(http.MethodGet)
 	// Compatibility when a proxy/base URL adds /api prefix.
 	router.HandleFunc("/api/{version:[^/]+}/{id}/messages", s.handleSendMessage).Methods(http.MethodPost)
 	router.HandleFunc("/api/{version:[^/]+}/{id}/messages/", s.handleSendMessage).Methods(http.MethodPost)
@@ -85,6 +87,8 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/api/{version:[^/]+}/download/{id}/{file:.+}/", s.handleDownloadMedia).Methods(http.MethodGet)
 	router.HandleFunc("/api/{version:[^/]+}/{id}/{media_id}", s.handleGetMedia).Methods(http.MethodGet)
 	router.HandleFunc("/api/{version:[^/]+}/{id}/{media_id}/", s.handleGetMedia).Methods(http.MethodGet)
+	router.HandleFunc("/api/{version:[^/]+}/{media_id}", s.handleGetMedia).Methods(http.MethodGet)
+	router.HandleFunc("/api/{version:[^/]+}/{media_id}/", s.handleGetMedia).Methods(http.MethodGet)
 	// Calls (ring-only fake call)
 	router.HandleFunc("/sessions/{id}/fakecall", s.handleFakeCall).Methods(http.MethodPost)
 	// Debug: resolve destination JID applying overrides and LID lookup
@@ -617,7 +621,7 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	sessionID := strings.TrimSpace(vars["id"])
+	sessionID := mediaRequestSessionID(r, vars)
 	mediaID := strings.TrimSpace(vars["media_id"])
 	version := strings.Trim(strings.TrimSpace(vars["version"]), "/")
 	if sessionID == "" {
@@ -659,7 +663,7 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 		"mime_type":         meta.MIMEType,
 		"sha256":            meta.SHA256,
 		"file_size":         meta.FileSize,
-		"id":                meta.ID,
+		"id":                provider.CompatibleMediaID(meta),
 	}
 	if strings.TrimSpace(meta.MessagingProduct) != "" {
 		resp["messaging_product"] = meta.MessagingProduct
@@ -1097,6 +1101,16 @@ func requestBaseURL(r *http.Request) string {
 		host = "localhost"
 	}
 	return scheme + "://" + host
+}
+
+func mediaRequestSessionID(r *http.Request, vars map[string]string) string {
+	if sessionID := strings.TrimSpace(vars["id"]); sessionID != "" {
+		return sessionID
+	}
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.URL.Query().Get("phone_number_id"))
 }
 
 func firstHeaderToken(v string) string {

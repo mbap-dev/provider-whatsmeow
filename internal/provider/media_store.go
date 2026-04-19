@@ -600,6 +600,15 @@ func (s *mediaStore) writeS3(ctx context.Context, key string, data []byte, conte
 			"Enable S3_FORCE_PATH_STYLE=true or configure DNS/TLS for bucket subdomains",
 		)
 	}
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "signaturedoesnotmatch") {
+		ilog.Errorf(
+			"evt=media_store s3_hint action=put_object bucket=%s endpoint=%s force_path_style=%t suggestion=%q",
+			s.s3Bucket,
+			s.s3Endpoint,
+			s.s3PathStyle,
+			"Check S3 access key/secret, region, and whether the endpoint is the MinIO S3 API endpoint. If using a reverse proxy, preserve Host/path/Authorization headers without rewriting.",
+		)
+	}
 	return err
 }
 
@@ -931,28 +940,20 @@ func (m *ClientManager) MediaURLTTL() time.Duration {
 	return m.mediaStore.URLTTL()
 }
 
+func CompatibleMediaID(meta MediaMetadata) string {
+	if id := strings.TrimSpace(meta.MediaID); id != "" {
+		return id
+	}
+	if _, mediaID := parseMediaRef(meta.ID); mediaID != "" {
+		return mediaID
+	}
+	return normalizeMediaID(meta.ID)
+}
+
 func (m *ClientManager) MediaURL(ctx context.Context, baseURL, version string, meta MediaMetadata) string {
 	mode := "local"
 	if m != nil && m.mediaStore != nil {
 		mode = m.mediaStore.Mode()
-		if mode == "s3" {
-			if u, err := m.mediaStore.DirectURL(ctx, meta); err == nil && strings.TrimSpace(u) != "" {
-				ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
-					"evt=media_url resolved mode=s3 transport=direct public_id=%s relative_path=%s",
-					meta.ID,
-					meta.RelativePath,
-				)
-				return u
-			} else if err != nil {
-				ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Error(
-					"evt=media_url direct_failed mode=s3 public_id=%s relative_path=%s storage_key=%s err=%v fallback=proxy",
-					meta.ID,
-					meta.RelativePath,
-					meta.storageKey,
-					err,
-				)
-			}
-		}
 	}
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	version = strings.Trim(strings.TrimSpace(version), "/")
@@ -970,7 +971,7 @@ func (m *ClientManager) MediaURL(ctx context.Context, baseURL, version string, m
 	}
 	url := fmt.Sprintf("%s/%s/download/%s/%s", baseURL, version, sessionID, filePart)
 	ilog.WithSession(meta.SessionID).WithMessageID(meta.MediaID).Info(
-		"evt=media_url resolved mode=%s transport=proxy public_id=%s relative_path=%s version=%s",
+		"evt=media_url resolved mode=%s transport=proxy public_id=%s relative_path=%s version=%s compatibility=provider_auth",
 		mode,
 		meta.ID,
 		meta.RelativePath,

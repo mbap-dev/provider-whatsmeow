@@ -126,6 +126,7 @@ Compatibilidade:
 - Endpoint de mídia (compat Cloud/UnoAPI):
   - `POST /{version}/{phone_number_id}/media` (multipart upload)
   - `GET /{version}/{phone_number_id}/{media_id}` (metadados + URL)
+  - `GET /{version}/{media_id}?phone_number_id={phone_number_id}` (compatível com o fluxo usado pelo Chatwoot/UnoAPI)
   - `GET /{version}/download/{phone_number_id}/{file}` (download/stream)
 
 ### Saúde
@@ -190,6 +191,18 @@ Exemplo consulta de metadados da mídia:
 ```bash
 curl http://localhost:8080/v19.0/5562991111111/A1B2C3D4E5F6...
 ```
+
+Compatibilidade UnoAPI/Chatwoot:
+
+```bash
+curl "http://localhost:8080/v19.0/A1B2C3D4E5F6...?phone_number_id=5562991111111"
+```
+
+Observações:
+
+- Nos webhooks de mídia (`image.id`, `audio.id`, `video.id`, `document.id`, `sticker.id`) o provider envia apenas o `media_id` bruto.
+- O número/sessão continua vindo em `metadata.phone_number_id`.
+- Isso replica melhor o fluxo esperado pelo Chatwoot com provider `unoapi`, que resolve a mídia via `GET /v13.0/{media_id}?phone_number_id={numero}`.
 
 Exemplo envio de imagem usando `id` de mídia (sem `link`):
 

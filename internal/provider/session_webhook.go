@@ -348,6 +348,13 @@ func (m *ClientManager) postSessionWebhookAsync(sessionID string, hook SessionWe
 		timeout = defaultWebhookTimeoutMS
 	}
 	entry.Info("webhook[%s] post queued url=%s bytes=%d", hook.ID, url, len(body))
+	if len(body) > 0 {
+		snippet := string(body)
+		if len(snippet) > 2000 {
+			snippet = snippet[:2000] + "...(truncated)"
+		}
+		entry.Debug("webhook[%s] payload=%s", hook.ID, snippet)
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Millisecond)
 		defer cancel()

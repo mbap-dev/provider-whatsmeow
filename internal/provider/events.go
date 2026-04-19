@@ -479,7 +479,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			FileSize:         fileSize,
 			Filename:         fileName,
 		}); err == nil {
-			image["id"] = media.ID
+			image["id"] = CompatibleMediaID(media)
 		} else {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store image skipped: %v", err)
 		}
@@ -510,7 +510,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			FileSize:         fileSize,
 			Filename:         fileName,
 		}); err == nil {
-			document["id"] = media.ID
+			document["id"] = CompatibleMediaID(media)
 		} else {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store document skipped: %v", err)
 		}
@@ -547,7 +547,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			FileSize:         fileSize,
 			Filename:         videoFileName,
 		}); err == nil {
-			video["id"] = media.ID
+			video["id"] = CompatibleMediaID(media)
 		} else {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store video skipped: %v", err)
 		}
@@ -592,7 +592,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			FileSize:         fileSize,
 			Filename:         audioFileName,
 		}); err == nil {
-			audio["id"] = media.ID
+			audio["id"] = CompatibleMediaID(media)
 		} else {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store audio skipped: %v", err)
 		}
@@ -625,7 +625,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			FileSize:         fileSize,
 			Filename:         filename,
 		}); err == nil {
-			sticker["id"] = media.ID
+			sticker["id"] = CompatibleMediaID(media)
 		} else {
 			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug("media_store sticker skipped: %v", err)
 		}

@@ -283,6 +283,7 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleDeleteSessionWebhook).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions", s.handleListSessions).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions", s.handleCreateSession).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}", s.handleDeleteSession).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/worker", s.handleWorker).Methods(http.MethodGet)
 	router.HandleFunc(base+"/worker/assignments", s.handleAssignSession).Methods(http.MethodPost)
 	router.HandleFunc(base+"/worker/assignments/{id}", s.handleUnassignSession).Methods(http.MethodDelete)
@@ -347,6 +348,32 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session_id": sessionID,
 		"connected":  shouldConnect,
 		"assigned":   shouldAssign,
+	})
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+
+	removed, err := s.provider.DeleteSession(sessionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"removed":    removed,
 	})
 }
 

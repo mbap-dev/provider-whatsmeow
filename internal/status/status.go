@@ -103,6 +103,34 @@ func Get(sessionID string) string {
 	return strings.TrimSpace(v)
 }
 
+// Delete removes the cached/redis-backed status for a session.
+func Delete(sessionID string) bool {
+	if mgr == nil {
+		return false
+	}
+	phone := normalizeSessionKey(sessionID)
+	if phone == "" {
+		return false
+	}
+
+	mgr.mu.Lock()
+	_, existed := mgr.cache[phone]
+	delete(mgr.cache, phone)
+	mgr.mu.Unlock()
+
+	if mgr.client == nil {
+		return existed
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	removed, err := mgr.client.Del(ctx, mgr.prefix+phone).Result()
+	if err != nil {
+		return existed
+	}
+	return existed || removed > 0
+}
+
 // Snapshot returns a copy of all statuses tracked in memory.
 func Snapshot() map[string]string {
 	if mgr == nil {

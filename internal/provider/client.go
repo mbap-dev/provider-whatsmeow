@@ -131,6 +131,12 @@ type ManagerOptions struct {
 	S3Prefix              string
 }
 
+var (
+	ErrMissingSessionID  = errors.New("missing session id")
+	ErrInvalidSessionID  = errors.New("invalid session id")
+	ErrReservedSessionID = errors.New("reserved session id")
+)
+
 func NewClientManager(opts ManagerOptions) *ClientManager {
 	assignmentFile := strings.TrimSpace(opts.AssignmentFile)
 	if assignmentFile == "" {
@@ -228,6 +234,11 @@ func normalizeSessionID(sessionID string) string {
 		}
 	}
 	return sessionID
+}
+
+func isInternalSessionEntry(name string) bool {
+	name = strings.TrimSpace(name)
+	return name == "" || strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")
 }
 
 func looksLikePhoneIdentifier(v string) bool {
@@ -821,6 +832,10 @@ func (m *ClientManager) Disconnect(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ent, ok := m.clients[sessionID]; ok {
+		if ent.presenceCancel != nil {
+			ent.presenceCancel()
+			ent.presenceCancel = nil
+		}
 		if ent.Client != nil {
 			ent.Client.Disconnect()
 		}
@@ -956,13 +971,121 @@ func (m *ClientManager) KnownSessions() []string {
 			continue
 		}
 		sid := strings.TrimSpace(e.Name())
-		if sid == "" {
+		if isInternalSessionEntry(sid) {
 			continue
 		}
 		out = append(out, sid)
 	}
 	sort.Strings(out)
 	return out
+}
+
+func (m *ClientManager) sessionDirPath(sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", ErrMissingSessionID
+	}
+	if isInternalSessionEntry(sessionID) {
+		return "", fmt.Errorf("%w: %s", ErrReservedSessionID, sessionID)
+	}
+
+	root := filepath.Clean(strings.TrimSpace(m.sessionStore))
+	target := filepath.Clean(filepath.Join(root, sessionID))
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("%w: %s", ErrInvalidSessionID, sessionID)
+	}
+	return target, nil
+}
+
+func (m *ClientManager) clearAllSessionWebhooks(sessionID string) (bool, error) {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return false, ErrMissingSessionID
+	}
+
+	m.webhooksMu.Lock()
+	prev := cloneSessionWebhookMap(m.sessionWebhooks)
+	_, existed := m.sessionWebhooks[sid]
+	if existed {
+		delete(m.sessionWebhooks, sid)
+	}
+	m.webhooksMu.Unlock()
+
+	if !existed {
+		return false, nil
+	}
+	if err := m.persistSessionWebhooks(); err != nil {
+		m.webhooksMu.Lock()
+		m.sessionWebhooks = prev
+		m.webhooksMu.Unlock()
+		return false, err
+	}
+	return true, nil
+}
+
+func (m *ClientManager) DeleteSession(sessionID string) (bool, error) {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return false, ErrMissingSessionID
+	}
+
+	sessionDir, err := m.sessionDirPath(sid)
+	if err != nil {
+		return false, err
+	}
+
+	removed := false
+
+	m.mu.RLock()
+	_, connected := m.clients[sid]
+	m.mu.RUnlock()
+	if connected {
+		removed = true
+	}
+
+	if err := m.Disconnect(sid); err != nil {
+		return removed, err
+	}
+
+	if unassigned, err := m.UnassignSession(sid); err != nil {
+		return removed, err
+	} else if unassigned {
+		removed = true
+	}
+
+	if cleared, _, err := m.ClearSessionConfig(sid); err != nil {
+		return removed, err
+	} else if cleared {
+		removed = true
+	}
+
+	if cleared, err := m.clearAllSessionWebhooks(sid); err != nil {
+		return removed, err
+	} else if cleared {
+		removed = true
+	}
+
+	if clearQR(sid) {
+		removed = true
+	}
+	if status.Delete(sid) {
+		removed = true
+	}
+
+	if _, err := os.Stat(sessionDir); err == nil {
+		removed = true
+		if err := os.RemoveAll(sessionDir); err != nil {
+			return removed, err
+		}
+	} else if !os.IsNotExist(err) {
+		return removed, err
+	}
+
+	return removed, nil
 }
 
 // ResolveDest applies overrides/heuristics and LID lookup to determine the destination JID.

@@ -73,3 +73,11 @@ func hasQR(sessionID string) bool {
 	state, ok := qrBySession[sessionID]
 	return ok && state != nil && state.pngBase64 != ""
 }
+
+func clearQR(sessionID string) bool {
+	qrMu.Lock()
+	defer qrMu.Unlock()
+	_, existed := qrBySession[sessionID]
+	delete(qrBySession, sessionID)
+	return existed
+}

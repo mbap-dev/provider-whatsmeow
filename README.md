@@ -6,7 +6,7 @@ Provider WhatsApp baseado em [WhatsMeow](https://github.com/tulir/whatsmeow), co
 
 - `provider-whatsmeow` agora pode rodar **sem depender do unoapi-cloud**.
 - Suporte nativo a **workers por números/sessões** (`WORKER_NUMBERS`).
-- Dashboard web moderno embutido no binário Go (sem Node).
+- Dashboard React responsivo embutido no binário Go (sem etapa local de build).
 - Configuração de sessões diretamente no dashboard (sem obrigatoriedade de `WORKER_NUMBERS` em env).
 - API HTTP para:
   - gestão de sessão (`connect`, `disconnect`, `reload`, `qr`, `status`)
@@ -64,17 +64,18 @@ Acesse `GET /`.
 Funcionalidades:
 
 - visão do worker (`id`, fila, bindings, sessões atribuídas)
-- listagem de sessões com status
-- ações rápidas: `connect`, `reload`, `disconnect`, `QR`
+- layout responsivo em React com seleção de sessão e inspetor lateral
+- listagem de sessões com filtros, busca e atualização automática
+- ações rápidas: `connect`, `reload`, `disconnect`, `delete`, `QR`
 - envio rápido de mensagem de texto por sessão
 - atribuição e desatribuição de sessões ao worker atual
-- configuração por sessão via frontend/API:
+- configuração por sessão via frontend/API, carregada automaticamente ao selecionar a sessão:
   - rejeitar ligações
   - mensagem de rejeição
   - marcar conversa como lida
   - ignorar status/newsletters
   - always-online por sessão
-- cadastro de múltiplos webhooks por sessão (estilo UnoAPI), com filtros:
+- cadastro de múltiplos webhooks por sessão (estilo UnoAPI), também dentro do inspetor da sessão:
   - incoming
   - outgoing
   - update/status
@@ -82,7 +83,7 @@ Funcionalidades:
   - newsletter
 - mensagens próprias da sessão (`fromMe`) seguem formato UnoAPI em `messages[]` (com `from` igual ao número da sessão) e respeitam o filtro `send_outgoing_messages`.
 
-Tudo servido pelo próprio binário Go (`go:embed`), sem dependências JS de build.
+Tudo servido pelo próprio binário Go (`go:embed`), com runtime React carregado no frontend sem etapa local obrigatória de build.
 
 ---
 
@@ -102,6 +103,7 @@ Tudo servido pelo próprio binário Go (`go:embed`), sem dependências JS de bui
 - `GET /api/{version}/worker`
 - `GET /api/{version}/sessions`
 - `POST /api/{version}/sessions`
+- `DELETE /api/{version}/sessions/{id}`
 - `POST /api/{version}/sessions/{id}/messages`
 - `POST /api/{version}/sessions/{id}/media`
 - `GET /api/{version}/sessions/{id}/media/{media_id}`

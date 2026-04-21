@@ -20,6 +20,8 @@ type jidEntry struct {
 	expiry time.Time
 }
 
+const avatarMissingSentinel = "__avatar_missing__"
+
 var (
 	cacheMu          sync.RWMutex
 	avatarCache      = map[string]stringEntry{}
@@ -30,10 +32,11 @@ var (
 	syntheticCache   = map[string]time.Time{}
 
 	// Tuned TTLs: names/avatars can change, but not frequently.
-	avatarTTL      = 10 * time.Minute
-	groupNameTTL   = 10 * time.Minute
-	contactNameTTL = 10 * time.Minute
-	lidMapTTL      = 30 * time.Minute
+	avatarTTL         = 10 * time.Minute
+	avatarNegativeTTL = 2 * time.Minute
+	groupNameTTL      = 10 * time.Minute
+	contactNameTTL    = 10 * time.Minute
+	lidMapTTL         = 30 * time.Minute
 	// Keep receipt dedupe entries long enough to collapse repeated WA receipt
 	// fan-out, while eventually releasing memory.
 	receiptTTL = 6 * time.Hour
@@ -47,7 +50,7 @@ func cacheGetAvatar(key string) (string, bool) {
 	cacheMu.RLock()
 	e, ok := avatarCache[key]
 	cacheMu.RUnlock()
-	if ok && now.Before(e.expiry) && e.val != "" {
+	if ok && now.Before(e.expiry) {
 		return e.val, true
 	}
 	return "", false
@@ -56,6 +59,12 @@ func cacheGetAvatar(key string) (string, bool) {
 func cachePutAvatar(key, url string) {
 	cacheMu.Lock()
 	avatarCache[key] = stringEntry{val: url, expiry: time.Now().Add(avatarTTL)}
+	cacheMu.Unlock()
+}
+
+func cachePutAvatarMissing(key string) {
+	cacheMu.Lock()
+	avatarCache[key] = stringEntry{val: avatarMissingSentinel, expiry: time.Now().Add(avatarNegativeTTL)}
 	cacheMu.Unlock()
 }
 

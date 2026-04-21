@@ -267,9 +267,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 	contactPhone := resolveDisplay(chatJID)
 	if isGroupJID(chatJID) && (senderJID.User != "") {
-		// For message routing/from field we still use the participant.
-		// But for contact entry in payload, Uno expects wa_id to match the
-		// conversation (group) id. We'll set wa_id below accordingly.
+		// For group messages the payload keeps:
+		// - contacts[0].wa_id as the participant phone/JID
+		// - contacts[0].group_id as the group conversation id
+		// Chatwoot uses that split to register the sender contact first and
+		// then switch the conversation contact to the group.
 		contactPhone = resolveDisplay(senderJID)
 	}
 	fromField := phone
@@ -1560,6 +1562,20 @@ func normalizedContactLookupJID(j types.JID) types.JID {
 	return j
 }
 
+func normalizedAvatarLookupJID(sessionID string, cli *whatsmeow.Client, j types.JID) types.JID {
+	if j.User == "" || j.Server == "" {
+		return types.JID{}
+	}
+
+	if isLIDJID(j) {
+		if resolved, ok := resolveLIDToAD(sessionID, cli, j, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
+			return normalizedContactLookupJID(resolved)
+		}
+	}
+
+	return normalizedContactLookupJID(j)
+}
+
 func safeGetContactName(sessionID string, cli *whatsmeow.Client, candidates ...types.JID) (string, bool) {
 	if cli == nil || cli.Store == nil || cli.Store.Contacts == nil {
 		return "", false
@@ -1599,11 +1615,16 @@ func safeGetContactName(sessionID string, cli *whatsmeow.Client, candidates ...t
 // getAvatarURL tenta obter a URL da foto de perfil (contato ou grupo).
 // Usa a API pública do whatsmeow; se não disponível/erro, retorna false.
 func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (string, bool) {
+	jid = normalizedAvatarLookupJID(sessionID, cli, jid)
 	if cli == nil || jid == (types.JID{}) {
 		return "", false
 	}
 	// Cache first
 	if u, ok := cacheGetAvatar(jid.String()); ok {
+		if u == avatarMissingSentinel {
+			log.WithSession(sessionID).Debug("avatar_cache_miss_hit jid=%s", jid.String())
+			return "", false
+		}
 		log.WithSession(sessionID).Debug("avatar_cache_hit jid=%s url=%s", jid.String(), u)
 		return u, true
 	}
@@ -1646,6 +1667,7 @@ func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (strin
 	if url, ok := try("preview_retry", &whatsmeow.GetProfilePictureParams{Preview: true}); ok {
 		return url, true
 	}
+	cachePutAvatarMissing(jid.String())
 	log.WithSession(sessionID).Debug("avatar_not_available jid=%s", jid.String())
 	return "", false
 }
@@ -1655,14 +1677,25 @@ func buildCloudProfile(sessionID string, cli *whatsmeow.Client, avatarJID types.
 		"name":    displayName,
 		"picture": "",
 	}
-	if avatarJID == (types.JID{}) {
+	avatarLookupJID := normalizedAvatarLookupJID(sessionID, cli, avatarJID)
+	if avatarLookupJID == (types.JID{}) {
 		return profile
 	}
-	if av, ok := getAvatarURL(sessionID, cli, avatarJID); ok && strings.TrimSpace(av) != "" {
+	if av, ok := getAvatarURL(sessionID, cli, avatarLookupJID); ok && strings.TrimSpace(av) != "" {
 		profile["picture"] = av
-		log.WithSession(sessionID).WithMessageID(messageID).Debug("avatar_set url=%s chat=%s", av, avatarJID.String())
+		log.WithSession(sessionID).WithMessageID(messageID).Debug(
+			"avatar_set url=%s chat=%s lookup=%s",
+			av,
+			avatarJID.String(),
+			avatarLookupJID.String(),
+		)
 	} else {
-		log.WithSession(sessionID).WithMessageID(messageID).Debug("avatar_not_found chat=%s is_group=%t", avatarJID.String(), isGroupJID(avatarJID))
+		log.WithSession(sessionID).WithMessageID(messageID).Debug(
+			"avatar_not_found chat=%s lookup=%s is_group=%t",
+			avatarJID.String(),
+			avatarLookupJID.String(),
+			isGroupJID(avatarLookupJID),
+		)
 	}
 	return profile
 }

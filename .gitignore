@@ -6,3 +6,4 @@
 /.gopath/
 .DS_Store
 /data/
+/.claude/

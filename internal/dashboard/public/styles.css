@@ -744,6 +744,40 @@ textarea {
   background: linear-gradient(140deg, rgba(15, 157, 116, 0.14), rgba(31, 79, 122, 0.08));
 }
 
+.pairing-code-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px dashed rgba(15, 157, 116, 0.32);
+  background: linear-gradient(145deg, rgba(15, 157, 116, 0.12), rgba(31, 79, 122, 0.06));
+}
+
+.pairing-code-card__label {
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.pairing-code-card__value {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  padding: 0.45rem 0.7rem;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 157, 116, 0.24);
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--accent-strong);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.pairing-code-card__hint {
+  margin-top: 0;
+}
+
 .subsection {
   display: grid;
   gap: 12px;

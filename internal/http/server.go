@@ -277,6 +277,7 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleGetSessionConfig).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleUpdateSessionConfig).Methods(http.MethodPut)
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleClearSessionConfig).Methods(http.MethodDelete)
+	router.HandleFunc(base+"/sessions/{id}/pairing-code", s.handlePairingCode).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleListSessionWebhooks).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleCreateSessionWebhook).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleUpdateSessionWebhook).Methods(http.MethodPut)
@@ -374,6 +375,50 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id": sessionID,
 		"removed":    removed,
+	})
+}
+
+type pairingCodeRequest struct {
+	Phone string `json:"phone"`
+}
+
+func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+
+	var req pairingCodeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	if strings.TrimSpace(req.Phone) == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing phone")
+		return
+	}
+
+	code, err := s.provider.PairPhone(sessionID, req.Phone)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID),
+			errors.Is(err, provider.ErrMissingPhone),
+			errors.Is(err, provider.ErrAlreadyPaired),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":   sessionID,
+		"phone":        strings.TrimSpace(req.Phone),
+		"pairing_code": code,
 	})
 }
 

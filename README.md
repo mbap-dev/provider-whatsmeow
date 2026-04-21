@@ -8,6 +8,7 @@ Provider WhatsApp baseado em [WhatsMeow](https://github.com/tulir/whatsmeow), co
 - Suporte nativo a **workers por números/sessões** (`WORKER_NUMBERS`).
 - Dashboard React responsivo embutido no binário Go (sem etapa local de build).
 - Configuração de sessões diretamente no dashboard (sem obrigatoriedade de `WORKER_NUMBERS` em env).
+- Autenticação de sessão por `QR code` ou `código de pareamento`.
 - API HTTP para:
   - gestão de sessão (`connect`, `disconnect`, `reload`, `qr`, `status`)
   - envio direto (`POST /api/v1/sessions/{id}/messages`)
@@ -67,6 +68,7 @@ Funcionalidades:
 - layout responsivo em React com seleção de sessão e inspetor lateral
 - listagem de sessões com filtros, busca e atualização automática
 - ações rápidas: `connect`, `reload`, `disconnect`, `delete`, `QR`
+- autenticação por `QR code` e geração de `código de pareamento` direto no inspetor da sessão
 - envio rápido de mensagem de texto por sessão
 - atribuição e desatribuição de sessões ao worker atual
 - configuração por sessão via frontend/API, carregada automaticamente ao selecionar a sessão:
@@ -104,6 +106,7 @@ Tudo servido pelo próprio binário Go (`go:embed`), com runtime React carregado
 - `GET /api/{version}/sessions`
 - `POST /api/{version}/sessions`
 - `DELETE /api/{version}/sessions/{id}`
+- `POST /api/{version}/sessions/{id}/pairing-code`
 - `POST /api/{version}/sessions/{id}/messages`
 - `POST /api/{version}/sessions/{id}/media`
 - `GET /api/{version}/sessions/{id}/media/{media_id}`
@@ -151,6 +154,16 @@ curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/messages \
 ```
 
 Compatibilidade de destinatário no payload: o endpoint aceita `to` (preferencial) e fallback para `recipient_id`/`source_id`.
+
+Exemplo de geração de código de pareamento:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/pairing-code \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "phone": "5562999999999"
+  }'
+```
 
 Exemplo estilo Meta com versão dinâmica:
 

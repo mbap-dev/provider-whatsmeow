@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -74,5 +75,30 @@ func TestDeleteSessionEndpoint(t *testing.T) {
 	}
 	if _, err := os.Stat(sessionDir); !os.IsNotExist(err) {
 		t.Fatalf("session dir still exists after endpoint delete: %v", err)
+	}
+}
+
+func TestPairingCodeEndpointRequiresPhone(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/sessions/553121159080/pairing-code",
+		bytes.NewBufferString(`{"phone":"   "}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "missing phone") {
+		t.Fatalf("response body = %s, want missing phone", rec.Body.String())
 	}
 }

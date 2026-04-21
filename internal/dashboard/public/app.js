@@ -192,6 +192,10 @@ function truncate(value, limit = 56) {
   return value.length > limit ? `${value.slice(0, limit)}…` : value
 }
 
+function digitsOnlyValue(value) {
+  return String(value || '').replace(/\D+/g, '')
+}
+
 function isEnterOrSpace(event) {
   return event.key === 'Enter' || event.key === ' '
 }
@@ -507,6 +511,11 @@ function App() {
     snapshot: null,
     form: createDefaultConfigForm(),
   })
+  const [pairingState, setPairingState] = useState({
+    phone: '',
+    code: '',
+    loading: false,
+  })
   const [webhookState, setWebhookState] = useState({
     loading: false,
     saving: false,
@@ -648,6 +657,11 @@ function App() {
         snapshot: null,
         form: createDefaultConfigForm(),
       })
+      setPairingState({
+        phone: '',
+        code: '',
+        loading: false,
+      })
       setWebhookState({
         loading: false,
         saving: false,
@@ -661,6 +675,11 @@ function App() {
       ...current,
       session: selectedSessionId,
     }))
+    setPairingState({
+      phone: digitsOnlyValue(selectedSessionId),
+      code: '',
+      loading: false,
+    })
 
     let active = true
     setConfigState({
@@ -916,6 +935,49 @@ function App() {
       pushToast(error.message, 'error')
     } finally {
       setConfigState((current) => ({ ...current, saving: false }))
+    }
+  }
+
+  async function handleRequestPairingCode(event) {
+    event.preventDefault()
+    if (!selectedSessionId) {
+      return
+    }
+
+    const phone = digitsOnlyValue(pairingState.phone)
+    if (!phone) {
+      pushToast('Informe o telefone para gerar o código de pareamento.', 'error')
+      return
+    }
+
+    setPairingState((current) => ({
+      ...current,
+      phone,
+      code: '',
+      loading: true,
+    }))
+    try {
+      const payload = await api(`/api/v1/sessions/${enc(selectedSessionId)}/pairing-code`, {
+        method: 'POST',
+        body: JSON.stringify({ phone }),
+      })
+      const code = String(payload?.pairing_code || '').trim()
+      if (!code) {
+        throw new Error('pairing code not returned by server')
+      }
+      setPairingState((current) => ({
+        ...current,
+        phone,
+        code,
+        loading: false,
+      }))
+      pushToast(`Código de pareamento gerado para ${selectedSessionId}.`, 'success')
+    } catch (error) {
+      setPairingState((current) => ({
+        ...current,
+        loading: false,
+      }))
+      pushToast(error.message, 'error')
     }
   }
 
@@ -1405,6 +1467,53 @@ function App() {
                               carregar esses formulários.
                             </p>
                           </div>
+
+                          <form className="stack-form" onSubmit=${handleRequestPairingCode}>
+                            <div className="callout callout--muted">
+                              <strong>Pareamento por código</strong>
+                              <p>
+                                Além do QR code, você pode gerar um código de pareamento para vincular
+                                a sessão sem leitura de QR. O provider conecta a sessão, espera a fase
+                                de QR internamente e então pede o código ao WhatsApp.
+                              </p>
+                            </div>
+
+                            <${InputField}
+                              label="Telefone para o pareamento"
+                              value=${pairingState.phone}
+                              placeholder="5562999999999"
+                              onInput=${(value) =>
+                                setPairingState((current) => ({
+                                  ...current,
+                                  phone: value,
+                                  code: '',
+                                }))
+                              }
+                            />
+
+                            <div className="inline-actions inline-actions--wrap">
+                              <button
+                                type="submit"
+                                className="solid-button"
+                                disabled=${pairingState.loading}
+                              >
+                                ${pairingState.loading ? 'Gerando código...' : 'Gerar código de pareamento'}
+                              </button>
+                            </div>
+
+                            ${pairingState.code
+                              ? html`
+                                  <div className="pairing-code-card">
+                                    <span className="pairing-code-card__label">Código atual</span>
+                                    <code className="pairing-code-card__value">${pairingState.code}</code>
+                                    <p className="hint-text pairing-code-card__hint">
+                                      Esse código expira rápido. Se o pareamento não concluir a tempo,
+                                      gere um novo código.
+                                    </p>
+                                  </div>
+                                `
+                              : null}
+                          </form>
                         `
                       : null}
 

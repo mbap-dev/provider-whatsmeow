@@ -135,6 +135,9 @@ var (
 	ErrMissingSessionID  = errors.New("missing session id")
 	ErrInvalidSessionID  = errors.New("invalid session id")
 	ErrReservedSessionID = errors.New("reserved session id")
+	ErrMissingPhone      = errors.New("missing phone")
+	ErrAlreadyPaired     = errors.New("session already paired")
+	ErrPairingNotReady   = errors.New("pairing setup not ready yet")
 )
 
 func NewClientManager(opts ManagerOptions) *ClientManager {
@@ -1086,6 +1089,71 @@ func (m *ClientManager) DeleteSession(sessionID string) (bool, error) {
 	}
 
 	return removed, nil
+}
+
+func (m *ClientManager) waitForPairingReady(sessionID string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if cli, ok := m.GetClient(sessionID); ok && cli != nil {
+			if cli.Store != nil && cli.Store.ID != nil {
+				return ErrAlreadyPaired
+			}
+			if cli.IsConnected() && hasQR(sessionID) {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return ErrPairingNotReady
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+func (m *ClientManager) PairPhone(sessionID, phone string) (string, error) {
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return "", ErrMissingSessionID
+	}
+	if _, err := m.sessionDirPath(sid); err != nil {
+		return "", err
+	}
+
+	normalizedPhone := digitsOnly(phone)
+	if normalizedPhone == "" {
+		return "", ErrMissingPhone
+	}
+
+	cli, ok := m.GetClient(sid)
+	if ok && cli != nil && cli.Store != nil && cli.Store.ID != nil {
+		return "", ErrAlreadyPaired
+	}
+	if ok && cli != nil && !cli.IsConnected() {
+		if err := m.Disconnect(sid); err != nil {
+			return "", err
+		}
+		cli = nil
+		ok = false
+	}
+	if !ok || cli == nil {
+		var err error
+		cli, err = m.Connect(sid)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if err := m.waitForPairingReady(sid, 20*time.Second); err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return cli.PairPhone(ctx, normalizedPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 }
 
 // ResolveDest applies overrides/heuristics and LID lookup to determine the destination JID.

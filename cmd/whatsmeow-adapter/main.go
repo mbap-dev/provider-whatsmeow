@@ -27,6 +27,16 @@ func main() {
 	// for details on each field.
 	cfg := config.NewConfig()
 
+	waVersionCtx, waVersionCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waVersionCancel()
+	if previous, applied, err := provider.ConfigureLatestWhatsAppWebVersion(waVersionCtx); err != nil {
+		ilog.Warnf("failed to refresh WhatsApp Web version, keeping bundled %s: %v", applied.String(), err)
+	} else if previous != applied {
+		ilog.Infof("updated WhatsApp Web version from %s to %s", previous.String(), applied.String())
+	} else {
+		ilog.Infof("using WhatsApp Web version %s", applied.String())
+	}
+
 	// Init status writer (in-memory + optional Redis mirror)
 	status.Init(cfg.RedisURL, cfg.StatusPrefix)
 

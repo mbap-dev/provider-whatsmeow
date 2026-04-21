@@ -98,6 +98,13 @@ func Infof(format string, args ...interface{}) {
 	stdlog.Printf("level=info provider=whatsmeow %s", fmt.Sprintf(format, args...))
 }
 
+func Warnf(format string, args ...interface{}) {
+	if minLevel > LevelInfo {
+		return
+	}
+	stdlog.Printf("level=warn provider=whatsmeow %s", fmt.Sprintf(format, args...))
+}
+
 func Errorf(format string, args ...interface{}) {
 	stdlog.Printf("level=error provider=whatsmeow %s", fmt.Sprintf(format, args...))
 }

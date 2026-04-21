@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,7 +12,7 @@ import (
 
 func TestKnownSessionsIgnoresInternalDirectories(t *testing.T) {
 	root := t.TempDir()
-	for _, dir := range []string{"553121159080", "_media", ".cache"} {
+	for _, dir := range []string{"553121159080", "1", "_media", ".cache"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatalf("MkdirAll(%q): %v", dir, err)
 		}
@@ -29,6 +30,36 @@ func TestKnownSessionsIgnoresInternalDirectories(t *testing.T) {
 	want := []string{"553121159080"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("KnownSessions() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewClientManagerIgnoresInvalidAssignedSessions(t *testing.T) {
+	root := t.TempDir()
+	assignmentFile := filepath.Join(root, "_worker_assignments.json")
+	if err := os.WriteFile(assignmentFile, []byte(`{"worker_id":"worker-test","sessions":["1","553121159080"]}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(_worker_assignments.json): %v", err)
+	}
+
+	manager := NewClientManager(ManagerOptions{
+		SessionStore: root,
+		WorkerID:     "worker-test",
+	})
+
+	got := manager.AssignedSessions()
+	want := []string{"553121159080"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AssignedSessions() = %#v, want %#v", got, want)
+	}
+}
+
+func TestConnectRejectsInvalidSessionID(t *testing.T) {
+	manager := NewClientManager(ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	if _, err := manager.Connect("1"); !errors.Is(err, ErrInvalidSessionID) {
+		t.Fatalf("Connect(1) error = %v, want %v", err, ErrInvalidSessionID)
 	}
 }
 

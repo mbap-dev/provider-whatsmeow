@@ -231,10 +231,20 @@ func normalizeSessionID(sessionID string) string {
 	if sessionID == "" {
 		return ""
 	}
+	if isInternalSessionEntry(sessionID) || sessionID == "." || sessionID == ".." {
+		return ""
+	}
+	if strings.Contains(sessionID, "/") || strings.Contains(sessionID, "\\") {
+		return ""
+	}
 	if looksLikePhoneIdentifier(sessionID) {
-		if d := digitsOnly(sessionID); d != "" {
+		if d := digitsOnly(sessionID); len(d) >= 6 {
 			return d
 		}
+		return ""
+	}
+	if len(sessionID) < 2 {
+		return ""
 	}
 	return sessionID
 }
@@ -292,6 +302,14 @@ func (m *ClientManager) WorkerStrict() bool {
 	return m.workerStrict
 }
 
+func (m *ClientManager) CanonicalSessionID(sessionID string) (string, error) {
+	norm := normalizeSessionID(sessionID)
+	if norm == "" {
+		return "", ErrInvalidSessionID
+	}
+	return norm, nil
+}
+
 func (m *ClientManager) AssignedSessions() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -309,7 +327,7 @@ func (m *ClientManager) AssignedSessions() []string {
 func (m *ClientManager) AssignSession(sessionID string) (string, error) {
 	norm := normalizeSessionID(sessionID)
 	if norm == "" {
-		return "", errors.New("invalid session id")
+		return "", ErrInvalidSessionID
 	}
 
 	m.mu.Lock()
@@ -343,7 +361,7 @@ func (m *ClientManager) AssignSession(sessionID string) (string, error) {
 func (m *ClientManager) UnassignSession(sessionID string) (bool, error) {
 	norm := normalizeSessionID(sessionID)
 	if norm == "" {
-		return false, errors.New("invalid session id")
+		return false, ErrInvalidSessionID
 	}
 
 	m.mu.Lock()
@@ -642,6 +660,10 @@ func (m *ClientManager) loadSessionOverrides(sessionID string) {
 
 // Connect cria/recupera cliente e inicia conexão (emite QR se for 1o login)
 func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return nil, ErrInvalidSessionID
+	}
 	if !m.AllowsSession(sessionID) {
 		return nil, fmt.Errorf("session %s is not assigned to worker %s", sessionID, m.workerID)
 	}
@@ -832,6 +854,10 @@ func source(envVal string, hasOverride bool) string {
 }
 
 func (m *ClientManager) Disconnect(sessionID string) error {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return ErrInvalidSessionID
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ent, ok := m.clients[sessionID]; ok {
@@ -850,6 +876,10 @@ func (m *ClientManager) Disconnect(sessionID string) error {
 }
 
 func (m *ClientManager) Reload(sessionID string) error {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return ErrInvalidSessionID
+	}
 	m.mu.RLock()
 	_, ok := m.clients[sessionID]
 	m.mu.RUnlock()
@@ -883,6 +913,10 @@ type SessionOverview struct {
 }
 
 func (m *ClientManager) Status(sessionID string) (SessionStatus, error) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return SessionStatus{}, ErrInvalidSessionID
+	}
 	m.mu.RLock()
 	ent, ok := m.clients[sessionID]
 	m.mu.RUnlock()
@@ -902,6 +936,10 @@ func (m *ClientManager) Status(sessionID string) (SessionStatus, error) {
 }
 
 func (m *ClientManager) GetClient(sessionID string) (*whatsmeow.Client, bool) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return nil, false
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	ent, ok := m.clients[sessionID]
@@ -915,7 +953,11 @@ func (m *ClientManager) ListSessions() []SessionOverview {
 	m.mu.RLock()
 	active := make(map[string]*clientEntry, len(m.clients))
 	for sid, ent := range m.clients {
-		active[sid] = ent
+		norm := normalizeSessionID(sid)
+		if norm == "" {
+			continue
+		}
+		active[norm] = ent
 	}
 	m.mu.RUnlock()
 
@@ -973,8 +1015,8 @@ func (m *ClientManager) KnownSessions() []string {
 		if !e.IsDir() {
 			continue
 		}
-		sid := strings.TrimSpace(e.Name())
-		if isInternalSessionEntry(sid) {
+		sid := normalizeSessionID(e.Name())
+		if sid == "" {
 			continue
 		}
 		out = append(out, sid)
@@ -984,12 +1026,9 @@ func (m *ClientManager) KnownSessions() []string {
 }
 
 func (m *ClientManager) sessionDirPath(sessionID string) (string, error) {
-	sessionID = strings.TrimSpace(sessionID)
+	sessionID = normalizeSessionID(sessionID)
 	if sessionID == "" {
-		return "", ErrMissingSessionID
-	}
-	if isInternalSessionEntry(sessionID) {
-		return "", fmt.Errorf("%w: %s", ErrReservedSessionID, sessionID)
+		return "", ErrInvalidSessionID
 	}
 
 	root := filepath.Clean(strings.TrimSpace(m.sessionStore))
@@ -1005,9 +1044,9 @@ func (m *ClientManager) sessionDirPath(sessionID string) (string, error) {
 }
 
 func (m *ClientManager) clearAllSessionWebhooks(sessionID string) (bool, error) {
-	sid := strings.TrimSpace(sessionID)
+	sid := normalizeSessionID(sessionID)
 	if sid == "" {
-		return false, ErrMissingSessionID
+		return false, ErrInvalidSessionID
 	}
 
 	m.webhooksMu.Lock()
@@ -1031,9 +1070,9 @@ func (m *ClientManager) clearAllSessionWebhooks(sessionID string) (bool, error) 
 }
 
 func (m *ClientManager) DeleteSession(sessionID string) (bool, error) {
-	sid := strings.TrimSpace(sessionID)
+	sid := normalizeSessionID(sessionID)
 	if sid == "" {
-		return false, ErrMissingSessionID
+		return false, ErrInvalidSessionID
 	}
 
 	sessionDir, err := m.sessionDirPath(sid)
@@ -1092,6 +1131,10 @@ func (m *ClientManager) DeleteSession(sessionID string) (bool, error) {
 }
 
 func (m *ClientManager) waitForPairingReady(sessionID string, timeout time.Duration) error {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return ErrInvalidSessionID
+	}
 	if timeout <= 0 {
 		timeout = 20 * time.Second
 	}
@@ -1114,9 +1157,9 @@ func (m *ClientManager) waitForPairingReady(sessionID string, timeout time.Durat
 }
 
 func (m *ClientManager) PairPhone(sessionID, phone string) (string, error) {
-	sid := strings.TrimSpace(sessionID)
+	sid := normalizeSessionID(sessionID)
 	if sid == "" {
-		return "", ErrMissingSessionID
+		return "", ErrInvalidSessionID
 	}
 	if _, err := m.sessionDirPath(sid); err != nil {
 		return "", err
@@ -1184,10 +1227,17 @@ func (m *ClientManager) ResolveDest(sessionID, to string) (ResolveResult, error)
 }
 
 func (m *ClientManager) SessionPath(sessionID string) string {
+	if norm := normalizeSessionID(sessionID); norm != "" {
+		sessionID = norm
+	}
 	return filepath.Join(m.sessionStore, sessionID)
 }
 
 func (m *ClientManager) mustHave(sessionID string) (*clientEntry, error) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return nil, ErrInvalidSessionID
+	}
 	if ent, ok := m.clients[sessionID]; ok && ent != nil && ent.Client != nil {
 		return ent, nil
 	}

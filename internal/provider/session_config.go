@@ -307,7 +307,7 @@ func loadSessionOverrideState(path, workerID string) (map[string]sessionOverride
 	}
 	out := map[string]sessionOverrides{}
 	for sid, raw := range st.Sessions {
-		sid = strings.TrimSpace(sid)
+		sid = normalizeSessionID(sid)
 		if sid == "" {
 			continue
 		}
@@ -342,7 +342,7 @@ func saveSessionOverrideState(path, workerID string, overrides map[string]sessio
 		Sessions: map[string]sessionOverridePayload{},
 	}
 	for sid, ov := range overrides {
-		sid = strings.TrimSpace(sid)
+		sid = normalizeSessionID(sid)
 		if sid == "" {
 			continue
 		}

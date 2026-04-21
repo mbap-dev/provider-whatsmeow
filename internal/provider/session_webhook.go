@@ -275,7 +275,7 @@ func loadSessionWebhookState(path, workerID string) (map[string][]SessionWebhook
 	}
 	out := map[string][]SessionWebhook{}
 	for sid, hooks := range st.Sessions {
-		sid = strings.TrimSpace(sid)
+		sid = normalizeSessionID(sid)
 		if sid == "" {
 			continue
 		}
@@ -307,7 +307,7 @@ func saveSessionWebhookState(path, workerID string, webhooks map[string][]Sessio
 		Sessions: map[string][]SessionWebhook{},
 	}
 	for sid, hooks := range webhooks {
-		sid = strings.TrimSpace(sid)
+		sid = normalizeSessionID(sid)
 		if sid == "" {
 			continue
 		}

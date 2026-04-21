@@ -320,9 +320,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
 		return
 	}
-	sessionID := strings.TrimSpace(req.ID)
-	if sessionID == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing id")
+	sessionID, err := s.provider.CanonicalSessionID(req.ID)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	shouldConnect := true
@@ -334,10 +334,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		shouldAssign = *req.Assign
 	}
 	if shouldAssign {
-		if _, err := s.provider.AssignSession(sessionID); err != nil {
+		norm, err := s.provider.AssignSession(sessionID)
+		if err != nil {
+			if errors.Is(err, provider.ErrInvalidSessionID) {
+				writeJSONError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		sessionID = norm
 	}
 	if shouldConnect {
 		if _, err := s.provider.Connect(sessionID); err != nil {
@@ -433,13 +439,17 @@ func (s *Server) handleAssignSession(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
 		return
 	}
-	sessionID := strings.TrimSpace(req.SessionID)
-	if sessionID == "" {
-		writeJSONError(w, http.StatusBadRequest, "missing session_id")
+	sessionID, err := s.provider.CanonicalSessionID(req.SessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid session_id")
 		return
 	}
 	norm, err := s.provider.AssignSession(sessionID)
 	if err != nil {
+		if errors.Is(err, provider.ErrInvalidSessionID) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

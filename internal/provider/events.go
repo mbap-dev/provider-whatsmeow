@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -307,6 +308,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 				// if we don't have a body, ignore
 				return nil
 			}
+			body = decorateMentionText(sessionID, client, body, edited)
 			body = body + "\n`Mensagem Editada`"
 			wireMsg["type"] = "text"
 			wireMsg["text"] = map[string]any{"body": body}
@@ -440,16 +442,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			}
 		}
 	case msg.GetConversation() != "":
+		body := decorateMentionText(sessionID, client, msg.GetConversation(), msg)
 		wireMsg["type"] = "text"
-		wireMsg["text"] = map[string]any{"body": msg.GetConversation()}
+		wireMsg["text"] = map[string]any{"body": body}
 
 	case msg.GetExtendedTextMessage() != nil:
 		t := strings.TrimSpace(msg.GetExtendedTextMessage().GetText())
+		t = decorateMentionText(sessionID, client, t, msg)
 		wireMsg["type"] = "text"
 		wireMsg["text"] = map[string]any{"body": t}
 
 	case msg.GetImageMessage() != nil:
 		im := msg.GetImageMessage()
+		caption := decorateMentionText(sessionID, client, im.GetCaption(), msg)
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
 		imgExt := extensionByMime(mimeType)
@@ -458,7 +463,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			fileName = e.Info.ID + imgExt
 		}
 		image := map[string]any{
-			"caption":     im.GetCaption(),
+			"caption":     caption,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(im.GetFileSHA256()),
 			"media_key":   b64(im.GetMediaKey()),
@@ -487,11 +492,12 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 
 	case msg.GetDocumentMessage() != nil:
 		d := msg.GetDocumentMessage()
+		caption := decorateMentionText(sessionID, client, d.GetCaption(), msg)
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
 		fileName := firstNonEmpty(d.GetFileName(), d.GetTitle())
 		document := map[string]any{
-			"caption":     d.GetCaption(),
+			"caption":     caption,
 			"filename":    fileName,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(d.GetFileSHA256()),
@@ -518,6 +524,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 
 	case msg.GetVideoMessage() != nil:
 		v := msg.GetVideoMessage()
+		caption := decorateMentionText(sessionID, client, v.GetCaption(), msg)
 		wireMsg["type"] = "video"
 		mimeType := v.GetMimetype()
 		videoExt := extensionByMime(mimeType)
@@ -526,7 +533,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			videoFileName = e.Info.ID + videoExt
 		}
 		video := map[string]any{
-			"caption":     v.GetCaption(),
+			"caption":     caption,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(v.GetFileSHA256()),
 			"media_key":   b64(v.GetMediaKey()),
@@ -642,6 +649,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	default:
 		// fallback: se nada identificado mas tem algo, tenta extrair caption/text
 		if cap := extractAnyCaption(msg); cap != "" {
+			cap = decorateMentionText(sessionID, client, cap, msg)
 			wireMsg["type"] = "text"
 			wireMsg["text"] = map[string]any{"body": cap}
 		} else {
@@ -1277,23 +1285,30 @@ func extractAnyCaption(m *waE2E.Message) string {
 	return ""
 }
 
-func messageContextInfo(m *waE2E.Message) map[string]any {
-	// tenta extrair stanzaId e participant de qualquer ContextInfo disponível
-	var ci *waE2E.ContextInfo
+func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
+	if m == nil {
+		return nil
+	}
 	switch {
 	case m.GetExtendedTextMessage() != nil:
-		ci = m.GetExtendedTextMessage().GetContextInfo()
+		return m.GetExtendedTextMessage().GetContextInfo()
 	case m.GetImageMessage() != nil:
-		ci = m.GetImageMessage().GetContextInfo()
+		return m.GetImageMessage().GetContextInfo()
 	case m.GetDocumentMessage() != nil:
-		ci = m.GetDocumentMessage().GetContextInfo()
+		return m.GetDocumentMessage().GetContextInfo()
 	case m.GetVideoMessage() != nil:
-		ci = m.GetVideoMessage().GetContextInfo()
+		return m.GetVideoMessage().GetContextInfo()
 	case m.GetAudioMessage() != nil:
-		ci = m.GetAudioMessage().GetContextInfo()
+		return m.GetAudioMessage().GetContextInfo()
 	case m.GetStickerMessage() != nil:
-		ci = m.GetStickerMessage().GetContextInfo()
+		return m.GetStickerMessage().GetContextInfo()
 	}
+	return nil
+}
+
+func messageContextInfo(m *waE2E.Message) map[string]any {
+	// tenta extrair stanzaId e participant de qualquer ContextInfo disponível
+	ci := extractMessageContextInfo(m)
 	if ci == nil {
 		return nil
 	}
@@ -1320,6 +1335,165 @@ func messageContextInfo(m *waE2E.Message) map[string]any {
 	}
 
 	return ctx
+}
+
+func safeGetContactInfo(cli *whatsmeow.Client, candidates ...types.JID) (types.ContactInfo, bool) {
+	if cli == nil || cli.Store == nil || cli.Store.Contacts == nil {
+		return types.ContactInfo{}, false
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		lookup := normalizedContactLookupJID(candidate)
+		if lookup == (types.JID{}) {
+			continue
+		}
+		key := lookup.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		info, err := cli.Store.Contacts.GetContact(ctx, lookup)
+		cancel()
+		if err == nil && info.Found {
+			return info, true
+		}
+	}
+	return types.ContactInfo{}, false
+}
+
+func resolvedMentionJID(sessionID string, cli *whatsmeow.Client, jid types.JID) types.JID {
+	if !isLIDJID(jid) {
+		return types.JID{}
+	}
+	if resolved, ok := resolveLIDToAD(sessionID, cli, jid, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
+		return resolved
+	}
+	return types.JID{}
+}
+
+func mentionReplacementCandidates(jid, resolved types.JID, info types.ContactInfo) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if i := strings.Index(value, ":"); i >= 0 {
+			value = value[:i]
+		}
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; !ok {
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+		if digits := digitsOnly(value); digits != "" {
+			if _, ok := seen[digits]; !ok {
+				seen[digits] = struct{}{}
+				out = append(out, digits)
+			}
+		}
+	}
+
+	add(jid.User)
+	add(resolved.User)
+	if strings.TrimSpace(info.RedactedPhone) != "" {
+		add(info.RedactedPhone)
+	}
+	return out
+}
+
+func mentionDisplayNumber(jid, resolved types.JID, info types.ContactInfo) string {
+	if resolved.User != "" && resolved.Server != "" {
+		if digits := digitsOnly(resolved.User); digits != "" {
+			return digits
+		}
+	}
+	if !isLIDJID(jid) {
+		if digits := digitsOnly(jid.User); digits != "" {
+			return digits
+		}
+	}
+	number := strings.TrimSpace(firstNonEmpty(
+		digitsOnly(info.RedactedPhone),
+		strings.TrimSpace(info.RedactedPhone),
+	))
+	if number != "" && !strings.Contains(number, "@") {
+		return number
+	}
+	return firstNonEmpty(
+		digitsOnly(jid.User),
+		strings.TrimSpace(jid.User),
+	)
+}
+
+func formatMentionDisplay(name, number string) string {
+	name = strings.TrimSpace(name)
+	number = strings.TrimSpace(number)
+	switch {
+	case name != "" && number != "" && name != number:
+		return fmt.Sprintf("@%s (%s)", name, number)
+	case name != "":
+		return "@" + name
+	case number != "":
+		return "@" + number
+	default:
+		return ""
+	}
+}
+
+func applyMentionReplacements(text string, replacements map[string]string) string {
+	if text == "" || len(replacements) == 0 {
+		return text
+	}
+	keys := make([]string, 0, len(replacements))
+	for key := range replacements {
+		if strings.Contains(text, key) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	for _, key := range keys {
+		text = strings.ReplaceAll(text, key, replacements[key])
+	}
+	return text
+}
+
+func decorateMentionText(sessionID string, cli *whatsmeow.Client, text string, m *waE2E.Message) string {
+	if strings.TrimSpace(text) == "" || m == nil {
+		return text
+	}
+	ci := extractMessageContextInfo(m)
+	if ci == nil || len(ci.GetMentionedJID()) == 0 {
+		return text
+	}
+
+	replacements := make(map[string]string)
+	for _, raw := range ci.GetMentionedJID() {
+		jid, err := types.ParseJID(strings.TrimSpace(raw))
+		if err != nil {
+			continue
+		}
+		resolved := resolvedMentionJID(sessionID, cli, jid)
+		info, _ := safeGetContactInfo(cli, jid, resolved)
+		label := formatMentionDisplay(
+			contactInfoDisplayName(info),
+			mentionDisplayNumber(jid, resolved, info),
+		)
+		if label == "" {
+			continue
+		}
+		for _, candidate := range mentionReplacementCandidates(jid, resolved, info) {
+			replacements["@"+candidate] = label
+		}
+	}
+	return applyMentionReplacements(text, replacements)
 }
 
 func mapReceiptStatus(t events.ReceiptType) string {

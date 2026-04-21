@@ -488,16 +488,17 @@ func (s *Server) handleUnassignSession(w http.ResponseWriter, r *http.Request) {
 }
 
 type workerResponse struct {
-	WorkerID          string   `json:"worker_id"`
-	WorkerStrict      bool     `json:"worker_strict"`
-	AssignedSessions  []string `json:"assigned_sessions"`
-	AMQPEnabled       bool     `json:"amqp_enabled"`
-	AMQPExchange      string   `json:"amqp_exchange"`
-	AMQPQueue         string   `json:"amqp_queue"`
-	AMQPBindings      []string `json:"amqp_bindings"`
-	WorkerAutoConnect bool     `json:"worker_auto_connect_assigned"`
-	UIEnabled         bool     `json:"ui_enabled"`
-	UITitle           string   `json:"ui_title"`
+	WorkerID           string   `json:"worker_id"`
+	WorkerStrict       bool     `json:"worker_strict"`
+	AssignedSessions   []string `json:"assigned_sessions"`
+	WhatsAppWebVersion string   `json:"whatsapp_web_version"`
+	AMQPEnabled        bool     `json:"amqp_enabled"`
+	AMQPExchange       string   `json:"amqp_exchange"`
+	AMQPQueue          string   `json:"amqp_queue"`
+	AMQPBindings       []string `json:"amqp_bindings"`
+	WorkerAutoConnect  bool     `json:"worker_auto_connect_assigned"`
+	UIEnabled          bool     `json:"ui_enabled"`
+	UITitle            string   `json:"ui_title"`
 }
 
 func (s *Server) handleWorker(w http.ResponseWriter, r *http.Request) {
@@ -506,16 +507,17 @@ func (s *Server) handleWorker(w http.ResponseWriter, r *http.Request) {
 		bindings = []string{s.cfg.AMQPBinding}
 	}
 	resp := workerResponse{
-		WorkerID:          s.provider.WorkerID(),
-		WorkerStrict:      s.provider.WorkerStrict(),
-		AssignedSessions:  s.provider.AssignedSessions(),
-		AMQPEnabled:       s.cfg.AMQPConsumerEnabled,
-		AMQPExchange:      s.cfg.AMQPExchange,
-		AMQPQueue:         s.cfg.AMQPQueue,
-		AMQPBindings:      bindings,
-		WorkerAutoConnect: s.cfg.WorkerAutoConnectAssigned,
-		UIEnabled:         s.cfg.UIEnabled,
-		UITitle:           s.cfg.UITitle,
+		WorkerID:           s.provider.WorkerID(),
+		WorkerStrict:       s.provider.WorkerStrict(),
+		AssignedSessions:   s.provider.AssignedSessions(),
+		WhatsAppWebVersion: provider.CurrentWhatsAppWebVersion(),
+		AMQPEnabled:        s.cfg.AMQPConsumerEnabled,
+		AMQPExchange:       s.cfg.AMQPExchange,
+		AMQPQueue:          s.cfg.AMQPQueue,
+		AMQPBindings:       bindings,
+		WorkerAutoConnect:  s.cfg.WorkerAutoConnectAssigned,
+		UIEnabled:          s.cfg.UIEnabled,
+		UITitle:            s.cfg.UITitle,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

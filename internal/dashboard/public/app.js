@@ -1140,6 +1140,12 @@ function App() {
             tone="brand"
           />
           <${StatCard}
+            label="WA Web"
+            value=${worker?.whatsapp_web_version || '—'}
+            caption="versão ativa no runtime"
+            tone="secondary"
+          />
+          <${StatCard}
             label="Sessões atribuídas"
             value=${String(assignedCount)}
             caption="visíveis para este worker"

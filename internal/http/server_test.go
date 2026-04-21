@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.mau.fi/whatsmeow/store"
 	"your.org/provider-whatsmeow/internal/config"
 	"your.org/provider-whatsmeow/internal/provider"
 )
@@ -100,5 +101,57 @@ func TestPairingCodeEndpointRequiresPhone(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "missing phone") {
 		t.Fatalf("response body = %s, want missing phone", rec.Body.String())
+	}
+}
+
+func TestCreateSessionEndpointRejectsInvalidID(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/sessions",
+		bytes.NewBufferString(`{"id":"1","assign":true,"connect":true}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid id") {
+		t.Fatalf("response body = %s, want invalid id", rec.Body.String())
+	}
+}
+
+func TestWorkerEndpointIncludesWhatsAppWebVersion(t *testing.T) {
+	previous := store.GetWAVersion()
+	t.Cleanup(func() {
+		provider.ApplyWhatsAppWebVersion(previous)
+	})
+
+	target := provider.ApplyWhatsAppWebVersion(store.WAVersionContainer{2, 3000, 1037793778})
+
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/worker", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"whatsapp_web_version":"`+target.String()+`"`) {
+		t.Fatalf("response body = %s, want whatsapp_web_version=%s", rec.Body.String(), target.String())
 	}
 }

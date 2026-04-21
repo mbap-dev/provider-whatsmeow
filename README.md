@@ -155,6 +155,8 @@ curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/messages \
 
 Compatibilidade de destinatário no payload: o endpoint aceita `to` (preferencial) e fallback para `recipient_id`/`source_id`.
 
+Mensagens para grupo também aceitam `mention_all`/`mentionAll` no payload para expandir `ContextInfo.MentionedJID` com todos os participantes. Como fallback compatível com Chatwoot, o provider também ativa esse comportamento quando o texto ou caption começa com `@todos`, `@all` ou `@everyone`.
+
 Exemplo de geração de código de pareamento:
 
 ```bash

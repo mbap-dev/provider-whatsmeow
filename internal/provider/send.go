@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"your.org/provider-whatsmeow/internal/log"
 
@@ -110,6 +111,8 @@ type OutgoingMessage struct {
 	MessageID        string           `json:"message_id,omitempty"`
 	Context          *MessageContext  `json:"context,omitempty"`
 	Mentions         []string         `json:"mentions,omitempty"`
+	MentionAll       bool             `json:"mention_all,omitempty"`
+	MentionAllCompat bool             `json:"mentionAll,omitempty"`
 }
 
 // marshalForLog pretty-prints a proto message for logging, truncating if too long.
@@ -231,8 +234,9 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	}
 	entry.Info("dest_jid=%s", jid.String())
 
+	requestsMentionAll := outgoingMessageRequestsMentionAll(msg)
 	var ctxInfo *goE2E.ContextInfo
-	if msg.Context != nil || len(msg.Mentions) > 0 {
+	if msg.Context != nil || len(msg.Mentions) > 0 || requestsMentionAll {
 		var stanzaID string
 		if msg.Context != nil {
 			switch {
@@ -245,32 +249,33 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			case msg.Context.MessageID != "":
 				stanzaID = msg.Context.MessageID
 			}
+			entry.Debug(
+				"reply_ctx_select stanza_id=%q ctx_in={id:%q message_id:%q stanzaId:%q stanza_id:%q participant:%q}",
+				stanzaID,
+				msg.Context.ID,
+				msg.Context.MessageID,
+				msg.Context.StanzaId,
+				msg.Context.Stanza_id,
+				msg.Context.Participant,
+			)
 		}
-		entry.Debug(
-			"reply_ctx_select stanza_id=%q ctx_in={id:%q message_id:%q stanzaId:%q stanza_id:%q participant:%q}",
-			stanzaID,
-			msg.Context.ID,
-			msg.Context.MessageID,
-			msg.Context.StanzaId,
-			msg.Context.Stanza_id,
-			msg.Context.Participant,
-		)
 		var mList []string
 		if msg.Context != nil {
 			mList = append(mList, msg.Context.MentionedJid...)
 			mList = append(mList, msg.Context.Mentions...)
 		}
 		mList = append(mList, msg.Mentions...)
-		var mentioned []string
-		for _, mnt := range mList {
-			mnt = strings.TrimSpace(mnt)
-			if mnt == "" {
-				continue
+		mentioned := normalizeMentionTargets(mList)
+		if requestsMentionAll && strings.HasSuffix(jid.Server, "g.us") {
+			participants, err := resolveMentionAllJIDs(ctx, cli, jid)
+			if err != nil {
+				entry.Error("mention_all resolve failed group=%s err=%v", jid.String(), err)
+				return fmt.Errorf("failed to resolve group participants for mention_all: %w", err)
 			}
-			j, err := toUserJID(mnt)
-			if err == nil {
-				mentioned = append(mentioned, j.String())
-			}
+			mentioned = appendUniqueStrings(mentioned, participants...)
+			entry.Info("mention_all enabled group=%s participants=%d", jid.String(), len(participants))
+		} else if requestsMentionAll {
+			entry.Debug("mention_all ignored for non-group destination=%s", jid.String())
 		}
 		if stanzaID != "" || len(mentioned) > 0 {
 			ci := &goE2E.ContextInfo{}
@@ -808,6 +813,142 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	default:
 		return fmt.Errorf("unsupported message type: %s", msg.Type)
 	}
+}
+
+func (m OutgoingMessage) wantsMentionAll() bool {
+	return m.MentionAll || m.MentionAllCompat
+}
+
+func outgoingMessageRequestsMentionAll(msg OutgoingMessage) bool {
+	if msg.wantsMentionAll() {
+		return true
+	}
+	for _, candidate := range mentionAllTextCandidates(msg) {
+		if hasMentionAllPrefix(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func mentionAllTextCandidates(msg OutgoingMessage) []string {
+	out := []string{
+		msg.Body,
+		msg.Caption,
+	}
+	if msg.Text != nil {
+		out = append(out, msg.Text.Body)
+	}
+	if msg.Image != nil {
+		out = append(out, msg.Image.Caption)
+	}
+	if msg.Document != nil {
+		out = append(out, msg.Document.Caption)
+	}
+	if msg.Video != nil {
+		out = append(out, msg.Video.Caption)
+	}
+	if msg.Audio != nil {
+		out = append(out, msg.Audio.Caption)
+	}
+	return out
+}
+
+func hasMentionAllPrefix(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	for _, prefix := range []string{"@todos", "@all", "@everyone"} {
+		if lower == prefix {
+			return true
+		}
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		if len(lower) == len(prefix) {
+			return true
+		}
+		next := rune(lower[len(prefix)])
+		if unicode.IsSpace(next) || strings.ContainsRune(".,:;!?-_/\\", next) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeMentionTargets(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		jid, err := toUserJID(value)
+		if err != nil {
+			continue
+		}
+		key := jid.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+func appendUniqueStrings(base []string, values ...string) []string {
+	if len(values) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(values))
+	for _, item := range base {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		seen[item] = struct{}{}
+	}
+	for _, item := range values {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		base = append(base, item)
+	}
+	return base
+}
+
+func resolveMentionAllJIDs(ctx context.Context, cli *whatsmeow.Client, groupJID types.JID) ([]string, error) {
+	if cli == nil {
+		return nil, fmt.Errorf("nil client")
+	}
+	groupInfo, err := cli.GetGroupInfo(ctx, groupJID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(groupInfo.Participants))
+	for _, participant := range groupInfo.Participants {
+		jid := normalizedContactLookupJID(participant.JID)
+		if jid.User == "" || jid.Server == "" {
+			continue
+		}
+		out = appendUniqueStrings(out, jid.String())
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("group %s has no participants available for mentions", groupJID.String())
+	}
+	return out, nil
 }
 
 const (

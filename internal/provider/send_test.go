@@ -75,3 +75,50 @@ func TestBuildWaveformBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestOutgoingMessageRequestsMentionAllFromExplicitFlag(t *testing.T) {
+	msg := OutgoingMessage{MentionAll: true}
+
+	if !outgoingMessageRequestsMentionAll(msg) {
+		t.Fatal("expected mention_all flag to be honored")
+	}
+}
+
+func TestOutgoingMessageRequestsMentionAllFromPrefix(t *testing.T) {
+	msg := OutgoingMessage{
+		Type: "text",
+		Text: &TextContent{Body: "@todos Reuniao as 15h"},
+	}
+
+	if !outgoingMessageRequestsMentionAll(msg) {
+		t.Fatal("expected @todos prefix to enable mention_all")
+	}
+}
+
+func TestOutgoingMessageRequestsMentionAllIgnoresInnerWord(t *testing.T) {
+	msg := OutgoingMessage{
+		Type: "text",
+		Text: &TextContent{Body: "Avisar @todos depois"},
+	}
+
+	if outgoingMessageRequestsMentionAll(msg) {
+		t.Fatal("did not expect inner @todos to enable mention_all")
+	}
+}
+
+func TestNormalizeMentionTargetsDeduplicates(t *testing.T) {
+	got := normalizeMentionTargets([]string{
+		"5562999999999",
+		"5562999999999@s.whatsapp.net",
+		" 5562888888888 ",
+		"",
+	})
+
+	want := []string{
+		"5562999999999@s.whatsapp.net",
+		"5562888888888@s.whatsapp.net",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("normalizeMentionTargets() = %v, want %v", got, want)
+	}
+}

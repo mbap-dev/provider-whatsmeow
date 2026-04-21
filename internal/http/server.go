@@ -562,6 +562,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(msg.To) == "" {
 		msg.To = extractSendRecipient(raw)
 	}
+	if !msg.MentionAll {
+		msg.MentionAll = extractSendMentionAll(raw) || msg.MentionAllCompat
+	}
 	if strings.TrimSpace(msg.To) == "" {
 		msg.To = strings.TrimSpace(r.URL.Query().Get("to"))
 	}
@@ -1319,6 +1322,54 @@ func extractSendRecipient(raw map[string]any) string {
 	return ""
 }
 
+func extractSendMentionAll(raw map[string]any) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	if anyBoolValue(raw["mention_all"]) || anyBoolValue(raw["mentionAll"]) {
+		return true
+	}
+	for _, nested := range []any{
+		raw["content_attributes"],
+		raw["additional_attributes"],
+		raw["message"],
+	} {
+		if extractMentionAllFromAny(nested) {
+			return true
+		}
+	}
+	if msgs, ok := raw["messages"].([]any); ok {
+		for _, item := range msgs {
+			if extractMentionAllFromAny(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extractMentionAllFromAny(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return false
+	}
+	if anyBoolValue(m["mention_all"]) || anyBoolValue(m["mentionAll"]) {
+		return true
+	}
+	for _, nested := range []any{
+		m["unoapi"],
+		m["whatsapp"],
+		m["metadata"],
+		m["content_attributes"],
+		m["additional_attributes"],
+	} {
+		if extractMentionAllFromAny(nested) {
+			return true
+		}
+	}
+	return false
+}
+
 func anyStringValue(v any) string {
 	switch t := v.(type) {
 	case string:
@@ -1344,6 +1395,38 @@ func anyStringValue(v any) string {
 		return strconv.FormatUint(uint64(t), 10)
 	default:
 		return ""
+	}
+}
+
+func anyBoolValue(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "1", "true", "yes", "y", "on":
+			return true
+		default:
+			return false
+		}
+	case json.Number:
+		return strings.TrimSpace(t.String()) == "1"
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case int64:
+		return t != 0
+	case int32:
+		return t != 0
+	case uint:
+		return t != 0
+	case uint64:
+		return t != 0
+	case uint32:
+		return t != 0
+	default:
+		return false
 	}
 }
 

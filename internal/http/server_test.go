@@ -155,3 +155,27 @@ func TestWorkerEndpointIncludesWhatsAppWebVersion(t *testing.T) {
 		t.Fatalf("response body = %s, want whatsapp_web_version=%s", rec.Body.String(), target.String())
 	}
 }
+
+func TestExtractSendMentionAllFromContentAttributes(t *testing.T) {
+	raw := map[string]any{
+		"content_attributes": map[string]any{
+			"unoapi": map[string]any{
+				"mention_all": true,
+			},
+		},
+	}
+
+	if !extractSendMentionAll(raw) {
+		t.Fatal("expected mention_all from content_attributes.unoapi")
+	}
+}
+
+func TestExtractSendMentionAllFromTopLevelCamelCase(t *testing.T) {
+	raw := map[string]any{
+		"mentionAll": "true",
+	}
+
+	if !extractSendMentionAll(raw) {
+		t.Fatal("expected mentionAll top-level value to be accepted")
+	}
+}

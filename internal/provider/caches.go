@@ -21,17 +21,19 @@ type jidEntry struct {
 }
 
 var (
-	cacheMu        sync.RWMutex
-	avatarCache    = map[string]stringEntry{}
-	groupNameCache = map[string]stringEntry{}
-	lidADCache     = map[string]jidEntry{}
-	receiptCache   = map[string]time.Time{}
-	syntheticCache = map[string]time.Time{}
+	cacheMu          sync.RWMutex
+	avatarCache      = map[string]stringEntry{}
+	groupNameCache   = map[string]stringEntry{}
+	contactNameCache = map[string]stringEntry{}
+	lidADCache       = map[string]jidEntry{}
+	receiptCache     = map[string]time.Time{}
+	syntheticCache   = map[string]time.Time{}
 
 	// Tuned TTLs: names/avatars can change, but not frequently.
-	avatarTTL    = 10 * time.Minute
-	groupNameTTL = 10 * time.Minute
-	lidMapTTL    = 30 * time.Minute
+	avatarTTL      = 10 * time.Minute
+	groupNameTTL   = 10 * time.Minute
+	contactNameTTL = 10 * time.Minute
+	lidMapTTL      = 30 * time.Minute
 	// Keep receipt dedupe entries long enough to collapse repeated WA receipt
 	// fan-out, while eventually releasing memory.
 	receiptTTL = 6 * time.Hour
@@ -71,6 +73,23 @@ func cacheGetGroupName(key string) (string, bool) {
 func cachePutGroupName(key, name string) {
 	cacheMu.Lock()
 	groupNameCache[key] = stringEntry{val: name, expiry: time.Now().Add(groupNameTTL)}
+	cacheMu.Unlock()
+}
+
+func cacheGetContactName(key string) (string, bool) {
+	now := time.Now()
+	cacheMu.RLock()
+	e, ok := contactNameCache[key]
+	cacheMu.RUnlock()
+	if ok && now.Before(e.expiry) && e.val != "" {
+		return e.val, true
+	}
+	return "", false
+}
+
+func cachePutContactName(key, name string) {
+	cacheMu.Lock()
+	contactNameCache[key] = stringEntry{val: name, expiry: time.Now().Add(contactNameTTL)}
 	cacheMu.Unlock()
 }
 

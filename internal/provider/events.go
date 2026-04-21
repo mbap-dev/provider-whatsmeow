@@ -649,16 +649,35 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			return nil
 		}
 	}
-	// Contato com nome amigável:
-	// - Grupo: usar nome do grupo
-	// - 1:1: se a mensagem é minha (fromMe), não usar PushName; usar o número (contactPhone)
-	//         se não é minha, usar PushName (fallback: número)
-	var dispName string
+	// Mantém o shape do webhook compatível com Chatwoot:
+	// - profile.* representa o contato/remetente
+	// - group_* representa o grupo quando a mensagem vem de um grupo
+	var (
+		dispName      string
+		groupSubject  string
+		groupPicture  string
+		profileAvatar = chatJID
+	)
 	if isGroupJID(chatJID) {
 		if gname, ok := safeGetGroupName(client, chatJID); ok && strings.TrimSpace(gname) != "" {
-			dispName = gname
+			groupSubject = gname
 		} else {
-			dispName = chatJID.User
+			groupSubject = chatJID.User
+		}
+		dispName = strings.TrimSpace(e.Info.PushName)
+		if dispName == "" {
+			if cachedName, ok := safeGetContactName(sessionID, client, senderJID, e.Info.Sender, e.Info.SenderAlt); ok {
+				dispName = cachedName
+			}
+		}
+		if dispName == "" {
+			dispName = contactPhone
+		}
+		if senderJID.User != "" && senderJID.Server != "" {
+			profileAvatar = senderJID
+		}
+		if pic, ok := getAvatarURL(sessionID, client, chatJID); ok && strings.TrimSpace(pic) != "" {
+			groupPicture = pic
 		}
 	} else {
 		if ownMessage {
@@ -666,23 +685,20 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		} else {
 			dispName = strings.TrimSpace(e.Info.PushName)
 			if dispName == "" {
+				if cachedName, ok := safeGetContactName(sessionID, client, senderJID, e.Info.Sender, e.Info.SenderAlt); ok {
+					dispName = cachedName
+				}
+			}
+			if dispName == "" {
 				dispName = contactPhone
 			}
 		}
 	}
-	profile := buildCloudProfile(sessionID, client, chatJID, dispName, e.Info.ID)
-	contactObj := map[string]any{"profile": profile}
-	// wa_id must always be the participant phone (digits) for Chatwoot to build a Contact with E.164
-	contactObj["wa_id"] = contactPhone
+	profile := buildCloudProfile(sessionID, client, profileAvatar, dispName, e.Info.ID)
+	contactObj := buildCloudContactObject(profile, contactPhone, chatJID, groupSubject, groupPicture)
 	if isGroupJID(chatJID) {
-		// Group metadata Chatwoot expects to switch the conversation context to group
-		contactObj["group_id"] = chatJID.String()
-		contactObj["group_subject"] = dispName
-		if pic, _ := profile["picture"].(string); strings.TrimSpace(pic) != "" {
-			contactObj["group_picture"] = pic
-		}
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
-			"contact_group built group_id=%s subject=%q wa_id=%s", chatJID.String(), dispName, contactPhone,
+			"contact_group built group_id=%s subject=%q wa_id=%s sender_name=%q", chatJID.String(), groupSubject, contactPhone, dispName,
 		)
 	} else {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
@@ -1347,6 +1363,65 @@ func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
 	return "", false
 }
 
+func contactInfoDisplayName(info types.ContactInfo) string {
+	return strings.TrimSpace(firstNonEmpty(
+		info.PushName,
+		info.BusinessName,
+		info.FullName,
+		info.FirstName,
+	))
+}
+
+func normalizedContactLookupJID(j types.JID) types.JID {
+	if j.User == "" || j.Server == "" {
+		return types.JID{}
+	}
+	if isGroupJID(j) || isLIDJID(j) {
+		return j
+	}
+	if i := strings.Index(j.User, ":"); i >= 0 {
+		j.User = j.User[:i]
+		j.Device = 0
+	}
+	return j
+}
+
+func safeGetContactName(sessionID string, cli *whatsmeow.Client, candidates ...types.JID) (string, bool) {
+	if cli == nil || cli.Store == nil || cli.Store.Contacts == nil {
+		return "", false
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		lookup := normalizedContactLookupJID(candidate)
+		if lookup == (types.JID{}) {
+			continue
+		}
+		key := lookup.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if name, ok := cacheGetContactName(key); ok {
+			return name, true
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		info, err := cli.Store.Contacts.GetContact(ctx, lookup)
+		cancel()
+		if err != nil || !info.Found {
+			continue
+		}
+
+		name := contactInfoDisplayName(info)
+		if name == "" {
+			continue
+		}
+		cachePutContactName(key, name)
+		return name, true
+	}
+	return "", false
+}
+
 // getAvatarURL tenta obter a URL da foto de perfil (contato ou grupo).
 // Usa a API pública do whatsmeow; se não disponível/erro, retorna false.
 func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (string, bool) {
@@ -1416,6 +1491,23 @@ func buildCloudProfile(sessionID string, cli *whatsmeow.Client, avatarJID types.
 		log.WithSession(sessionID).WithMessageID(messageID).Debug("avatar_not_found chat=%s is_group=%t", avatarJID.String(), isGroupJID(avatarJID))
 	}
 	return profile
+}
+
+func buildCloudContactObject(profile map[string]any, waID string, chatJID types.JID, groupSubject, groupPicture string) map[string]any {
+	contactObj := map[string]any{
+		"profile": profile,
+		"wa_id":   waID,
+	}
+	if isGroupJID(chatJID) {
+		contactObj["group_id"] = chatJID.String()
+		if strings.TrimSpace(groupSubject) != "" {
+			contactObj["group_subject"] = groupSubject
+		}
+		if strings.TrimSpace(groupPicture) != "" {
+			contactObj["group_picture"] = groupPicture
+		}
+	}
+	return contactObj
 }
 
 // markReadEvent marks the given message as read when configured to do so.

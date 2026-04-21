@@ -1557,8 +1557,10 @@ func normalizedContactLookupJID(j types.JID) types.JID {
 	}
 	if i := strings.Index(j.User, ":"); i >= 0 {
 		j.User = j.User[:i]
-		j.Device = 0
 	}
+	// User profile/contact lookups expect the base user JID, not a device-scoped
+	// variant like 5511999999999:3@s.whatsapp.net.
+	j.Device = 0
 	return j
 }
 

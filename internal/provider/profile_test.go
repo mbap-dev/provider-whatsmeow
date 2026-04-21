@@ -34,6 +34,22 @@ func TestNormalizedAvatarLookupJIDStripsDeviceSuffix(t *testing.T) {
 	}
 }
 
+func TestNormalizedAvatarLookupJIDClearsDeviceField(t *testing.T) {
+	jid := types.JID{User: "5562999999999", Server: "s.whatsapp.net", Device: 26}
+
+	got := normalizedAvatarLookupJID("553121159080", nil, jid)
+
+	if got.User != "5562999999999" {
+		t.Fatalf("user = %#v", got.User)
+	}
+	if got.Server != "s.whatsapp.net" {
+		t.Fatalf("server = %#v", got.Server)
+	}
+	if got.Device != 0 {
+		t.Fatalf("device = %#v", got.Device)
+	}
+}
+
 func TestContactInfoDisplayNamePrefersPushName(t *testing.T) {
 	got := contactInfoDisplayName(types.ContactInfo{
 		PushName:     "Maria Grupo",

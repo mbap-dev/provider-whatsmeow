@@ -1163,6 +1163,8 @@ func filenameByMime(messageID, mimeType string) string {
 	switch splitMime(strings.ToLower(mimeType)) {
 	case "audio/ogg":
 		return messageID + ".ogg"
+	case "video/mp4":
+		return messageID + ".mp4"
 	case "application/vnd.ms-excel":
 		return messageID + ".xls"
 	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":

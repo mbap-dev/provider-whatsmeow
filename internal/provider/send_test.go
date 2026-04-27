@@ -59,6 +59,24 @@ func TestDigitsOnly(t *testing.T) {
 	}
 }
 
+func TestFilenameByMime(t *testing.T) {
+	if got := filenameByMime("abc123", "audio/ogg; codecs=opus"); got != "abc123.ogg" {
+		t.Fatalf("audio filename => %s", got)
+	}
+	if got := filenameByMime("abc123", "application/vnd.ms-excel"); got != "abc123.xls" {
+		t.Fatalf("xls filename => %s", got)
+	}
+	if got := filenameByMime("abc123", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); got != "abc123.xlsx" {
+		t.Fatalf("xlsx filename => %s", got)
+	}
+	if got := filenameByMime("abc123", "video/mp4"); got != "abc123.mp4" {
+		t.Fatalf("video filename => %s", got)
+	}
+	if got := filenameByMime("abc123", "application/pdf"); got != "abc123.pdf" {
+		t.Fatalf("document filename => %s", got)
+	}
+}
+
 func TestBuildWaveformBounds(t *testing.T) {
 	// 1 segundo de silêncio a 16 kHz
 	samples := make([]int16, 16000)

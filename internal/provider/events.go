@@ -459,11 +459,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		caption := decorateMentionText(sessionID, client, im.GetCaption(), msg)
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
-		imgExt := extensionByMime(mimeType)
-		fileName := ""
-		if strings.TrimSpace(imgExt) != "" {
-			fileName = e.Info.ID + imgExt
-		}
+		fileName := filenameByMime(e.Info.ID, mimeType)
 		image := map[string]any{
 			"caption":     caption,
 			"mime_type":   splitMime(mimeType),
@@ -497,14 +493,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		caption := decorateMentionText(sessionID, client, d.GetCaption(), msg)
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
-		fileName := firstNonEmpty(d.GetFileName(), d.GetTitle())
+		fileName := strings.TrimSpace(firstNonEmpty(d.GetFileName(), d.GetTitle()))
+		if fileName == "" {
+			fileName = filenameByMime(e.Info.ID, mimeType)
+		}
 		document := map[string]any{
 			"caption":     caption,
-			"filename":    fileName,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(d.GetFileSHA256()),
 			"media_key":   b64(d.GetMediaKey()),
 			"direct_path": d.GetDirectPath(),
+		}
+		if fileName != "" {
+			document["filename"] = fileName
 		}
 		fileSize := int64(0)
 		if d.FileLength != nil {
@@ -529,11 +530,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		caption := decorateMentionText(sessionID, client, v.GetCaption(), msg)
 		wireMsg["type"] = "video"
 		mimeType := v.GetMimetype()
-		videoExt := extensionByMime(mimeType)
-		videoFileName := ""
-		if strings.TrimSpace(videoExt) != "" {
-			videoFileName = e.Info.ID + videoExt
-		}
+		videoFileName := filenameByMime(e.Info.ID, mimeType)
 		video := map[string]any{
 			"caption":     caption,
 			"mime_type":   splitMime(mimeType),
@@ -566,16 +563,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		a := msg.GetAudioMessage()
 		wireMsg["type"] = "audio"
 		mimeType := a.GetMimetype()
-		audioExt := extensionByMime(mimeType)
-		audioFileName := ""
-		if strings.TrimSpace(audioExt) != "" {
-			audioFileName = e.Info.ID + audioExt
-		}
+		audioFileName := filenameByMime(e.Info.ID, mimeType)
 		audio := map[string]any{
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(a.GetFileSHA256()),
 			"media_key":   b64(a.GetMediaKey()),
 			"direct_path": a.GetDirectPath(),
+		}
+		if audioFileName != "" {
+			audio["filename"] = audioFileName
 		}
 		if a.FileLength != nil {
 			audio["file_length"] = a.GetFileLength()
@@ -611,14 +607,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		s := msg.GetStickerMessage()
 		wireMsg["type"] = "sticker"
 		mimeType := s.GetMimetype()
-		ext := extensionByMime(mimeType)
-		filename := e.Info.ID + ext
+		filename := filenameByMime(e.Info.ID, mimeType)
 		sticker := map[string]any{
-			"filename":    filename,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(s.GetFileSHA256()),
 			"media_key":   b64(s.GetMediaKey()),
 			"direct_path": s.GetDirectPath(),
+		}
+		if filename != "" {
+			sticker["filename"] = filename
 		}
 		if s.FileLength != nil {
 			sticker["file_length"] = s.GetFileLength()
@@ -1157,6 +1154,33 @@ func extensionByMime(m string) string {
 		return exts[0]
 	}
 	return ""
+}
+
+func filenameByMime(messageID, mimeType string) string {
+	if strings.TrimSpace(messageID) == "" {
+		return ""
+	}
+	switch splitMime(strings.ToLower(mimeType)) {
+	case "audio/ogg":
+		return messageID + ".ogg"
+	case "application/vnd.ms-excel":
+		return messageID + ".xls"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return messageID + ".xlsx"
+	case "application/msword":
+		return messageID + ".doc"
+	case "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return messageID + ".docx"
+	case "application/vnd.ms-powerpoint":
+		return messageID + ".ppt"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return messageID + ".pptx"
+	}
+	ext := extensionByMime(mimeType)
+	if ext == "" {
+		return ""
+	}
+	return messageID + ext
 }
 
 // parseVCard extracts formatted name and phone entries from a vCard string.

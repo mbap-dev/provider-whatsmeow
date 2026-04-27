@@ -416,7 +416,6 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		im := msg.GetImageMessage()
 		wireMsg["type"] = "image"
 		mimeType := im.GetMimetype()
-		imgExt := extensionByMime(mimeType)
 		image := map[string]any{
 			"caption":     im.GetCaption(),
 			"mime_type":   splitMime(mimeType),
@@ -424,8 +423,8 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"media_key":   b64(im.GetMediaKey()),
 			"direct_path": im.GetDirectPath(),
 		}
-		if strings.TrimSpace(imgExt) != "" {
-			image["filename"] = e.Info.ID + imgExt
+		if filename := filenameByMime(e.Info.ID, mimeType); filename != "" {
+			image["filename"] = filename
 		}
 		if im.FileLength != nil {
 			image["file_length"] = im.GetFileLength()
@@ -436,13 +435,19 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		d := msg.GetDocumentMessage()
 		wireMsg["type"] = "document"
 		mimeType := d.GetMimetype()
+		filename := strings.TrimSpace(firstNonEmpty(d.GetFileName(), d.GetTitle()))
+		if filename == "" {
+			filename = filenameByMime(e.Info.ID, mimeType)
+		}
 		document := map[string]any{
 			"caption":     d.GetCaption(),
-			"filename":    firstNonEmpty(d.GetFileName(), d.GetTitle()),
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(d.GetFileSHA256()),
 			"media_key":   b64(d.GetMediaKey()),
 			"direct_path": d.GetDirectPath(),
+		}
+		if filename != "" {
+			document["filename"] = filename
 		}
 		if d.FileLength != nil {
 			document["file_length"] = d.GetFileLength()
@@ -460,6 +465,9 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"media_key":   b64(v.GetMediaKey()),
 			"direct_path": v.GetDirectPath(),
 		}
+		if filename := filenameByMime(e.Info.ID, mimeType); filename != "" {
+			video["filename"] = filename
+		}
 		if v.FileLength != nil {
 			video["file_length"] = v.GetFileLength()
 		}
@@ -474,6 +482,9 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			"sha256":      b64(a.GetFileSHA256()),
 			"media_key":   b64(a.GetMediaKey()),
 			"direct_path": a.GetDirectPath(),
+		}
+		if filename := filenameByMime(e.Info.ID, mimeType); filename != "" {
+			audio["filename"] = filename
 		}
 		if a.FileLength != nil {
 			audio["file_length"] = a.GetFileLength()
@@ -494,14 +505,15 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		s := msg.GetStickerMessage()
 		wireMsg["type"] = "sticker"
 		mimeType := s.GetMimetype()
-		ext := extensionByMime(mimeType)
-		filename := e.Info.ID + ext
+		filename := filenameByMime(e.Info.ID, mimeType)
 		sticker := map[string]any{
-			"filename":    filename,
 			"mime_type":   splitMime(mimeType),
 			"sha256":      b64(s.GetFileSHA256()),
 			"media_key":   b64(s.GetMediaKey()),
 			"direct_path": s.GetDirectPath(),
+		}
+		if filename != "" {
+			sticker["filename"] = filename
 		}
 		if s.FileLength != nil {
 			sticker["file_length"] = s.GetFileLength()
@@ -924,6 +936,21 @@ func extensionByMime(m string) string {
 		return exts[0]
 	}
 	return ""
+}
+
+func filenameByMime(messageID, mimeType string) string {
+	if strings.TrimSpace(messageID) == "" {
+		return ""
+	}
+	switch splitMime(strings.ToLower(mimeType)) {
+	case "audio/ogg":
+		return messageID + ".ogg"
+	}
+	ext := extensionByMime(mimeType)
+	if ext == "" {
+		return ""
+	}
+	return messageID + ext
 }
 
 // parseVCard extracts formatted name and phone entries from a vCard string.

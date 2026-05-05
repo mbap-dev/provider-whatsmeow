@@ -119,7 +119,7 @@ func TestNormalizeOutgoingMessageIDs(t *testing.T) {
 
 func TestGroupParticipantMessageID(t *testing.T) {
 	got := withGroupParticipantMessageID("553121159080@s.whatsapp.net", "3EB07BAED2DCAC54DE03")
-	want := "553121159080_3EB07BAED2DCAC54DE03"
+	want := "553121159080~3EB07BAED2DCAC54DE03"
 	if got != want {
 		t.Fatalf("withGroupParticipantMessageID() = %q, want %q", got, want)
 	}
@@ -160,6 +160,24 @@ func TestNormalizeOutgoingMessageIDsKeepsLegacyGroupReplyIDCompatible(t *testing
 	}
 	if participant, msgID, ok := splitGroupParticipantMessageID(msg.Context.MessageID); ok || participant != "" || msgID != "3EB07BAED2DCAC54DE03" {
 		t.Fatalf("legacy id parsed as new format: ok=%t participant=%q msgID=%q", ok, participant, msgID)
+	}
+}
+
+func TestGroupParticipantMessageIDDoesNotCollideWithInstancePrefix(t *testing.T) {
+	groupID := withGroupParticipantMessageID("553121159080", "3EB07BAED2DCAC54DE03")
+	publicID := withInstanceMessageID("553121159080", groupID)
+	want := "553121159080_553121159080~3EB07BAED2DCAC54DE03"
+	if publicID != want {
+		t.Fatalf("public group id = %q, want %q", publicID, want)
+	}
+
+	stripped := stripInstanceMessageID("553121159080", publicID)
+	participant, msgID, ok := splitGroupParticipantMessageID(stripped)
+	if !ok {
+		t.Fatal("expected stripped group id to split")
+	}
+	if participant != "553121159080" || msgID != "3EB07BAED2DCAC54DE03" {
+		t.Fatalf("split stripped = participant:%q msgID:%q", participant, msgID)
 	}
 }
 

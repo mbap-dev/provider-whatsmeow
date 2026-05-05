@@ -2,7 +2,7 @@ package provider
 
 import "strings"
 
-const groupParticipantIDSeparator = "_"
+const groupParticipantIDSeparator = "~"
 
 // WithInstanceMessageID returns the public-facing message ID used by
 // UnoAPI-compatible webhooks and API responses, prefixed with the

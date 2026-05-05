@@ -3,10 +3,8 @@ package http
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,9 +13,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
+	"go.mau.fi/whatsmeow"
 	"your.org/provider-whatsmeow/internal/amqp"
 	"your.org/provider-whatsmeow/internal/config"
 	"your.org/provider-whatsmeow/internal/dashboard"
@@ -1499,14 +1497,6 @@ func normalizePhoneID(v string) string {
 	return v
 }
 
-func generateAPIMessageID(prefix string) string {
-	prefix = strings.TrimSpace(strings.ToUpper(prefix))
-	if prefix == "" {
-		prefix = "INC"
-	}
-	buf := make([]byte, 8)
-	if _, err := rand.Read(buf); err != nil {
-		return prefix + "-" + strings.ToUpper(hex.EncodeToString([]byte(time.Now().Format("150405.000000000"))))
-	}
-	return prefix + "-" + strings.ToUpper(hex.EncodeToString(buf))
+func generateAPIMessageID(_ string) string {
+	return string(whatsmeow.GenerateMessageID())
 }

@@ -30,6 +30,16 @@ func TestAPIResponseMessageIDKeepsExistingPrefix(t *testing.T) {
 	}
 }
 
+func TestGenerateAPIMessageIDUsesWhatsAppNativeFormat(t *testing.T) {
+	got := generateAPIMessageID("INC")
+	if strings.Contains(got, "INC-") {
+		t.Fatalf("generateAPIMessageID() = %q, should not contain INC-", got)
+	}
+	if !strings.HasPrefix(got, "3EB0") {
+		t.Fatalf("generateAPIMessageID() = %q, want whatsmeow 3EB0 prefix", got)
+	}
+}
+
 func TestMediaRequestSessionIDFromPath(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://example.test/v19.0/553121159080/A1B2C3", nil)
 	got := mediaRequestSessionID(req, map[string]string{"id": "553121159080"})

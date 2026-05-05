@@ -117,6 +117,52 @@ func TestNormalizeOutgoingMessageIDs(t *testing.T) {
 	}
 }
 
+func TestGroupParticipantMessageID(t *testing.T) {
+	got := withGroupParticipantMessageID("553121159080@s.whatsapp.net", "3EB07BAED2DCAC54DE03")
+	want := "553121159080_3EB07BAED2DCAC54DE03"
+	if got != want {
+		t.Fatalf("withGroupParticipantMessageID() = %q, want %q", got, want)
+	}
+
+	participant, msgID, ok := splitGroupParticipantMessageID(got)
+	if !ok {
+		t.Fatal("expected group participant message id to split")
+	}
+	if participant != "553121159080" {
+		t.Fatalf("participant = %q", participant)
+	}
+	if msgID != "3EB07BAED2DCAC54DE03" {
+		t.Fatalf("message id = %q", msgID)
+	}
+}
+
+func TestGroupParticipantMessageIDKeepsPlainIDs(t *testing.T) {
+	participant, msgID, ok := splitGroupParticipantMessageID("3EB07BAED2DCAC54DE03")
+	if ok {
+		t.Fatal("did not expect plain id to split")
+	}
+	if participant != "" || msgID != "3EB07BAED2DCAC54DE03" {
+		t.Fatalf("split plain = participant:%q msgID:%q", participant, msgID)
+	}
+}
+
+func TestNormalizeOutgoingMessageIDsKeepsLegacyGroupReplyIDCompatible(t *testing.T) {
+	msg := OutgoingMessage{
+		Context: &MessageContext{
+			MessageID: "553121159080_3EB07BAED2DCAC54DE03",
+		},
+	}
+
+	normalizeOutgoingMessageIDs("553121159080", &msg)
+
+	if msg.Context.MessageID != "3EB07BAED2DCAC54DE03" {
+		t.Fatalf("legacy context message_id = %q", msg.Context.MessageID)
+	}
+	if participant, msgID, ok := splitGroupParticipantMessageID(msg.Context.MessageID); ok || participant != "" || msgID != "3EB07BAED2DCAC54DE03" {
+		t.Fatalf("legacy id parsed as new format: ok=%t participant=%q msgID=%q", ok, participant, msgID)
+	}
+}
+
 func TestCompatibleMediaIDPrefersRawMediaID(t *testing.T) {
 	meta := MediaMetadata{
 		SessionID: "553121159080",

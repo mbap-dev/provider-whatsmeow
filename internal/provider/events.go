@@ -285,6 +285,9 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		"id":        e.Info.ID,
 		"timestamp": strconv.FormatInt(e.Info.Timestamp.Unix(), 10),
 	}
+	if isGroupJID(chatJID) && senderJID.User != "" {
+		wireMsg["id"] = withGroupParticipantMessageID(senderJID.String(), e.Info.ID)
+	}
 
 	// Context (reply/quote) se houver
 	if ctx := messageContextInfo(msg); ctx != nil {
@@ -767,8 +770,12 @@ func (m *ClientManager) emitCloudReceipt(sessionID string, client *whatsmeow.Cli
 			continue
 		}
 
+		statusID := msgID
+		if isGroupJID(e.Chat) {
+			statusID = withGroupParticipantMessageID(phone, msgID)
+		}
 		st := map[string]any{
-			"id":           id,
+			"id":           statusID,
 			"recipient_id": recipient,
 			"status":       status,
 		}
@@ -796,9 +803,13 @@ func (m *ClientManager) emitCloudReceipt(sessionID string, client *whatsmeow.Cli
 
 func (m *ClientManager) emitCloudSent(sessionID string, to types.JID, id types.MessageID) error {
 	phone := normalizePhone(sessionID)
+	statusID := string(id)
+	if isGroupJID(to) {
+		statusID = withGroupParticipantMessageID(phone, string(id))
+	}
 	recipient := jidToPhoneNumberIfUser(to)
 	st := map[string]any{
-		"id":           id,
+		"id":           statusID,
 		"recipient_id": strings.ReplaceAll(recipient, "+", ""),
 		"status":       "sent",
 		"timestamp":    strconv.FormatInt(time.Now().Unix(), 10),
@@ -1343,8 +1354,12 @@ func messageContextInfo(m *waE2E.Message) map[string]any {
 
 	ctx := make(map[string]any)
 	if stanzaID := strings.TrimSpace(ci.GetStanzaID()); stanzaID != "" {
-		ctx["message_id"] = stanzaID
-		ctx["id"] = stanzaID
+		contextID := stanzaID
+		if participant := strings.TrimSpace(ci.GetParticipant()); participant != "" {
+			contextID = withGroupParticipantMessageID(participant, stanzaID)
+		}
+		ctx["message_id"] = contextID
+		ctx["id"] = contextID
 	}
 
 	if ci.GetIsForwarded() {

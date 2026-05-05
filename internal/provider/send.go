@@ -238,6 +238,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 	var ctxInfo *goE2E.ContextInfo
 	if msg.Context != nil || len(msg.Mentions) > 0 || requestsMentionAll {
 		var stanzaID string
+		var participantFromID string
 		if msg.Context != nil {
 			switch {
 			case msg.Context.StanzaId != "":
@@ -248,6 +249,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				stanzaID = msg.Context.ID
 			case msg.Context.MessageID != "":
 				stanzaID = msg.Context.MessageID
+			}
+			if participant, messageID, ok := splitGroupParticipantMessageID(stanzaID); ok {
+				participantFromID = participant
+				stanzaID = messageID
 			}
 			entry.Debug(
 				"reply_ctx_select stanza_id=%q ctx_in={id:%q message_id:%q stanzaId:%q stanza_id:%q participant:%q}",
@@ -286,6 +291,11 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 						ci.Participant = proto.String(pj.String())
 					}
 				}
+				if (ci.Participant == nil || *ci.Participant == "") && participantFromID != "" {
+					if pj, err := toUserJID(participantFromID); err == nil {
+						ci.Participant = proto.String(pj.String())
+					}
+				}
 				qt := ""
 				if msg.Context != nil {
 					qt = strings.TrimSpace(msg.Context.QuotedText)
@@ -296,7 +306,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 				} else if ci.QuotedMessage == nil {
 					ci.QuotedMessage = &goE2E.Message{Conversation: proto.String("")}
 				}
-				// Ensure participant presence for 1:1 replies. For groups, if not provided by client, leave empty (cannot infer safely without context).
+				// Ensure participant presence for 1:1 replies.
 				if (ci.Participant == nil || *ci.Participant == "") && !strings.HasSuffix(jid.Server, "g.us") {
 					ci.Participant = proto.String(jid.String())
 				}

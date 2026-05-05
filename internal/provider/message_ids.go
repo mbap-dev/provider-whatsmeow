@@ -2,11 +2,19 @@ package provider
 
 import "strings"
 
+const groupParticipantIDSeparator = "_"
+
 // WithInstanceMessageID returns the public-facing message ID used by
 // UnoAPI-compatible webhooks and API responses, prefixed with the
 // phone/session identifier when needed.
 func WithInstanceMessageID(phone, id string) string {
 	return withInstanceMessageID(phone, id)
+}
+
+// WithGroupParticipantMessageID returns the group-compatible public message ID
+// that embeds the quoted message participant before the WhatsApp message ID.
+func WithGroupParticipantMessageID(participant, id string) string {
+	return withGroupParticipantMessageID(participant, id)
 }
 
 func instanceMessagePrefix(phone string) string {
@@ -131,4 +139,44 @@ func normalizeOutgoingMessageIDs(phone string, msg *OutgoingMessage) {
 	msg.Context.MessageID = stripInstanceMessageID(phone, msg.Context.MessageID)
 	msg.Context.StanzaId = stripInstanceMessageID(phone, msg.Context.StanzaId)
 	msg.Context.Stanza_id = stripInstanceMessageID(phone, msg.Context.Stanza_id)
+}
+
+func withGroupParticipantMessageID(participant, id string) string {
+	msgID := strings.TrimSpace(id)
+	if msgID == "" {
+		return ""
+	}
+	if _, _, ok := splitGroupParticipantMessageID(msgID); ok {
+		return msgID
+	}
+	user := participantMessageIDUser(participant)
+	if user == "" {
+		return msgID
+	}
+	return user + groupParticipantIDSeparator + msgID
+}
+
+func splitGroupParticipantMessageID(id string) (participant, messageID string, ok bool) {
+	rawID := strings.TrimSpace(id)
+	idx := strings.Index(rawID, groupParticipantIDSeparator)
+	if idx <= 0 || idx >= len(rawID)-1 {
+		return "", rawID, false
+	}
+	user := participantMessageIDUser(rawID[:idx])
+	msgID := strings.TrimSpace(rawID[idx+1:])
+	if user == "" || msgID == "" {
+		return "", rawID, false
+	}
+	return user, msgID, true
+}
+
+func participantMessageIDUser(participant string) string {
+	p := strings.TrimSpace(participant)
+	if p == "" {
+		return ""
+	}
+	if at := strings.Index(p, "@"); at >= 0 {
+		p = p[:at]
+	}
+	return strings.TrimSpace(p)
 }

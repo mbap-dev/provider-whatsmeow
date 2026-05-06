@@ -181,6 +181,22 @@ func TestGroupParticipantMessageIDDoesNotCollideWithInstancePrefix(t *testing.T)
 	}
 }
 
+func TestGroupParticipantMessageIDStripsDeviceSuffix(t *testing.T) {
+	got := withGroupParticipantMessageID("5562933000233:3@s.whatsapp.net", "3B4D9307CBB2F3D99403")
+	want := "5562933000233~3B4D9307CBB2F3D99403"
+	if got != want {
+		t.Fatalf("withGroupParticipantMessageID() = %q, want %q", got, want)
+	}
+
+	participant, msgID, ok := splitGroupParticipantMessageID(got)
+	if !ok {
+		t.Fatal("expected group participant message id to split")
+	}
+	if participant != "5562933000233" || msgID != "3B4D9307CBB2F3D99403" {
+		t.Fatalf("split = participant:%q msgID:%q", participant, msgID)
+	}
+}
+
 func TestCompatibleMediaIDPrefersRawMediaID(t *testing.T) {
 	meta := MediaMetadata{
 		SessionID: "553121159080",

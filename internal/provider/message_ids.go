@@ -178,5 +178,8 @@ func participantMessageIDUser(participant string) string {
 	if at := strings.Index(p, "@"); at >= 0 {
 		p = p[:at]
 	}
+	if colon := strings.Index(p, ":"); colon >= 0 {
+		p = p[:colon]
+	}
 	return strings.TrimSpace(p)
 }

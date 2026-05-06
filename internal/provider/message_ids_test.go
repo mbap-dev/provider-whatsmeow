@@ -213,12 +213,32 @@ func TestMessageContextInfoKeepsPrivateReplyIDPlain(t *testing.T) {
 		},
 	}
 
-	ctx := messageContextInfo(msg, false)
+	ctx := messageContextInfo("553121159080", msg, false)
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
 	if got := ctx["message_id"]; got != "3B8C1C3F75F1EC9F56DC" {
 		t.Fatalf("private context message_id = %q", got)
+	}
+}
+
+func TestMessageContextInfoKeepsOwnPrivateReplyParticipant(t *testing.T) {
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("testando"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    proto.String("3B8C1C3F75F1EC9F56DC"),
+				Participant: proto.String("553121159080@s.whatsapp.net"),
+			},
+		},
+	}
+
+	ctx := messageContextInfo("553121159080", msg, false)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "553121159080~3B8C1C3F75F1EC9F56DC" {
+		t.Fatalf("own private context message_id = %q", got)
 	}
 }
 
@@ -233,7 +253,7 @@ func TestMessageContextInfoAddsParticipantForGroupReplyID(t *testing.T) {
 		},
 	}
 
-	ctx := messageContextInfo(msg, true)
+	ctx := messageContextInfo("553121159080", msg, true)
 	if ctx == nil {
 		t.Fatal("expected context")
 	}

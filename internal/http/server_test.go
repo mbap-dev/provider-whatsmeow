@@ -30,6 +30,15 @@ func TestAPIResponseMessageIDKeepsExistingPrefix(t *testing.T) {
 	}
 }
 
+func TestAPIResponseMessageIDPrefixesAuthoredID(t *testing.T) {
+	authoredID := provider.WithGroupParticipantMessageID("553121159080", "3EB06FA40FC0AA6D317F")
+	got := apiResponseMessageID("553121159080", authoredID)
+	want := "553121159080_553121159080~3EB06FA40FC0AA6D317F"
+	if got != want {
+		t.Fatalf("apiResponseMessageID() = %q, want %q", got, want)
+	}
+}
+
 func TestGenerateAPIMessageIDUsesWhatsAppNativeFormat(t *testing.T) {
 	got := generateAPIMessageID("INC")
 	if strings.Contains(got, "INC-") {

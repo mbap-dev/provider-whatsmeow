@@ -586,9 +586,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseMessageID := msg.MessageID
-	if sendRecipientIsGroup(msg.To) {
-		responseMessageID = provider.WithGroupParticipantMessageID(sessionID, responseMessageID)
-	}
+	responseMessageID = provider.WithGroupParticipantMessageID(sessionID, responseMessageID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"messaging_product": "whatsapp",
 		"contacts": []map[string]string{
@@ -1499,10 +1497,6 @@ func normalizePhoneID(v string) string {
 		return b.String()
 	}
 	return v
-}
-
-func sendRecipientIsGroup(v string) bool {
-	return strings.Contains(strings.ToLower(strings.TrimSpace(v)), "@g.us")
 }
 
 func generateAPIMessageID(_ string) string {

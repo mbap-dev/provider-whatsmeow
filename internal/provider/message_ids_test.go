@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -213,7 +214,7 @@ func TestMessageContextInfoKeepsPrivateReplyIDPlain(t *testing.T) {
 		},
 	}
 
-	ctx := messageContextInfo("553121159080", msg, false)
+	ctx := messageContextInfo("553121159080", nil, msg, false)
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
@@ -233,7 +234,7 @@ func TestMessageContextInfoKeepsOwnPrivateReplyParticipant(t *testing.T) {
 		},
 	}
 
-	ctx := messageContextInfo("553121159080", msg, false)
+	ctx := messageContextInfo("553121159080", nil, msg, false)
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
@@ -253,12 +254,36 @@ func TestMessageContextInfoAddsParticipantForGroupReplyID(t *testing.T) {
 		},
 	}
 
-	ctx := messageContextInfo("553121159080", msg, true)
+	ctx := messageContextInfo("553121159080", nil, msg, true)
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
 	if got := ctx["message_id"]; got != "5562933000233~3B8C1C3F75F1EC9F56DC" {
 		t.Fatalf("group context message_id = %q", got)
+	}
+}
+
+func TestMessageContextInfoResolvesGroupLIDParticipant(t *testing.T) {
+	cachePutLID(
+		"46849671094330@lid",
+		types.NewJID("5562933000233", types.DefaultUserServer),
+	)
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("testando"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    proto.String("3BD2D8D0075C6F7959B5"),
+				Participant: proto.String("46849671094330@lid"),
+			},
+		},
+	}
+
+	ctx := messageContextInfo("553121159080", nil, msg, true)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "5562933000233~3BD2D8D0075C6F7959B5" {
+		t.Fatalf("group LID context message_id = %q", got)
 	}
 }
 

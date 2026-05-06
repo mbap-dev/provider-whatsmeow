@@ -290,7 +290,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 
 	// Context (reply/quote) se houver
-	if ctx := messageContextInfo(sessionID, msg, isGroupJID(chatJID)); ctx != nil {
+	if ctx := messageContextInfo(sessionID, client, msg, isGroupJID(chatJID)); ctx != nil {
 		wireMsg["context"] = ctx
 	}
 
@@ -1074,11 +1074,11 @@ func jidDisplayMaybeResolve(sessionID string, cli *whatsmeow.Client, j types.JID
 // Tenta algumas vezes, aguardando pequeno intervalo entre tentativas.
 func resolveLIDToAD(sessionID string, cli *whatsmeow.Client, lid types.JID, attempts int, delay time.Duration) (types.JID, bool) {
 	entry := log.WithSession(sessionID)
-	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
-		return types.JID{}, false
-	}
 	if v, ok := cacheGetLID(lid.String()); ok {
 		return v, true
+	}
+	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
+		return types.JID{}, false
 	}
 	for i := 0; i < attempts; i++ {
 		ad, err := cli.Store.LIDs.GetPNForLID(context.Background(), lid)
@@ -1341,7 +1341,7 @@ func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 	return nil
 }
 
-func messageContextInfo(sessionID string, m *waE2E.Message, groupChat bool) map[string]any {
+func messageContextInfo(sessionID string, cli *whatsmeow.Client, m *waE2E.Message, groupChat bool) map[string]any {
 	// tenta extrair stanzaId e participant de qualquer ContextInfo disponível
 	ci := extractMessageContextInfo(m)
 	if ci == nil {
@@ -1352,7 +1352,7 @@ func messageContextInfo(sessionID string, m *waE2E.Message, groupChat bool) map[
 	if stanzaID := strings.TrimSpace(ci.GetStanzaID()); stanzaID != "" {
 		contextID := stanzaID
 		if participant := strings.TrimSpace(ci.GetParticipant()); shouldKeepContextParticipant(sessionID, groupChat, participant) {
-			contextID = withGroupParticipantMessageID(participant, stanzaID)
+			contextID = withGroupParticipantMessageID(contextParticipantMessageIDUser(sessionID, cli, participant), stanzaID)
 		}
 		ctx["message_id"] = contextID
 		ctx["id"] = contextID
@@ -1384,6 +1384,23 @@ func shouldKeepContextParticipant(sessionID string, groupChat bool, participant 
 		return true
 	}
 	return participantMessageIDUser(participant) == normalizePhone(sessionID)
+}
+
+func contextParticipantMessageIDUser(sessionID string, cli *whatsmeow.Client, participant string) string {
+	raw := strings.TrimSpace(participant)
+	if raw == "" {
+		return ""
+	}
+	jid, err := types.ParseJID(raw)
+	if err != nil {
+		return participantMessageIDUser(raw)
+	}
+	if isLIDJID(jid) {
+		if resolved, ok := resolveLIDToAD(sessionID, cli, jid, defaultLIDResolveAttempts, defaultLIDResolveDelay); ok {
+			return participantMessageIDUser(resolved.ToNonAD().String())
+		}
+	}
+	return participantMessageIDUser(jid.ToNonAD().String())
 }
 
 func safeGetContactInfo(cli *whatsmeow.Client, candidates ...types.JID) (types.ContactInfo, bool) {

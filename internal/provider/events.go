@@ -290,7 +290,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	}
 
 	// Context (reply/quote) se houver
-	if ctx := messageContextInfo(msg); ctx != nil {
+	if ctx := messageContextInfo(msg, isGroupJID(chatJID)); ctx != nil {
 		wireMsg["context"] = ctx
 	}
 
@@ -1345,7 +1345,7 @@ func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 	return nil
 }
 
-func messageContextInfo(m *waE2E.Message) map[string]any {
+func messageContextInfo(m *waE2E.Message, groupChat bool) map[string]any {
 	// tenta extrair stanzaId e participant de qualquer ContextInfo disponível
 	ci := extractMessageContextInfo(m)
 	if ci == nil {
@@ -1355,7 +1355,7 @@ func messageContextInfo(m *waE2E.Message) map[string]any {
 	ctx := make(map[string]any)
 	if stanzaID := strings.TrimSpace(ci.GetStanzaID()); stanzaID != "" {
 		contextID := stanzaID
-		if participant := strings.TrimSpace(ci.GetParticipant()); participant != "" {
+		if participant := strings.TrimSpace(ci.GetParticipant()); groupChat && participant != "" {
 			contextID = withGroupParticipantMessageID(participant, stanzaID)
 		}
 		ctx["message_id"] = contextID

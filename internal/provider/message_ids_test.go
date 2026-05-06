@@ -1,6 +1,11 @@
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/proto"
+)
 
 func TestApplyInstanceMessageIDs(t *testing.T) {
 	payload := map[string]any{
@@ -194,6 +199,46 @@ func TestGroupParticipantMessageIDStripsDeviceSuffix(t *testing.T) {
 	}
 	if participant != "5562933000233" || msgID != "3B4D9307CBB2F3D99403" {
 		t.Fatalf("split = participant:%q msgID:%q", participant, msgID)
+	}
+}
+
+func TestMessageContextInfoKeepsPrivateReplyIDPlain(t *testing.T) {
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("testando"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    proto.String("3B8C1C3F75F1EC9F56DC"),
+				Participant: proto.String("46849671094330@lid"),
+			},
+		},
+	}
+
+	ctx := messageContextInfo(msg, false)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "3B8C1C3F75F1EC9F56DC" {
+		t.Fatalf("private context message_id = %q", got)
+	}
+}
+
+func TestMessageContextInfoAddsParticipantForGroupReplyID(t *testing.T) {
+	msg := &waE2E.Message{
+		ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("testando"),
+			ContextInfo: &waE2E.ContextInfo{
+				StanzaID:    proto.String("3B8C1C3F75F1EC9F56DC"),
+				Participant: proto.String("5562933000233:3@s.whatsapp.net"),
+			},
+		},
+	}
+
+	ctx := messageContextInfo(msg, true)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "5562933000233~3B8C1C3F75F1EC9F56DC" {
+		t.Fatalf("group context message_id = %q", got)
 	}
 }
 

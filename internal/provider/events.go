@@ -36,6 +36,7 @@ var (
 var webhookHTTPClient = &http.Client{
 	Timeout: 20 * time.Second,
 	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          200,
 		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,

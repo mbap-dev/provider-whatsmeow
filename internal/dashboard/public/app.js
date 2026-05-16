@@ -76,6 +76,12 @@ function createDefaultConfigForm() {
     outgoing_messages_coex: false,
     always_online: false,
     always_online_interval_seconds: '60',
+    proxy_enabled: false,
+    proxy_protocol: '',
+    proxy_host: '',
+    proxy_port: '',
+    proxy_username: '',
+    proxy_password: '',
   }
 }
 
@@ -94,6 +100,12 @@ function createConfigFormFromSnapshot(snapshot) {
         ? Number(cfg.always_online_interval_seconds)
         : 60
     ),
+    proxy_enabled: Boolean(cfg.proxy_enabled),
+    proxy_protocol: cfg.proxy_protocol || '',
+    proxy_host: cfg.proxy_host || '',
+    proxy_port: cfg.proxy_port || '',
+    proxy_username: cfg.proxy_username || '',
+    proxy_password: cfg.proxy_password || '',
   }
 }
 
@@ -337,6 +349,7 @@ function SessionCard({
       <div className="session-card__meta">
         <span>Login: ${session.logged_in ? 'ativo' : 'pendente'}</span>
         <span>Device: ${session.device_jid ? truncate(session.device_jid, 30) : '—'}</span>
+        <span>WA Web: ${session.whatsapp_web_version || '—'}</span>
       </div>
 
       <div className="session-card__actions">
@@ -913,6 +926,16 @@ function App() {
       pushToast('O intervalo de always-online deve ser maior que zero.', 'error')
       return
     }
+    if (configState.form.proxy_enabled) {
+      if (!configState.form.proxy_host.trim()) {
+        pushToast('Informe o host do proxy.', 'error')
+        return
+      }
+      if (!configState.form.proxy_port.trim()) {
+        pushToast('Informe a porta do proxy.', 'error')
+        return
+      }
+    }
 
     setConfigState((current) => ({ ...current, saving: true }))
     try {
@@ -927,6 +950,12 @@ function App() {
           outgoing_messages_coex: configState.form.outgoing_messages_coex,
           always_online: configState.form.always_online,
           always_online_interval_seconds: interval,
+          proxy_enabled: configState.form.proxy_enabled,
+          proxy_protocol: configState.form.proxy_protocol.trim(),
+          proxy_host: configState.form.proxy_host.trim(),
+          proxy_port: configState.form.proxy_port.trim(),
+          proxy_username: configState.form.proxy_username.trim(),
+          proxy_password: configState.form.proxy_password,
         }),
       })
       pushToast(`Configuração da sessão ${selectedSessionId} salva.`, 'success')
@@ -1138,12 +1167,6 @@ function App() {
             value=${worker?.worker_id || '—'}
             caption=${worker?.worker_strict ? 'Modo strict habilitado' : 'Aceita sessões fora da lista'}
             tone="brand"
-          />
-          <${StatCard}
-            label="WA Web"
-            value=${worker?.whatsapp_web_version || '—'}
-            caption="versão ativa no runtime"
-            tone="secondary"
           />
           <${StatCard}
             label="Sessões atribuídas"
@@ -1413,6 +1436,11 @@ function App() {
                               code=${Boolean(selectedSession.device_jid)}
                             />
                             <${DetailItem}
+                              label="WA Web"
+                              value=${selectedSession.whatsapp_web_version || '—'}
+                              code=${Boolean(selectedSession.whatsapp_web_version)}
+                            />
+                            <${DetailItem}
                               label="Status"
                               value=${sessionStatus(selectedSession)}
                             />
@@ -1602,6 +1630,16 @@ function App() {
                                   }))
                                 }
                               />
+                              <${CheckField}
+                                label="Usar proxy nesta sessão"
+                                checked=${configState.form.proxy_enabled}
+                                onChange=${(checked) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_enabled: checked },
+                                  }))
+                                }
+                              />
                             </div>
 
                             <${TextAreaField}
@@ -1629,6 +1667,65 @@ function App() {
                                 }))
                               }
                             />
+
+                            <div className="form-grid">
+                              <${InputField}
+                                label="Proxy protocolo"
+                                value=${configState.form.proxy_protocol}
+                                placeholder="http, https ou socks5"
+                                onInput=${(value) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_protocol: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Proxy host"
+                                value=${configState.form.proxy_host}
+                                placeholder="proxy.exemplo.com"
+                                onInput=${(value) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_host: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Proxy porta"
+                                value=${configState.form.proxy_port}
+                                placeholder="8080"
+                                onInput=${(value) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_port: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Proxy usuário"
+                                value=${configState.form.proxy_username}
+                                placeholder="Opcional"
+                                onInput=${(value) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_username: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Proxy senha"
+                                value=${configState.form.proxy_password}
+                                type="password"
+                                placeholder="Opcional"
+                                onInput=${(value) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, proxy_password: value },
+                                  }))
+                                }
+                              />
+                            </div>
 
                             <div className="inline-actions inline-actions--wrap">
                               <button

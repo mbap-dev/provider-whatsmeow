@@ -26,6 +26,13 @@ type sessionConfigPayload struct {
 	hasAlwaysOnlineEverySeconds bool
 	outgoingMessagesCoex        bool
 	hasOutgoingMessagesCoex     bool
+	proxyEnabled                bool
+	hasProxyEnabled             bool
+	proxyProtocol               string
+	proxyHost                   string
+	proxyPort                   string
+	proxyUsername               string
+	proxyPassword               string
 }
 
 // fetchSessionConfig reads session config for a given phone/session key from Redis.
@@ -99,6 +106,37 @@ func fetchSessionConfig(redisURL, keyPrefix, phone string) (sessionConfigPayload
 		if b, ok2 := asBool(v); ok2 {
 			out.outgoingMessagesCoex = b
 			out.hasOutgoingMessagesCoex = true
+		}
+	}
+	if v, ok := m["proxyEnabled"]; ok {
+		if b, ok2 := asBool(v); ok2 {
+			out.proxyEnabled = b
+			out.hasProxyEnabled = true
+		}
+	}
+	if v, ok := m["proxyProtocol"]; ok {
+		if str, ok2 := v.(string); ok2 {
+			out.proxyProtocol = str
+		}
+	}
+	if v, ok := m["proxyHost"]; ok {
+		if str, ok2 := v.(string); ok2 {
+			out.proxyHost = str
+		}
+	}
+	if v, ok := m["proxyPort"]; ok {
+		if str, ok2 := v.(string); ok2 {
+			out.proxyPort = str
+		}
+	}
+	if v, ok := m["proxyUsername"]; ok {
+		if str, ok2 := v.(string); ok2 {
+			out.proxyUsername = str
+		}
+	}
+	if v, ok := m["proxyPassword"]; ok {
+		if str, ok2 := v.(string); ok2 {
+			out.proxyPassword = str
 		}
 	}
 	return out, true

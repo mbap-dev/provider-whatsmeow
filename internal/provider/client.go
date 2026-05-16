@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,12 +24,13 @@ import (
 
 // clientEntry mantém refs para facilitar cleanup
 type clientEntry struct {
-	Client  *whatsmeow.Client
-	DB      *sqlstore.Container
-	KeysDB  *sqlstore.Container // opcional
-	Log     waLog.Logger
-	Session string
-	Webhook string
+	Client             *whatsmeow.Client
+	DB                 *sqlstore.Container
+	KeysDB             *sqlstore.Container // opcional
+	Log                waLog.Logger
+	Session            string
+	Webhook            string
+	WhatsAppWebVersion string
 	// cancel function for the always-online presence refresher
 	presenceCancel context.CancelFunc
 }
@@ -46,6 +49,7 @@ type ClientManager struct {
 	rejectMsg       string
 	autoMarkRead    bool
 	pnResolverURL   string
+	proxyDefault    ProxyConfig
 	// simple PN->JID cache (E.164 -> JID string)
 	pnCache map[string]pnCacheItem
 
@@ -91,6 +95,12 @@ type sessionOverrides struct {
 	rejectCalls           *bool
 	rejectMsg             *string
 	autoMarkRead          *bool
+	proxyEnabled          *bool
+	proxyProtocol         *string
+	proxyHost             *string
+	proxyPort             *string
+	proxyUsername         *string
+	proxyPassword         *string
 	ignoreStatusBroadcast *bool
 	ignoreNewsletters     *bool
 	outgoingMessagesCoex  *bool
@@ -106,6 +116,11 @@ type ManagerOptions struct {
 	RejectMessage         string
 	AutoMarkRead          bool
 	PNResolverURL         string
+	ProxyProtocol         string
+	ProxyHost             string
+	ProxyPort             string
+	ProxyUsername         string
+	ProxyPassword         string
 	IgnoreStatusBroadcast bool
 	IgnoreNewsletters     bool
 	OutgoingMessagesCoex  bool
@@ -198,17 +213,25 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		S3Prefix:         opts.S3Prefix,
 	})
 	return &ClientManager{
-		clients:               make(map[string]*clientEntry),
-		sessionStore:          opts.SessionStore,
-		assignmentFile:        assignmentFile,
-		sessionCfgFile:        sessionCfgFile,
-		sessionHookFile:       sessionHookFile,
-		webhookBase:           opts.WebhookBase,
-		defaultAudioPTT:       opts.DefaultAudioPTT,
-		rejectCalls:           opts.RejectCalls,
-		rejectMsg:             opts.RejectMessage,
-		autoMarkRead:          opts.AutoMarkRead,
-		pnResolverURL:         opts.PNResolverURL,
+		clients:         make(map[string]*clientEntry),
+		sessionStore:    opts.SessionStore,
+		assignmentFile:  assignmentFile,
+		sessionCfgFile:  sessionCfgFile,
+		sessionHookFile: sessionHookFile,
+		webhookBase:     opts.WebhookBase,
+		defaultAudioPTT: opts.DefaultAudioPTT,
+		rejectCalls:     opts.RejectCalls,
+		rejectMsg:       opts.RejectMessage,
+		autoMarkRead:    opts.AutoMarkRead,
+		pnResolverURL:   opts.PNResolverURL,
+		proxyDefault: normalizeProxyConfig(ProxyConfig{
+			Protocol: opts.ProxyProtocol,
+			Host:     opts.ProxyHost,
+			Port:     opts.ProxyPort,
+			Username: opts.ProxyUsername,
+			Password: opts.ProxyPassword,
+			Enabled:  strings.TrimSpace(opts.ProxyHost) != "" && strings.TrimSpace(opts.ProxyPort) != "",
+		}),
 		pnCache:               make(map[string]pnCacheItem),
 		alwaysOnlineEvery:     time.Minute,
 		ignoreStatusBroadcast: opts.IgnoreStatusBroadcast,
@@ -591,6 +614,120 @@ func (m *ClientManager) getCheckUserExists(sessionID string) bool {
 	return m.checkUserExists
 }
 
+func (m *ClientManager) getProxyConfig(sessionID string) ProxyConfig {
+	cfg := m.proxyDefault
+	m.overridesMu.RLock()
+	if ov, ok := m.overrides[sessionID]; ok {
+		if ov.proxyEnabled != nil {
+			cfg.Enabled = *ov.proxyEnabled
+		}
+		if ov.proxyProtocol != nil {
+			cfg.Protocol = *ov.proxyProtocol
+		}
+		if ov.proxyHost != nil {
+			cfg.Host = *ov.proxyHost
+		}
+		if ov.proxyPort != nil {
+			cfg.Port = *ov.proxyPort
+		}
+		if ov.proxyUsername != nil {
+			cfg.Username = *ov.proxyUsername
+		}
+		if ov.proxyPassword != nil {
+			cfg.Password = *ov.proxyPassword
+		}
+	}
+	m.overridesMu.RUnlock()
+	return normalizeProxyConfig(cfg)
+}
+
+func (m *ClientManager) applyProxyConfig(sessionID string, cli *whatsmeow.Client, logger waLog.Logger) {
+	if cli == nil {
+		return
+	}
+	cfg := m.getProxyConfig(sessionID)
+	if !cfg.Enabled {
+		ilog.WithSession(sessionID).Debug(
+			"proxy_client_config disabled enabled=%t host_set=%t port_set=%t protocol=%s",
+			cfg.Enabled,
+			cfg.Host != "",
+			cfg.Port != "",
+			cfg.Protocol,
+		)
+		return
+	}
+	addr, err := buildProxyAddress(cfg.Protocol, cfg.Host, cfg.Port, cfg.Username, cfg.Password)
+	if err != nil {
+		ilog.WithSession(sessionID).Debug(
+			"proxy_client_config build_error protocol=%s host=%s port=%s username_set=%t password_set=%t err=%v",
+			normalizeProxyProtocol(cfg.Protocol, cfg.Port),
+			cfg.Host,
+			cfg.Port,
+			strings.TrimSpace(cfg.Username) != "",
+			cfg.Password != "",
+			err,
+		)
+		if logger != nil {
+			logger.Warnf("proxy config ignored: %v", err)
+		}
+		return
+	}
+
+	protocol := normalizeProxyProtocol(cfg.Protocol, cfg.Port)
+	if protocol == "http" || protocol == "https" {
+		proxyURL, err := url.Parse(addr)
+		if err != nil {
+			ilog.WithSession(sessionID).Debug(
+				"proxy_client_config parse_error proxy=%s err=%v",
+				redactedProxyAddress(cfg),
+				err,
+			)
+			if logger != nil {
+				logger.Warnf("proxy config ignored: %v", err)
+			}
+			return
+		}
+		cli.SetProxy(func(req *http.Request) (*url.URL, error) {
+			ilog.WithSession(sessionID).Debug(
+				"proxy_whatsapp_route enabled target=%s path=%s proxy=%s username_set=%t password_set=%t",
+				req.URL.Host,
+				req.URL.Path,
+				redactedProxyAddress(cfg),
+				strings.TrimSpace(cfg.Username) != "",
+				cfg.Password != "",
+			)
+			return proxyURL, nil
+		})
+	} else {
+		if err := cli.SetProxyAddress(addr); err != nil {
+			ilog.WithSession(sessionID).Debug(
+				"proxy_client_config apply_error proxy=%s username_set=%t password_set=%t err=%v",
+				redactedProxyAddress(cfg),
+				strings.TrimSpace(cfg.Username) != "",
+				cfg.Password != "",
+				err,
+			)
+			if logger != nil {
+				logger.Warnf("proxy config ignored: %v", err)
+			}
+			return
+		}
+		ilog.WithSession(sessionID).Debug(
+			"proxy_whatsapp_route socks5_applied proxy=%s covers=websocket,media_upload,media_download username_set=%t password_set=%t",
+			redactedProxyAddress(cfg),
+			strings.TrimSpace(cfg.Username) != "",
+			cfg.Password != "",
+		)
+	}
+	ilog.WithSession(sessionID).Info("proxy enabled protocol=%s host=%s port=%s covers=websocket,media_upload,media_download", protocol, cfg.Host, cfg.Port)
+	ilog.WithSession(sessionID).Debug(
+		"proxy_client_config applied proxy=%s username_set=%t password_set=%t",
+		redactedProxyAddress(cfg),
+		strings.TrimSpace(cfg.Username) != "",
+		cfg.Password != "",
+	)
+}
+
 // loadSessionOverrides fetches session config for the given session from Redis
 // (if configured) and stores per-session overrides only for flags that were not
 // explicitly set via environment variables.
@@ -653,6 +790,36 @@ func (m *ClientManager) loadSessionOverrides(sessionID string) {
 			d := time.Duration(v) * time.Second
 			ov.alwaysOnlineEvery = &d
 		}
+	}
+	if _, set := os.LookupEnv("PROXY_HOST"); !set && ov.proxyHost == nil {
+		if v := strings.TrimSpace(cfg.proxyHost); v != "" {
+			ov.proxyHost = &v
+		}
+	}
+	if _, set := os.LookupEnv("PROXY_PORT"); !set && ov.proxyPort == nil {
+		if v := strings.TrimSpace(cfg.proxyPort); v != "" {
+			ov.proxyPort = &v
+		}
+	}
+	if _, set := os.LookupEnv("PROXY_PROTOCOL"); !set && ov.proxyProtocol == nil {
+		if v := strings.TrimSpace(cfg.proxyProtocol); v != "" {
+			ov.proxyProtocol = &v
+		}
+	}
+	if _, set := os.LookupEnv("PROXY_USERNAME"); !set && ov.proxyUsername == nil {
+		if v := strings.TrimSpace(cfg.proxyUsername); v != "" {
+			ov.proxyUsername = &v
+		}
+	}
+	if _, set := os.LookupEnv("PROXY_PASSWORD"); !set && ov.proxyPassword == nil {
+		if cfg.proxyPassword != "" {
+			v := cfg.proxyPassword
+			ov.proxyPassword = &v
+		}
+	}
+	if ov.proxyEnabled == nil && cfg.hasProxyEnabled {
+		v := cfg.proxyEnabled
+		ov.proxyEnabled = &v
 	}
 	m.overrides[sessionID] = ov
 	m.overridesMu.Unlock()
@@ -737,13 +904,15 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	cli.EnableAutoReconnect = true
 	cli.AutoTrustIdentity = true
 
+	// Load per-session overrides before any connect/QR flow so proxy settings
+	// are already attached to websocket/media clients.
+	m.loadSessionOverrides(sessionID)
+	m.logSessionConfig(sessionID)
+	m.applyProxyConfig(sessionID, cli, clientLog)
+
 	// Se já existe ID no store, a sessão já foi pareada antes -> conecta direto
 	// Caso contrário, liga o canal de QR ANTES de conectar.
 	if cli.Store != nil && cli.Store.ID != nil {
-		// Load per-session overrides (best-effort) before registering handlers
-		m.loadSessionOverrides(sessionID)
-		m.logSessionConfig(sessionID)
-
 		// handlers (eventos → webhook)
 		m.registerEventHandlers(cli, sessionID)
 
@@ -758,12 +927,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 		m.clients[sessionID] = entry
 
 		// conecta (assíncrono)
-		go func() {
-			if err := cli.Connect(); err != nil {
-				clientLog.Errorf("connect error: %v", err)
-				status.Set(sessionID, "offline")
-			}
-		}()
+		go m.connectClientWithLatestWhatsAppWebVersion(sessionID, cli, clientLog)
 		return cli, nil
 	}
 
@@ -773,10 +937,6 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 		return nil, fmt.Errorf("get QR channel: %w", err)
 	}
 	m.startQRWatcher(sessionID, qrCh)
-
-	// Load per-session overrides (best-effort) before registering handlers
-	m.loadSessionOverrides(sessionID)
-	m.logSessionConfig(sessionID)
 
 	// handlers (eventos → webhook)
 	m.registerEventHandlers(cli, sessionID)
@@ -792,14 +952,51 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	m.clients[sessionID] = entry
 
 	// Conecta (assíncrono)
-	go func() {
-		if err := cli.Connect(); err != nil {
-			clientLog.Errorf("connect error: %v", err)
-			status.Set(sessionID, "offline")
-		}
-	}()
+	go m.connectClientWithLatestWhatsAppWebVersion(sessionID, cli, clientLog)
 
 	return cli, nil
+}
+
+func (m *ClientManager) connectClientWithLatestWhatsAppWebVersion(sessionID string, cli *whatsmeow.Client, clientLog waLog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	proxyCfg := m.getProxyConfig(sessionID)
+	ilog.WithSession(sessionID).Debug(
+		"wa_web_version_refresh proxy_cfg enabled=%t proxy=%s username_set=%t password_set=%t",
+		proxyCfg.Enabled,
+		redactedProxyAddress(proxyCfg),
+		strings.TrimSpace(proxyCfg.Username) != "",
+		proxyCfg.Password != "",
+	)
+	httpClient := httpClientForProxyConfig(sessionID, proxyCfg)
+	previous, applied, refreshErr, connectErr := refreshLatestWhatsAppWebVersionForConnect(ctx, httpClient, cli.Connect)
+	if refreshErr != nil {
+		ilog.WithSession(sessionID).Warn(
+			"failed to refresh WhatsApp Web version for session connect, keeping %s: %v",
+			applied.String(),
+			refreshErr,
+		)
+	} else if previous != applied {
+		ilog.WithSession(sessionID).Info(
+			"updated WhatsApp Web version for session connect from %s to %s",
+			previous.String(),
+			applied.String(),
+		)
+	} else {
+		ilog.WithSession(sessionID).Info("using WhatsApp Web version %s for session connect", applied.String())
+	}
+
+	m.mu.Lock()
+	if ent := m.clients[sessionID]; ent != nil {
+		ent.WhatsAppWebVersion = applied.String()
+	}
+	m.mu.Unlock()
+
+	if connectErr != nil {
+		clientLog.Errorf("connect error: %v", connectErr)
+		status.Set(sessionID, "offline")
+	}
 }
 
 func (m *ClientManager) logSessionConfig(sessionID string) {
@@ -810,6 +1007,7 @@ func (m *ClientManager) logSessionConfig(sessionID string) {
 	isb := m.getIgnoreStatusBroadcast(sessionID)
 	inl := m.getIgnoreNewsletters(sessionID)
 	coex := m.getOutgoingMessagesCoex(sessionID)
+	proxyCfg := m.getProxyConfig(sessionID)
 	// Resolve always-online effective
 	should, interval := m.getAlwaysOnlineConfig(sessionID)
 	m.overridesMu.RLock()
@@ -823,8 +1021,9 @@ func (m *ClientManager) logSessionConfig(sessionID string) {
 	envINL, _ := os.LookupEnv("IGNORE_NEWSLETTERS")
 	envCOEX, _ := os.LookupEnv("OUTGOING_MESSAGES_COEX")
 	envAO, _ := os.LookupEnv("ALWAYS_ONLINE")
+	envProxyHost, _ := os.LookupEnv("PROXY_HOST")
 	entry.Info(
-		"session_config reject_calls=%t source_reject_calls=%s reject_msg_set=%t source_reject_msg=%s mark_read_on_message=%t source_mark_read=%s ignore_status_broadcast=%t source_isb=%s ignore_newsletters=%t source_inl=%s outgoing_messages_coex=%t source_coex=%s always_online=%t source_always_online=%s always_online_interval_s=%d",
+		"session_config reject_calls=%t source_reject_calls=%s reject_msg_set=%t source_reject_msg=%s mark_read_on_message=%t source_mark_read=%s ignore_status_broadcast=%t source_isb=%s ignore_newsletters=%t source_inl=%s outgoing_messages_coex=%t source_coex=%s always_online=%t source_always_online=%s always_online_interval_s=%d proxy_enabled=%t proxy_protocol=%s proxy_host_set=%t source_proxy=%s",
 		rc,
 		source(envRC, ov.rejectCalls != nil),
 		msg != "",
@@ -840,6 +1039,10 @@ func (m *ClientManager) logSessionConfig(sessionID string) {
 		should,
 		source(envAO, ov.alwaysOnline != nil || ov.alwaysOnlineEvery != nil),
 		int(interval/time.Second),
+		proxyCfg.Enabled,
+		proxyCfg.Protocol,
+		strings.TrimSpace(proxyCfg.Host) != "",
+		source(envProxyHost, ov.proxyEnabled != nil || ov.proxyHost != nil || ov.proxyPort != nil || ov.proxyProtocol != nil),
 	)
 }
 
@@ -903,13 +1106,14 @@ type SessionStatus struct {
 }
 
 type SessionOverview struct {
-	SessionID string `json:"session_id"`
-	Assigned  bool   `json:"assigned"`
-	Status    string `json:"status"`
-	Connected bool   `json:"connected"`
-	LoggedIn  bool   `json:"logged_in"`
-	DeviceJID string `json:"device_jid,omitempty"`
-	HasQR     bool   `json:"has_qr"`
+	SessionID          string `json:"session_id"`
+	Assigned           bool   `json:"assigned"`
+	Status             string `json:"status"`
+	Connected          bool   `json:"connected"`
+	LoggedIn           bool   `json:"logged_in"`
+	DeviceJID          string `json:"device_jid,omitempty"`
+	HasQR              bool   `json:"has_qr"`
+	WhatsAppWebVersion string `json:"whatsapp_web_version,omitempty"`
 }
 
 func (m *ClientManager) Status(sessionID string) (SessionStatus, error) {
@@ -989,6 +1193,7 @@ func (m *ClientManager) ListSessions() []SessionOverview {
 		if ent := active[sid]; ent != nil && ent.Client != nil {
 			ov.Connected = ent.Client.IsConnected()
 			ov.LoggedIn = ent.Client.IsLoggedIn()
+			ov.WhatsAppWebVersion = ent.WhatsAppWebVersion
 			if ent.Client.Store != nil && ent.Client.Store.ID != nil {
 				ov.DeviceJID = ent.Client.Store.ID.String()
 			}

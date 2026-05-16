@@ -3,6 +3,12 @@ services:
     image: rabbitmq:3.13-management
     hostname: rabbitmq
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -15,7 +21,8 @@ services:
     image: ghcr.io/mbap-dev/provider-whatsmeow:latest
     restart: unless-stopped
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_healthy
     environment:
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
       AMQP_EXCHANGE: provider.whatsmeow.outgoing
@@ -48,6 +55,11 @@ services:
       S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:-}"
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-false}"
       S3_PREFIX: "${S3_PREFIX:-}"
+      PROXY_PROTOCOL: "${PROXY_PROTOCOL:-}"
+      PROXY_HOST: "${PROXY_HOST:-}"
+      PROXY_PORT: "${PROXY_PORT:-}"
+      PROXY_USERNAME: "${PROXY_USERNAME:-}"
+      PROXY_PASSWORD: "${PROXY_PASSWORD:-}"
       LOG_LEVEL: debug
     volumes:
       - ./data/worker-a:/var/lib/whatsmeow
@@ -90,5 +102,10 @@ services:
       S3_SECRET_ACCESS_KEY: "${S3_SECRET_ACCESS_KEY:-}"
       S3_FORCE_PATH_STYLE: "${S3_FORCE_PATH_STYLE:-false}"
       S3_PREFIX: "${S3_PREFIX:-}"
+      PROXY_PROTOCOL: "${PROXY_PROTOCOL:-}"
+      PROXY_HOST: "${PROXY_HOST:-}"
+      PROXY_PORT: "${PROXY_PORT:-}"
+      PROXY_USERNAME: "${PROXY_USERNAME:-}"
+      PROXY_PASSWORD: "${PROXY_PASSWORD:-}"
     volumes:
       - ./data/worker-b:/var/lib/whatsmeow

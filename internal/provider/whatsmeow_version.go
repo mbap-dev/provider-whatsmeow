@@ -18,6 +18,7 @@ const whatsAppWebServiceWorkerURL = "https://web.whatsapp.com/sw.js"
 
 var (
 	whatsAppWebVersionCacheMu  sync.Mutex
+	whatsAppWebVersionApplyMu  sync.Mutex
 	whatsAppWebVersionCached   *store.WAVersionContainer
 	whatsAppWebVersionCachedAt time.Time
 	whatsAppWebVersionCacheTTL = time.Hour
@@ -76,8 +77,12 @@ func parseWhatsAppWebVersionContent(content string) (store.WAVersionContainer, e
 }
 
 func fetchLatestWhatsAppWebVersion(ctx context.Context, httpClient *http.Client) (store.WAVersionContainer, error) {
+	return fetchLatestWhatsAppWebVersionCached(ctx, httpClient, false)
+}
+
+func fetchLatestWhatsAppWebVersionCached(ctx context.Context, httpClient *http.Client, useCache bool) (store.WAVersionContainer, error) {
 	whatsAppWebVersionCacheMu.Lock()
-	if whatsAppWebVersionCached != nil && time.Since(whatsAppWebVersionCachedAt) < whatsAppWebVersionCacheTTL {
+	if useCache && whatsAppWebVersionCached != nil && time.Since(whatsAppWebVersionCachedAt) < whatsAppWebVersionCacheTTL {
 		cached := *whatsAppWebVersionCached
 		whatsAppWebVersionCacheMu.Unlock()
 		return cached, nil
@@ -91,7 +96,9 @@ func fetchLatestWhatsAppWebVersion(ctx context.Context, httpClient *http.Client)
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{
+			Transport: &http.Transport{Proxy: proxyFuncFromConfigOrEnvironment},
+		}
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -121,14 +128,40 @@ func fetchLatestWhatsAppWebVersion(ctx context.Context, httpClient *http.Client)
 }
 
 // ConfigureLatestWhatsAppWebVersion tries to fetch the latest WhatsApp Web
-// version and applies it globally. On failure, the bundled whatsmeow version
-// remains active.
+// version and applies it globally. On failure, the current whatsmeow version
+// remains active. The fetch bypasses the cache so session startup/reload can
+// pick up the current WhatsApp Web revision.
 func ConfigureLatestWhatsAppWebVersion(ctx context.Context) (previous store.WAVersionContainer, applied store.WAVersionContainer, err error) {
+	return ConfigureLatestWhatsAppWebVersionWithClient(ctx, nil)
+}
+
+func ConfigureLatestWhatsAppWebVersionWithClient(ctx context.Context, httpClient *http.Client) (previous store.WAVersionContainer, applied store.WAVersionContainer, err error) {
 	previous = store.GetWAVersion()
-	latest, err := fetchLatestWhatsAppWebVersion(ctx, nil)
+	latest, err := fetchLatestWhatsAppWebVersion(ctx, httpClient)
 	if err != nil {
 		return previous, previous, err
 	}
+	whatsAppWebVersionApplyMu.Lock()
+	defer whatsAppWebVersionApplyMu.Unlock()
+	previous = store.GetWAVersion()
 	applied = ApplyWhatsAppWebVersion(latest)
 	return previous, applied, nil
+}
+
+func refreshLatestWhatsAppWebVersionForConnect(ctx context.Context, httpClient *http.Client, connect func() error) (previous store.WAVersionContainer, applied store.WAVersionContainer, refreshErr error, connectErr error) {
+	latest, refreshErr := fetchLatestWhatsAppWebVersion(ctx, httpClient)
+
+	whatsAppWebVersionApplyMu.Lock()
+	defer whatsAppWebVersionApplyMu.Unlock()
+
+	previous = store.GetWAVersion()
+	if refreshErr == nil {
+		applied = ApplyWhatsAppWebVersion(latest)
+	} else {
+		applied = previous
+	}
+	if connect != nil {
+		connectErr = connect()
+	}
+	return previous, applied, refreshErr, connectErr
 }

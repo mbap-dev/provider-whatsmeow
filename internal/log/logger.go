@@ -67,6 +67,15 @@ func (e *Entry) Info(format string, args ...interface{}) {
 	stdlog.Printf("level=info provider=whatsmeow session_id=%s message_id=%s %s", e.SessionID, e.MessageID, msg)
 }
 
+// Warn emits a warning log message.
+func (e *Entry) Warn(format string, args ...interface{}) {
+	if minLevel > LevelInfo {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	stdlog.Printf("level=warn provider=whatsmeow session_id=%s message_id=%s %s", e.SessionID, e.MessageID, msg)
+}
+
 // Error emits an error log message.  The provider, session and
 // message identifiers are automatically included as structured fields.
 func (e *Entry) Error(format string, args ...interface{}) {

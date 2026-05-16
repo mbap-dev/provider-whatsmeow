@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.mau.fi/whatsmeow/store"
 	"your.org/provider-whatsmeow/internal/config"
 	"your.org/provider-whatsmeow/internal/provider"
 )
@@ -148,14 +147,7 @@ func TestCreateSessionEndpointRejectsInvalidID(t *testing.T) {
 	}
 }
 
-func TestWorkerEndpointIncludesWhatsAppWebVersion(t *testing.T) {
-	previous := store.GetWAVersion()
-	t.Cleanup(func() {
-		provider.ApplyWhatsAppWebVersion(previous)
-	})
-
-	target := provider.ApplyWhatsAppWebVersion(store.WAVersionContainer{2, 3000, 1037793778})
-
+func TestWorkerEndpointOmitsGlobalWhatsAppWebVersion(t *testing.T) {
 	manager := provider.NewClientManager(provider.ManagerOptions{
 		SessionStore: t.TempDir(),
 		WorkerID:     "worker-test",
@@ -170,8 +162,8 @@ func TestWorkerEndpointIncludesWhatsAppWebVersion(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"whatsapp_web_version":"`+target.String()+`"`) {
-		t.Fatalf("response body = %s, want whatsapp_web_version=%s", rec.Body.String(), target.String())
+	if strings.Contains(rec.Body.String(), "whatsapp_web_version") {
+		t.Fatalf("response body = %s, did not expect global whatsapp_web_version", rec.Body.String())
 	}
 }
 

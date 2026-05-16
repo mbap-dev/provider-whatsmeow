@@ -26,16 +26,13 @@ func main() {
 	// missing a sensible default is used instead.  See config.NewConfig
 	// for details on each field.
 	cfg := config.NewConfig()
-
-	waVersionCtx, waVersionCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer waVersionCancel()
-	if previous, applied, err := provider.ConfigureLatestWhatsAppWebVersion(waVersionCtx); err != nil {
-		ilog.Warnf("failed to refresh WhatsApp Web version, keeping bundled %s: %v", applied.String(), err)
-	} else if previous != applied {
-		ilog.Infof("updated WhatsApp Web version from %s to %s", previous.String(), applied.String())
-	} else {
-		ilog.Infof("using WhatsApp Web version %s", applied.String())
-	}
+	provider.SetDefaultProxyConfig(provider.ProxyConfig{
+		Protocol: cfg.ProxyProtocol,
+		Host:     cfg.ProxyHost,
+		Port:     cfg.ProxyPort,
+		Username: cfg.ProxyUsername,
+		Password: cfg.ProxyPassword,
+	})
 
 	// Init status writer (in-memory + optional Redis mirror)
 	status.Init(cfg.RedisURL, cfg.StatusPrefix)
@@ -52,6 +49,11 @@ func main() {
 		RejectMessage:         cfg.RejectCallsMessage,
 		AutoMarkRead:          cfg.AutoMarkReadOnMessage,
 		PNResolverURL:         cfg.PNResolverURL,
+		ProxyProtocol:         cfg.ProxyProtocol,
+		ProxyHost:             cfg.ProxyHost,
+		ProxyPort:             cfg.ProxyPort,
+		ProxyUsername:         cfg.ProxyUsername,
+		ProxyPassword:         cfg.ProxyPassword,
 		IgnoreStatusBroadcast: cfg.IgnoreStatusBroadcast,
 		IgnoreNewsletters:     cfg.IgnoreNewsletters,
 		OutgoingMessagesCoex:  cfg.OutgoingMessagesCoex,
@@ -94,7 +96,7 @@ func main() {
 
 	// Ensure the exchange and durable queue exist so that publishers can
 	// send messages even if the adapter is temporarily offline.
-	if err := amqpconsumer.InitExchange(cfg); err != nil {
+	if err := initAMQPExchangeWithRetry(cfg); err != nil {
 		ilog.Errorf("failed to initialize AMQP exchange: %v", err)
 		if cfg.AMQPConsumerEnabled {
 			os.Exit(1)
@@ -172,4 +174,27 @@ func main() {
 	if err := srv.Shutdown(context.Background()); err != nil {
 		ilog.Errorf("failed to shutdown HTTP server: %v", err)
 	}
+}
+
+func initAMQPExchangeWithRetry(cfg *config.Config) error {
+	const attempts = 30
+	const delay = 2 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := amqpconsumer.InitExchange(cfg); err != nil {
+			lastErr = err
+			if cfg == nil || !cfg.AMQPConsumerEnabled {
+				return err
+			}
+			ilog.Warnf("AMQP exchange initialization failed attempt=%d/%d err=%v", attempt, attempts, err)
+			time.Sleep(delay)
+			continue
+		}
+		if attempt > 1 {
+			ilog.Infof("AMQP exchange initialized after %d attempt(s)", attempt)
+		}
+		return nil
+	}
+	return lastErr
 }

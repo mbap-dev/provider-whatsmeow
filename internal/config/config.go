@@ -59,6 +59,14 @@ type Config struct {
 	// PNResolverURL: optional HTTP endpoint to resolve an MSISDN to the correct WA PN (digits)
 	PNResolverURL string
 
+	// Proxy configuration for WhatsApp websocket/media HTTP calls. Per-session
+	// overrides may replace these values.
+	ProxyProtocol string
+	ProxyHost     string
+	ProxyPort     string
+	ProxyUsername string
+	ProxyPassword string
+
 	// RedisURL points to an optional Redis instance used by status/config.
 	// Example: redis://user:pass@localhost:6379/0
 	RedisURL string
@@ -173,6 +181,12 @@ func NewConfig() *Config {
 
 	// Mark chat as read automatically on inbound messages (default: false)
 	cfg.AutoMarkReadOnMessage = getEnvBool("MARK_READ_ON_MESSAGE", false)
+
+	cfg.ProxyProtocol = getEnv("PROXY_PROTOCOL", "")
+	cfg.ProxyHost = getEnv("PROXY_HOST", "")
+	cfg.ProxyPort = getEnv("PROXY_PORT", "")
+	cfg.ProxyUsername = getEnv("PROXY_USERNAME", "")
+	cfg.ProxyPassword = getEnv("PROXY_PASSWORD", "")
 
 	// Optional Redis for distributed status/config
 	cfg.RedisURL = getEnv("REDIS_URL", "")

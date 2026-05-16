@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	ilog "your.org/provider-whatsmeow/internal/log"
 )
 
 // SessionConfigValues represents the effective configuration used by a session.
@@ -18,6 +20,12 @@ type SessionConfigValues struct {
 	OutgoingMessagesCoex        bool   `json:"outgoing_messages_coex"`
 	AlwaysOnline                bool   `json:"always_online"`
 	AlwaysOnlineIntervalSeconds int    `json:"always_online_interval_seconds"`
+	ProxyEnabled                bool   `json:"proxy_enabled"`
+	ProxyProtocol               string `json:"proxy_protocol"`
+	ProxyHost                   string `json:"proxy_host"`
+	ProxyPort                   string `json:"proxy_port"`
+	ProxyUsername               string `json:"proxy_username"`
+	ProxyPassword               string `json:"proxy_password"`
 }
 
 // SessionConfigPatch contains mutable per-session options.
@@ -31,6 +39,12 @@ type SessionConfigPatch struct {
 	OutgoingMessagesCoex        *bool   `json:"outgoing_messages_coex,omitempty"`
 	AlwaysOnline                *bool   `json:"always_online,omitempty"`
 	AlwaysOnlineIntervalSeconds *int    `json:"always_online_interval_seconds,omitempty"`
+	ProxyEnabled                *bool   `json:"proxy_enabled,omitempty"`
+	ProxyProtocol               *string `json:"proxy_protocol,omitempty"`
+	ProxyHost                   *string `json:"proxy_host,omitempty"`
+	ProxyPort                   *string `json:"proxy_port,omitempty"`
+	ProxyUsername               *string `json:"proxy_username,omitempty"`
+	ProxyPassword               *string `json:"proxy_password,omitempty"`
 }
 
 // SessionConfigSnapshot is returned by the session config API.
@@ -49,7 +63,57 @@ func (p SessionConfigPatch) hasChanges() bool {
 		p.IgnoreNewsletters != nil ||
 		p.OutgoingMessagesCoex != nil ||
 		p.AlwaysOnline != nil ||
-		p.AlwaysOnlineIntervalSeconds != nil
+		p.AlwaysOnlineIntervalSeconds != nil ||
+		p.ProxyEnabled != nil ||
+		p.ProxyProtocol != nil ||
+		p.ProxyHost != nil ||
+		p.ProxyPort != nil ||
+		p.ProxyUsername != nil ||
+		p.ProxyPassword != nil
+}
+
+func (p SessionConfigPatch) hasProxyChanges() bool {
+	return p.ProxyEnabled != nil ||
+		p.ProxyProtocol != nil ||
+		p.ProxyHost != nil ||
+		p.ProxyPort != nil ||
+		p.ProxyUsername != nil ||
+		p.ProxyPassword != nil
+}
+
+func validateProxyPatch(fallback ProxyConfig, patch SessionConfigPatch) error {
+	if !patch.hasProxyChanges() {
+		return nil
+	}
+	enabled := fallback.Enabled
+	if patch.ProxyEnabled != nil {
+		enabled = *patch.ProxyEnabled
+	}
+	host := fallback.Host
+	port := fallback.Port
+	protocol := fallback.Protocol
+	if patch.ProxyHost != nil {
+		host = strings.TrimSpace(*patch.ProxyHost)
+	}
+	if patch.ProxyPort != nil {
+		port = strings.TrimSpace(*patch.ProxyPort)
+	}
+	if patch.ProxyProtocol != nil {
+		protocol = strings.TrimSpace(*patch.ProxyProtocol)
+	}
+	if !enabled {
+		return nil
+	}
+	if strings.TrimSpace(host) == "" {
+		return errors.New("proxy_host is required when proxy is enabled")
+	}
+	if strings.TrimSpace(port) == "" {
+		return errors.New("proxy_port is required when proxy is enabled")
+	}
+	if _, err := buildProxyAddress(protocol, host, port, "", ""); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *ClientManager) GetSessionConfig(sessionID string) (SessionConfigSnapshot, error) {
@@ -78,6 +142,10 @@ func (m *ClientManager) UpdateSessionConfig(sessionID string, patch SessionConfi
 	if patch.AlwaysOnlineIntervalSeconds != nil && *patch.AlwaysOnlineIntervalSeconds <= 0 {
 		return SessionConfigSnapshot{}, errors.New("always_online_interval_seconds must be > 0")
 	}
+	proxyChanged := patch.hasProxyChanges()
+	if err := validateProxyPatch(m.proxyDefault, patch); err != nil {
+		return SessionConfigSnapshot{}, err
+	}
 
 	m.overridesMu.Lock()
 	prev, existed := m.overrides[sid]
@@ -98,6 +166,9 @@ func (m *ClientManager) UpdateSessionConfig(sessionID string, patch SessionConfi
 	}
 
 	m.refreshAlwaysOnlineForSession(sid)
+	if proxyChanged {
+		m.reloadActiveSessionAsync(sid)
+	}
 	return m.GetSessionConfig(sid)
 }
 
@@ -124,12 +195,16 @@ func (m *ClientManager) ClearSessionConfig(sessionID string) (bool, SessionConfi
 	}
 
 	m.refreshAlwaysOnlineForSession(sid)
+	if existed {
+		m.reloadActiveSessionAsync(sid)
+	}
 	snapshot, err := m.GetSessionConfig(sid)
 	return existed, snapshot, err
 }
 
 func (m *ClientManager) effectiveSessionConfig(sessionID string) SessionConfigValues {
 	alwaysOnline, interval := m.getAlwaysOnlineConfig(sessionID)
+	proxyCfg := m.getProxyConfig(sessionID)
 	return SessionConfigValues{
 		RejectCalls:                 m.getRejectCalls(sessionID),
 		RejectCallsMessage:          m.getRejectMsg(sessionID),
@@ -139,6 +214,12 @@ func (m *ClientManager) effectiveSessionConfig(sessionID string) SessionConfigVa
 		OutgoingMessagesCoex:        m.getOutgoingMessagesCoex(sessionID),
 		AlwaysOnline:                alwaysOnline,
 		AlwaysOnlineIntervalSeconds: int(interval / time.Second),
+		ProxyEnabled:                proxyCfg.Enabled,
+		ProxyProtocol:               proxyCfg.Protocol,
+		ProxyHost:                   proxyCfg.Host,
+		ProxyPort:                   proxyCfg.Port,
+		ProxyUsername:               proxyCfg.Username,
+		ProxyPassword:               proxyCfg.Password,
 	}
 }
 
@@ -157,6 +238,12 @@ func (m *ClientManager) sessionOverridePatch(sessionID string) (SessionConfigPat
 		IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
 		OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
 		AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
+		ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
+		ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
+		ProxyHost:             cloneStringPtr(ov.proxyHost),
+		ProxyPort:             cloneStringPtr(ov.proxyPort),
+		ProxyUsername:         cloneStringPtr(ov.proxyUsername),
+		ProxyPassword:         cloneStringPtr(ov.proxyPassword),
 	}
 	if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
 		secs := int((*ov.alwaysOnlineEvery) / time.Second)
@@ -201,6 +288,30 @@ func applySessionConfigPatch(ov *sessionOverrides, patch SessionConfigPatch) {
 		d := time.Duration(*patch.AlwaysOnlineIntervalSeconds) * time.Second
 		ov.alwaysOnlineEvery = &d
 	}
+	if patch.ProxyEnabled != nil {
+		v := *patch.ProxyEnabled
+		ov.proxyEnabled = &v
+	}
+	if patch.ProxyProtocol != nil {
+		v := strings.TrimSpace(*patch.ProxyProtocol)
+		ov.proxyProtocol = &v
+	}
+	if patch.ProxyHost != nil {
+		v := strings.TrimSpace(*patch.ProxyHost)
+		ov.proxyHost = &v
+	}
+	if patch.ProxyPort != nil {
+		v := strings.TrimSpace(*patch.ProxyPort)
+		ov.proxyPort = &v
+	}
+	if patch.ProxyUsername != nil {
+		v := strings.TrimSpace(*patch.ProxyUsername)
+		ov.proxyUsername = &v
+	}
+	if patch.ProxyPassword != nil {
+		v := *patch.ProxyPassword
+		ov.proxyPassword = &v
+	}
 }
 
 func cloneSessionOverrides(in sessionOverrides) sessionOverrides {
@@ -212,6 +323,12 @@ func cloneSessionOverrides(in sessionOverrides) sessionOverrides {
 		ignoreNewsletters:     cloneBoolPtr(in.ignoreNewsletters),
 		outgoingMessagesCoex:  cloneBoolPtr(in.outgoingMessagesCoex),
 		alwaysOnline:          cloneBoolPtr(in.alwaysOnline),
+		proxyEnabled:          cloneBoolPtr(in.proxyEnabled),
+		proxyProtocol:         cloneStringPtr(in.proxyProtocol),
+		proxyHost:             cloneStringPtr(in.proxyHost),
+		proxyPort:             cloneStringPtr(in.proxyPort),
+		proxyUsername:         cloneStringPtr(in.proxyUsername),
+		proxyPassword:         cloneStringPtr(in.proxyPassword),
 	}
 	if in.alwaysOnlineEvery != nil {
 		v := *in.alwaysOnlineEvery
@@ -251,6 +368,20 @@ func (m *ClientManager) refreshAlwaysOnlineForSession(sessionID string) {
 	m.stopAlwaysOnline(sessionID)
 }
 
+func (m *ClientManager) reloadActiveSessionAsync(sessionID string) {
+	m.mu.RLock()
+	_, active := m.clients[sessionID]
+	m.mu.RUnlock()
+	if !active {
+		return
+	}
+	go func() {
+		if err := m.Reload(sessionID); err != nil {
+			ilog.WithSession(sessionID).Error("proxy config reload failed err=%v", err)
+		}
+	}()
+}
+
 func (m *ClientManager) getAlwaysOnlineConfig(sessionID string) (bool, time.Duration) {
 	alwaysOnline := m.alwaysOnline
 	interval := m.alwaysOnlineEvery
@@ -284,6 +415,12 @@ type sessionOverridePayload struct {
 	OutgoingMessagesCoex        *bool   `json:"outgoing_messages_coex,omitempty"`
 	AlwaysOnline                *bool   `json:"always_online,omitempty"`
 	AlwaysOnlineIntervalSeconds *int    `json:"always_online_interval_seconds,omitempty"`
+	ProxyEnabled                *bool   `json:"proxy_enabled,omitempty"`
+	ProxyProtocol               *string `json:"proxy_protocol,omitempty"`
+	ProxyHost                   *string `json:"proxy_host,omitempty"`
+	ProxyPort                   *string `json:"proxy_port,omitempty"`
+	ProxyUsername               *string `json:"proxy_username,omitempty"`
+	ProxyPassword               *string `json:"proxy_password,omitempty"`
 }
 
 func loadSessionOverrideState(path, workerID string) (map[string]sessionOverrides, error) {
@@ -319,6 +456,12 @@ func loadSessionOverrideState(path, workerID string) (map[string]sessionOverride
 			ignoreNewsletters:     cloneBoolPtr(raw.IgnoreNewsletters),
 			outgoingMessagesCoex:  cloneBoolPtr(raw.OutgoingMessagesCoex),
 			alwaysOnline:          cloneBoolPtr(raw.AlwaysOnline),
+			proxyEnabled:          cloneBoolPtr(raw.ProxyEnabled),
+			proxyProtocol:         cloneStringPtr(raw.ProxyProtocol),
+			proxyHost:             cloneStringPtr(raw.ProxyHost),
+			proxyPort:             cloneStringPtr(raw.ProxyPort),
+			proxyUsername:         cloneStringPtr(raw.ProxyUsername),
+			proxyPassword:         cloneStringPtr(raw.ProxyPassword),
 		}
 		if raw.AlwaysOnlineIntervalSeconds != nil && *raw.AlwaysOnlineIntervalSeconds > 0 {
 			d := time.Duration(*raw.AlwaysOnlineIntervalSeconds) * time.Second
@@ -354,6 +497,12 @@ func saveSessionOverrideState(path, workerID string, overrides map[string]sessio
 			IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
 			OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
 			AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
+			ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
+			ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
+			ProxyHost:             cloneStringPtr(ov.proxyHost),
+			ProxyPort:             cloneStringPtr(ov.proxyPort),
+			ProxyUsername:         cloneStringPtr(ov.proxyUsername),
+			ProxyPassword:         cloneStringPtr(ov.proxyPassword),
 		}
 		if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
 			secs := int((*ov.alwaysOnlineEvery) / time.Second)

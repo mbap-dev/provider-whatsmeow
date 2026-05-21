@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -13,11 +14,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"your.org/provider-whatsmeow/internal/log"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	goE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -107,6 +110,60 @@ type InteractiveContent struct {
 	Action *InteractiveAction `json:"action,omitempty"`
 }
 
+type PaymentAmount struct {
+	Value  int64 `json:"value"`
+	Offset int64 `json:"offset"`
+}
+
+type PaymentOrderItem struct {
+	RetailerID string        `json:"retailer_id,omitempty"`
+	Name       string        `json:"name"`
+	Amount     PaymentAmount `json:"amount"`
+	Quantity   int64         `json:"quantity"`
+}
+
+type PaymentOrderTax struct {
+	Value       int64  `json:"value"`
+	Offset      int64  `json:"offset"`
+	Description string `json:"description,omitempty"`
+}
+
+type PaymentOrder struct {
+	Status   string             `json:"status,omitempty"`
+	Items    []PaymentOrderItem `json:"items,omitempty"`
+	Subtotal PaymentAmount      `json:"subtotal"`
+	Tax      *PaymentOrderTax   `json:"tax,omitempty"`
+	Discount *PaymentOrderTax   `json:"discount,omitempty"`
+	Shipping *PaymentOrderTax   `json:"shipping,omitempty"`
+}
+
+type PIXStaticCodeInfo struct {
+	MerchantName string `json:"merchant_name"`
+	Key          string `json:"key"`
+	KeyType      string `json:"key_type"`
+}
+
+type BoletoInfo struct {
+	DigitableLine string `json:"digitable_line"`
+}
+
+type PaymentContent struct {
+	ReferenceID        string             `json:"reference_id,omitempty"`
+	Currency           string             `json:"currency,omitempty"`
+	Type               string             `json:"type,omitempty"`
+	PaymentType        string             `json:"payment_type,omitempty"`
+	Body               string             `json:"body,omitempty"`
+	HeaderDocument     *DocumentContent   `json:"header_document,omitempty"`
+	TotalAmount        PaymentAmount      `json:"total_amount"`
+	Order              *PaymentOrder      `json:"order,omitempty"`
+	ItemName           string             `json:"item_name,omitempty"`
+	Quantity           int64              `json:"quantity,omitempty"`
+	PIXStaticCode      *PIXStaticCodeInfo `json:"pix_static_code,omitempty"`
+	Boleto             *BoletoInfo        `json:"boleto,omitempty"`
+	SharePaymentStatus bool               `json:"share_payment_status,omitempty"`
+	Referral           string             `json:"referral,omitempty"`
+}
+
 // Contacts payload (Cloud-compatible)
 type ContactName struct {
 	FormattedName string `json:"formatted_name"`
@@ -146,6 +203,8 @@ type OutgoingMessage struct {
 	Audio            *AudioContent       `json:"audio,omitempty"`
 	Sticker          *StickerContent     `json:"sticker,omitempty"`
 	Interactive      *InteractiveContent `json:"interactive,omitempty"`
+	Payment          *PaymentContent     `json:"payment,omitempty"`
+	OrderDetails     *PaymentContent     `json:"order_details,omitempty"`
 	Contacts         []ContactEntry      `json:"contacts,omitempty"`
 	MediaURL         string              `json:"media_url,omitempty"`
 	Caption          string              `json:"caption,omitempty"`
@@ -174,11 +233,29 @@ func marshalForLog(m proto.Message) string {
 	return s
 }
 
+func sendWithExtra(ctx context.Context, cli *whatsmeow.Client, jid types.JID, msg *goE2E.Message, id string, extra *whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error) {
+	if extra == nil {
+		return sendWithID(ctx, cli, jid, msg, id)
+	}
+	req := *extra
+	if strings.TrimSpace(id) != "" {
+		req.ID = types.MessageID(id)
+	}
+	return cli.SendMessage(ctx, jid, msg, req)
+}
+
 func sendWithID(ctx context.Context, cli *whatsmeow.Client, jid types.JID, msg *goE2E.Message, id string) (whatsmeow.SendResponse, error) {
 	if strings.TrimSpace(id) != "" {
 		return cli.SendMessage(ctx, jid, msg, whatsmeow.SendRequestExtra{ID: types.MessageID(id)})
 	}
 	return cli.SendMessage(ctx, jid, msg)
+}
+
+func (m OutgoingMessage) paymentContent() *PaymentContent {
+	if m.Payment != nil {
+		return m.Payment
+	}
+	return m.OrderDetails
 }
 
 // Send envia a mensagem; sessão vem do contexto (routing key) ou do payload.
@@ -898,9 +975,362 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return fmt.Errorf("unsupported interactive type: %s", msg.Interactive.Type)
 		}
 
+	case "payment", "order_details":
+		payment := msg.paymentContent()
+		if payment == nil {
+			return fmt.Errorf("%s requires a payment payload", strings.ToLower(strings.TrimSpace(msg.Type)))
+		}
+		entry.Debug(
+			"payment_input reference_id=%q body_len=%d has_header_document=%t has_pix=%t has_boleto=%t",
+			strings.TrimSpace(payment.ReferenceID),
+			len(strings.TrimSpace(payment.Body)),
+			payment.HeaderDocument != nil,
+			payment.PIXStaticCode != nil,
+			payment.Boleto != nil,
+		)
+
+		var headerDoc *goE2E.DocumentMessage
+		if payment.HeaderDocument != nil {
+			var err error
+			headerDoc, err = m.buildPaymentHeaderDocument(ctx, cli, sessionID, payment.HeaderDocument)
+			if err != nil {
+				return err
+			}
+		}
+
+		wire, sendExtra, err := buildOrderDetailsMessage(payment, headerDoc, ctxInfo)
+		if err != nil {
+			return err
+		}
+		entry.Debug("payment_transport=interactive_native_flow native_flow_name=order_details")
+		entry.Debug("wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithExtra(ctx, cli, jid, wire, msg.MessageID, sendExtra)
+		if err != nil {
+			entry.Error("send payment failed: %v", err)
+			return err
+		}
+		entry.Info("payment sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+		return m.emitCloudSent(sessionID, jid, resp.ID)
+
 	default:
 		return fmt.Errorf("unsupported message type: %s", msg.Type)
 	}
+}
+
+func (m *ClientManager) buildPaymentHeaderDocument(ctx context.Context, cli *whatsmeow.Client, sessionID string, in *DocumentContent) (*goE2E.DocumentMessage, error) {
+	if in == nil {
+		return nil, nil
+	}
+
+	link := strings.TrimSpace(in.Link)
+	mediaID := strings.TrimSpace(in.ID)
+	filename := strings.TrimSpace(in.FileName)
+
+	var data []byte
+	if link == "" && mediaID != "" {
+		stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load payment header document id %q: %w", mediaID, err)
+		}
+		data = stored
+		if filename == "" {
+			filename = strings.TrimSpace(meta.Filename)
+		}
+	} else {
+		if link == "" {
+			return nil, fmt.Errorf("payment header_document requires a link or id")
+		}
+		var err error
+		data, _, err = downloadBytes(ctx, link)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download payment header document: %w", err)
+		}
+	}
+
+	if filename == "" {
+		filename = documentFilenameFromLink(link, mediaID)
+	}
+	if filename == "" {
+		filename = "boleto.pdf"
+	}
+
+	uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return nil, fmt.Errorf("payment header document upload failed: %w", err)
+	}
+
+	return &goE2E.DocumentMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Mimetype:      proto.String("application/pdf"),
+		Title:         proto.String(filename),
+		FileName:      proto.String(filename),
+	}, nil
+}
+
+func buildOrderDetailsMessage(in *PaymentContent, headerDoc *goE2E.DocumentMessage, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, *whatsmeow.SendRequestExtra, error) {
+	if in == nil {
+		return nil, nil, fmt.Errorf("missing payment payload")
+	}
+
+	params, err := normalizePaymentContent(in)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	paymentSettings, err := buildPaymentSettings(params)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	payload := map[string]any{
+		"reference_id":         params.ReferenceID,
+		"type":                 params.Type,
+		"payment_type":         params.PaymentType,
+		"currency":             params.Currency,
+		"total_amount":         params.TotalAmount,
+		"order":                params.Order,
+		"payment_settings":     paymentSettings,
+		"share_payment_status": params.SharePaymentStatus,
+		"referral":             params.Referral,
+	}
+	buttonParamsJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal order_details payload: %w", err)
+	}
+
+	messageSecret := make([]byte, 32)
+	if _, err := rand.Read(messageSecret); err != nil {
+		return nil, nil, fmt.Errorf("generate order_details message secret: %w", err)
+	}
+
+	interactiveMsg := &goE2E.InteractiveMessage{
+		Body: &goE2E.InteractiveMessage_Body{
+			Text: proto.String(params.Body),
+		},
+		InteractiveMessage: &goE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &goE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons: []*goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+					{
+						Name:             proto.String("review_and_pay"),
+						ButtonParamsJSON: proto.String(string(buttonParamsJSON)),
+					},
+				},
+			},
+		},
+		ContextInfo: ctxInfo,
+	}
+	if headerDoc != nil {
+		interactiveMsg.Header = &goE2E.InteractiveMessage_Header{
+			HasMediaAttachment: proto.Bool(true),
+			Media: &goE2E.InteractiveMessage_Header_DocumentMessage{
+				DocumentMessage: headerDoc,
+			},
+		}
+	}
+
+	bizNodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Attrs: waBinary.Attrs{
+				"native_flow_name": "order_details",
+			},
+		},
+	}
+
+	return &goE2E.Message{
+			MessageContextInfo: &goE2E.MessageContextInfo{
+				MessageSecret: messageSecret,
+			},
+			InteractiveMessage: interactiveMsg,
+		}, &whatsmeow.SendRequestExtra{
+			AdditionalNodes: &bizNodes,
+		}, nil
+}
+
+func normalizePaymentContent(in *PaymentContent) (*PaymentContent, error) {
+	out := *in
+	out.ReferenceID = strings.TrimSpace(out.ReferenceID)
+	out.Currency = strings.TrimSpace(out.Currency)
+	out.Type = strings.TrimSpace(out.Type)
+	out.PaymentType = strings.TrimSpace(out.PaymentType)
+	out.Body = strings.TrimSpace(out.Body)
+	out.ItemName = strings.TrimSpace(out.ItemName)
+	out.Referral = strings.TrimSpace(out.Referral)
+	if out.HeaderDocument != nil {
+		docCopy := *out.HeaderDocument
+		docCopy.Link = strings.TrimSpace(docCopy.Link)
+		docCopy.ID = strings.TrimSpace(docCopy.ID)
+		docCopy.FileName = strings.TrimSpace(docCopy.FileName)
+		out.HeaderDocument = &docCopy
+	}
+
+	if out.TotalAmount.Value <= 0 {
+		return nil, fmt.Errorf("payment requires total_amount.value > 0")
+	}
+	if out.TotalAmount.Offset <= 0 {
+		out.TotalAmount.Offset = 100
+	}
+	if out.ReferenceID == "" {
+		out.ReferenceID = fmt.Sprintf("ORDER-%d", time.Now().Unix())
+	}
+	if out.Currency == "" {
+		out.Currency = "BRL"
+	}
+	if out.Type == "" {
+		out.Type = "physical-goods"
+	}
+	if out.PaymentType == "" {
+		out.PaymentType = "br"
+	}
+	if out.Body == "" {
+		out.Body = "Segue a cobrança. Você pode pagar pelo botão abaixo."
+	}
+	if out.Referral == "" {
+		out.Referral = "chat_attachment"
+	}
+
+	if out.Order != nil {
+		orderCopy := *out.Order
+		orderCopy.Status = strings.TrimSpace(orderCopy.Status)
+		items := make([]PaymentOrderItem, 0, len(orderCopy.Items))
+		for _, item := range orderCopy.Items {
+			item.Name = strings.TrimSpace(item.Name)
+			item.RetailerID = strings.TrimSpace(item.RetailerID)
+			if item.Name == "" {
+				continue
+			}
+			if item.Quantity <= 0 {
+				item.Quantity = 1
+			}
+			if item.Amount.Value <= 0 {
+				item.Amount = out.TotalAmount
+			}
+			if item.Amount.Offset <= 0 {
+				item.Amount.Offset = out.TotalAmount.Offset
+			}
+			items = append(items, item)
+		}
+		orderCopy.Items = items
+		if orderCopy.Status == "" {
+			orderCopy.Status = "pending"
+		}
+		if orderCopy.Subtotal.Value <= 0 {
+			orderCopy.Subtotal = out.TotalAmount
+		}
+		if orderCopy.Subtotal.Offset <= 0 {
+			orderCopy.Subtotal.Offset = out.TotalAmount.Offset
+		}
+		out.Order = &orderCopy
+	}
+
+	if out.Order == nil || len(out.Order.Items) == 0 {
+		itemName := out.ItemName
+		if itemName == "" {
+			itemName = "Cobrança"
+		}
+		quantity := out.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		out.Order = &PaymentOrder{
+			Status: "pending",
+			Items: []PaymentOrderItem{
+				{
+					Name:     itemName,
+					Amount:   out.TotalAmount,
+					Quantity: quantity,
+				},
+			},
+			Subtotal: out.TotalAmount,
+		}
+	}
+
+	return &out, nil
+}
+
+func buildPaymentSettings(in *PaymentContent) ([]any, error) {
+	settings := make([]any, 0, 2)
+	displayName := paymentDisplayName(in)
+
+	if in.PIXStaticCode != nil {
+		merchant := strings.TrimSpace(in.PIXStaticCode.MerchantName)
+		key := strings.TrimSpace(in.PIXStaticCode.Key)
+		keyType := strings.ToUpper(strings.TrimSpace(in.PIXStaticCode.KeyType))
+		if key == "" {
+			return nil, fmt.Errorf("payment pix_static_code requires key")
+		}
+		if merchant == "" {
+			merchant = displayName
+		}
+		if keyType == "" {
+			keyType = "EVP"
+		}
+		settings = append(settings, map[string]any{
+			"type": "pix_static_code",
+			"pix_static_code": map[string]string{
+				"merchant_name": merchant,
+				"key":           key,
+				"key_type":      keyType,
+			},
+		})
+	}
+
+	if in.Boleto != nil {
+		digitableLine := strings.TrimSpace(in.Boleto.DigitableLine)
+		if digitableLine == "" {
+			return nil, fmt.Errorf("payment boleto requires digitable_line")
+		}
+		settings = append(settings, map[string]any{
+			"type": "boleto",
+			"boleto": map[string]string{
+				"digitable_line": digitableLine,
+			},
+		})
+	}
+
+	if len(settings) == 0 {
+		return nil, fmt.Errorf("payment requires pix_static_code and/or boleto")
+	}
+	return settings, nil
+}
+
+func paymentDisplayName(in *PaymentContent) string {
+	if in == nil {
+		return "Cobrança"
+	}
+	if name := strings.TrimSpace(in.ItemName); name != "" {
+		return name
+	}
+	if in.Order != nil {
+		for _, item := range in.Order.Items {
+			if name := strings.TrimSpace(item.Name); name != "" {
+				return name
+			}
+		}
+	}
+	return "Cobrança"
+}
+
+func documentFilenameFromLink(link, fallback string) string {
+	link = strings.TrimSpace(link)
+	if link != "" {
+		parts := strings.Split(strings.TrimRight(link, "/"), "/")
+		if len(parts) > 0 {
+			name := strings.TrimSpace(parts[len(parts)-1])
+			if idx := strings.IndexByte(name, '?'); idx >= 0 {
+				name = name[:idx]
+			}
+			if name != "" {
+				return name
+			}
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func buildInteractiveButtonMessage(in *InteractiveContent, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {

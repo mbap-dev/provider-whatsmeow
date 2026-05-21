@@ -161,7 +161,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 			// 1) Tenta decodificar como Envelope (novo formato)
 			var env Envelope
-			if err := json.Unmarshal(d.Body, &env); err != nil || (env.Payload.Type == "" && env.Payload.Text == nil && env.Payload.Image == nil && env.Payload.Document == nil && env.Payload.Audio == nil && env.Payload.Sticker == nil) {
+			if err := json.Unmarshal(d.Body, &env); err != nil || (env.Payload.Type == "" && env.Payload.Text == nil && env.Payload.Image == nil && env.Payload.Document == nil && env.Payload.Audio == nil && env.Payload.Sticker == nil && env.Payload.Interactive == nil) {
 				// 2) Retrocompat: body antigo direto como OutgoingMessage
 				var legacy provider.OutgoingMessage
 				if err2 := json.Unmarshal(d.Body, &legacy); err2 != nil {

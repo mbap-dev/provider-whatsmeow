@@ -190,3 +190,26 @@ func TestExtractSendMentionAllFromTopLevelCamelCase(t *testing.T) {
 		t.Fatal("expected mentionAll top-level value to be accepted")
 	}
 }
+
+func TestDecodeOutgoingMessageBodyAcceptsSingleItemArray(t *testing.T) {
+	msg, err := decodeOutgoingMessageBody([]byte(`[
+		{
+			"type":"interactive",
+			"to":"5562933000233",
+			"interactive":{
+				"type":"list",
+				"body":{"text":"teste"},
+				"action":{"button":"Ver opções","sections":[{"title":"Opções","rows":[{"id":"1","title":"Aro 13"}]}]}
+			}
+		}
+	]`))
+	if err != nil {
+		t.Fatalf("decodeOutgoingMessageBody() error = %v", err)
+	}
+	if got := msg.Type; got != "interactive" {
+		t.Fatalf("type = %q", got)
+	}
+	if msg.Interactive == nil || msg.Interactive.Type != "list" {
+		t.Fatalf("interactive = %+v, want list", msg.Interactive)
+	}
+}

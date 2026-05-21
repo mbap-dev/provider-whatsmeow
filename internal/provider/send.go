@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -67,6 +68,45 @@ type StickerContent struct {
 	ID   string `json:"id,omitempty"`
 }
 
+type InteractiveText struct {
+	Text string `json:"text"`
+}
+
+type InteractiveReply struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type InteractiveButton struct {
+	Type  string           `json:"type"`
+	Reply InteractiveReply `json:"reply"`
+}
+
+type InteractiveRow struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+}
+
+type InteractiveSection struct {
+	Title string           `json:"title"`
+	Rows  []InteractiveRow `json:"rows"`
+}
+
+type InteractiveAction struct {
+	Button   string               `json:"button,omitempty"`
+	Buttons  []InteractiveButton  `json:"buttons,omitempty"`
+	Sections []InteractiveSection `json:"sections,omitempty"`
+}
+
+type InteractiveContent struct {
+	Type   string             `json:"type"`
+	Header *InteractiveText   `json:"header,omitempty"`
+	Body   *InteractiveText   `json:"body,omitempty"`
+	Footer *InteractiveText   `json:"footer,omitempty"`
+	Action *InteractiveAction `json:"action,omitempty"`
+}
+
 // Contacts payload (Cloud-compatible)
 type ContactName struct {
 	FormattedName string `json:"formatted_name"`
@@ -94,25 +134,27 @@ type MessageContext struct {
 }
 
 type OutgoingMessage struct {
-	MessagingProduct string           `json:"messaging_product,omitempty"`
-	Type             string           `json:"type"`
-	To               string           `json:"to"`
-	Body             string           `json:"body,omitempty"`
-	Text             *TextContent     `json:"text,omitempty"`
-	Image            *ImageContent    `json:"image,omitempty"`
-	Document         *DocumentContent `json:"document,omitempty"`
-	Video            *VideoContent    `json:"video,omitempty"`
-	Audio            *AudioContent    `json:"audio,omitempty"`
-	Sticker          *StickerContent  `json:"sticker,omitempty"`
-	Contacts         []ContactEntry   `json:"contacts,omitempty"`
-	MediaURL         string           `json:"media_url,omitempty"`
-	Caption          string           `json:"caption,omitempty"`
-	SessionID        string           `json:"session_id"`
-	MessageID        string           `json:"message_id,omitempty"`
-	Context          *MessageContext  `json:"context,omitempty"`
-	Mentions         []string         `json:"mentions,omitempty"`
-	MentionAll       bool             `json:"mention_all,omitempty"`
-	MentionAllCompat bool             `json:"mentionAll,omitempty"`
+	MessagingProduct string              `json:"messaging_product,omitempty"`
+	RecipientType    string              `json:"recipient_type,omitempty"`
+	Type             string              `json:"type"`
+	To               string              `json:"to"`
+	Body             string              `json:"body,omitempty"`
+	Text             *TextContent        `json:"text,omitempty"`
+	Image            *ImageContent       `json:"image,omitempty"`
+	Document         *DocumentContent    `json:"document,omitempty"`
+	Video            *VideoContent       `json:"video,omitempty"`
+	Audio            *AudioContent       `json:"audio,omitempty"`
+	Sticker          *StickerContent     `json:"sticker,omitempty"`
+	Interactive      *InteractiveContent `json:"interactive,omitempty"`
+	Contacts         []ContactEntry      `json:"contacts,omitempty"`
+	MediaURL         string              `json:"media_url,omitempty"`
+	Caption          string              `json:"caption,omitempty"`
+	SessionID        string              `json:"session_id"`
+	MessageID        string              `json:"message_id,omitempty"`
+	Context          *MessageContext     `json:"context,omitempty"`
+	Mentions         []string            `json:"mentions,omitempty"`
+	MentionAll       bool                `json:"mention_all,omitempty"`
+	MentionAllCompat bool                `json:"mentionAll,omitempty"`
 }
 
 // marshalForLog pretty-prints a proto message for logging, truncating if too long.
@@ -820,9 +862,189 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		entry.Info("contacts sent to %s (wa_msg_id=%s) count=%d", jid.String(), resp.ID, len(contactMsgs))
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
+	case "interactive":
+		if msg.Interactive == nil {
+			return fmt.Errorf("interactive requires an interactive payload")
+		}
+		switch strings.ToLower(strings.TrimSpace(msg.Interactive.Type)) {
+		case "button":
+			wire, err := buildInteractiveButtonMessage(msg.Interactive, ctxInfo)
+			if err != nil {
+				return err
+			}
+			entry.Debug("wire_payload=%s", marshalForLog(wire))
+			resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+			if err != nil {
+				entry.Error("send interactive button failed: %v", err)
+				return err
+			}
+			entry.Info("interactive button sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+			return m.emitCloudSent(sessionID, jid, resp.ID)
+		case "list":
+			wire, err := buildInteractiveListMessage(msg.Interactive, ctxInfo)
+			if err != nil {
+				return err
+			}
+			entry.Debug("interactive_list_transport=legacy_list_message biz_node_type=product_list")
+			entry.Debug("wire_payload=%s", marshalForLog(wire))
+			resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+			if err != nil {
+				entry.Error("send interactive list failed: %v", err)
+				return err
+			}
+			entry.Info("interactive list sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+			return m.emitCloudSent(sessionID, jid, resp.ID)
+		default:
+			return fmt.Errorf("unsupported interactive type: %s", msg.Interactive.Type)
+		}
+
 	default:
 		return fmt.Errorf("unsupported message type: %s", msg.Type)
 	}
+}
+
+func buildInteractiveButtonMessage(in *InteractiveContent, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	if in == nil {
+		return nil, fmt.Errorf("missing interactive payload")
+	}
+	if in.Action == nil || len(in.Action.Buttons) == 0 {
+		return nil, fmt.Errorf("interactive button requires action.buttons")
+	}
+	if len(in.Action.Buttons) > 3 {
+		return nil, fmt.Errorf("interactive button supports at most 3 reply buttons")
+	}
+
+	body := interactiveTextValue(in.Body)
+	if body == "" {
+		return nil, fmt.Errorf("interactive button requires body.text")
+	}
+
+	buttons := make([]*goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton, 0, len(in.Action.Buttons))
+	for i, button := range in.Action.Buttons {
+		if strings.ToLower(strings.TrimSpace(button.Type)) != "reply" {
+			return nil, fmt.Errorf("unsupported interactive button type: %s", button.Type)
+		}
+		title := strings.TrimSpace(button.Reply.Title)
+		if title == "" {
+			return nil, fmt.Errorf("interactive button %d requires reply.title", i)
+		}
+		id := strings.TrimSpace(button.Reply.ID)
+		if id == "" {
+			id = title
+		}
+		params, err := json.Marshal(map[string]string{
+			"display_text": title,
+			"id":           id,
+		})
+		if err != nil {
+			return nil, err
+		}
+		buttons = append(buttons, &goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String("quick_reply"),
+			ButtonParamsJSON: proto.String(string(params)),
+		})
+	}
+
+	messageParamsJSON := `{"from":"api"}`
+	interactiveMsg := &goE2E.InteractiveMessage{
+		Body: &goE2E.InteractiveMessage_Body{
+			Text: proto.String(body),
+		},
+		InteractiveMessage: &goE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &goE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:           buttons,
+				MessageParamsJSON: proto.String(messageParamsJSON),
+				MessageVersion:    proto.Int32(1),
+			},
+		},
+		ContextInfo: ctxInfo,
+	}
+	if footer := interactiveTextValue(in.Footer); footer != "" {
+		interactiveMsg.Footer = &goE2E.InteractiveMessage_Footer{Text: proto.String(footer)}
+	}
+	if header := interactiveTextValue(in.Header); header != "" {
+		interactiveMsg.Header = &goE2E.InteractiveMessage_Header{
+			Title:              proto.String(header),
+			HasMediaAttachment: proto.Bool(false),
+		}
+	}
+	return &goE2E.Message{InteractiveMessage: interactiveMsg}, nil
+}
+
+func buildInteractiveListMessage(in *InteractiveContent, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	if in == nil {
+		return nil, fmt.Errorf("missing interactive payload")
+	}
+	if in.Action == nil || len(in.Action.Sections) == 0 {
+		return nil, fmt.Errorf("interactive list requires action.sections")
+	}
+
+	body := interactiveTextValue(in.Body)
+	if body == "" {
+		return nil, fmt.Errorf("interactive list requires body.text")
+	}
+	buttonText := strings.TrimSpace(in.Action.Button)
+	if buttonText == "" {
+		return nil, fmt.Errorf("interactive list requires action.button")
+	}
+
+	sections := make([]*goE2E.ListMessage_Section, 0, len(in.Action.Sections))
+	for sectionIndex, section := range in.Action.Sections {
+		if len(section.Rows) == 0 {
+			return nil, fmt.Errorf("interactive list section %d requires rows", sectionIndex)
+		}
+		sectionTitle := strings.TrimSpace(section.Title)
+		if sectionTitle == "" {
+			sectionTitle = " "
+		}
+		rows := make([]*goE2E.ListMessage_Row, 0, len(section.Rows))
+		for rowIndex, row := range section.Rows {
+			rowTitle := strings.TrimSpace(row.Title)
+			if rowTitle == "" {
+				return nil, fmt.Errorf("interactive list section %d row %d requires title", sectionIndex, rowIndex)
+			}
+			rowID := strings.TrimSpace(row.ID)
+			if rowID == "" {
+				rowID = fmt.Sprintf("row_%d_%d", sectionIndex, rowIndex)
+			}
+			rows = append(rows, &goE2E.ListMessage_Row{
+				Title:       proto.String(rowTitle),
+				Description: proto.String(strings.TrimSpace(row.Description)),
+				RowID:       proto.String(rowID),
+			})
+		}
+		sections = append(sections, &goE2E.ListMessage_Section{
+			Title: proto.String(sectionTitle),
+			Rows:  rows,
+		})
+	}
+
+	title := interactiveTextValue(in.Header)
+	if title == "" {
+		title = body
+	}
+	footer := interactiveTextValue(in.Footer)
+	if footer == "" {
+		footer = buttonText
+	}
+	listType := goE2E.ListMessage_SINGLE_SELECT
+	listMessage := &goE2E.ListMessage{
+		Title:       proto.String(title),
+		Description: proto.String(body),
+		ButtonText:  proto.String(buttonText),
+		FooterText:  proto.String(footer),
+		ListType:    &listType,
+		Sections:    sections,
+		ContextInfo: ctxInfo,
+	}
+	return &goE2E.Message{ListMessage: listMessage}, nil
+}
+
+func interactiveTextValue(text *InteractiveText) string {
+	if text == nil {
+		return ""
+	}
+	return strings.TrimSpace(text.Text)
 }
 
 func (m OutgoingMessage) wantsMentionAll() bool {

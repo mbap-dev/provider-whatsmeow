@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -537,14 +538,14 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	sessionID := mux.Vars(r)["id"]
-	var msg provider.OutgoingMessage
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	_ = r.Body.Close()
-	if err := json.Unmarshal(rawBody, &msg); err != nil {
+	msg, err := decodeOutgoingMessageBody(rawBody)
+	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
 		return
 	}
@@ -598,6 +599,21 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
+}
+
+func decodeOutgoingMessageBody(rawBody []byte) (provider.OutgoingMessage, error) {
+	var msg provider.OutgoingMessage
+	if err := json.Unmarshal(rawBody, &msg); err == nil {
+		return msg, nil
+	}
+	var batch []provider.OutgoingMessage
+	if err := json.Unmarshal(rawBody, &batch); err != nil {
+		return provider.OutgoingMessage{}, err
+	}
+	if len(batch) == 0 {
+		return provider.OutgoingMessage{}, fmt.Errorf("empty message array")
+	}
+	return batch[0], nil
 }
 
 func apiResponseMessageID(sessionID, messageID string) string {

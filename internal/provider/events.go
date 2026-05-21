@@ -447,6 +447,34 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 				}
 			}
 		}
+	case msg.GetButtonsResponseMessage() != nil:
+		if interactive := buildInboundButtonsResponsePayload(msg.GetButtonsResponseMessage()); interactive != nil {
+			wireMsg["type"] = "interactive"
+			wireMsg["interactive"] = interactive
+		} else {
+			return nil
+		}
+	case msg.GetTemplateButtonReplyMessage() != nil:
+		if interactive := buildInboundTemplateButtonReplyPayload(msg.GetTemplateButtonReplyMessage()); interactive != nil {
+			wireMsg["type"] = "interactive"
+			wireMsg["interactive"] = interactive
+		} else {
+			return nil
+		}
+	case msg.GetListResponseMessage() != nil:
+		if interactive := buildInboundListResponsePayload(msg.GetListResponseMessage()); interactive != nil {
+			wireMsg["type"] = "interactive"
+			wireMsg["interactive"] = interactive
+		} else {
+			return nil
+		}
+	case msg.GetInteractiveResponseMessage() != nil:
+		if interactive := buildInboundInteractiveResponsePayload(msg.GetInteractiveResponseMessage()); interactive != nil {
+			wireMsg["type"] = "interactive"
+			wireMsg["interactive"] = interactive
+		} else {
+			return nil
+		}
 	case msg.GetConversation() != "":
 		body := decorateMentionText(sessionID, client, msg.GetConversation(), msg)
 		wireMsg["type"] = "text"
@@ -1326,6 +1354,14 @@ func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 		return nil
 	}
 	switch {
+	case m.GetButtonsResponseMessage() != nil:
+		return m.GetButtonsResponseMessage().GetContextInfo()
+	case m.GetTemplateButtonReplyMessage() != nil:
+		return m.GetTemplateButtonReplyMessage().GetContextInfo()
+	case m.GetListResponseMessage() != nil:
+		return m.GetListResponseMessage().GetContextInfo()
+	case m.GetInteractiveResponseMessage() != nil:
+		return m.GetInteractiveResponseMessage().GetContextInfo()
 	case m.GetExtendedTextMessage() != nil:
 		return m.GetExtendedTextMessage().GetContextInfo()
 	case m.GetImageMessage() != nil:
@@ -1340,6 +1376,189 @@ func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 		return m.GetStickerMessage().GetContextInfo()
 	}
 	return nil
+}
+
+func buildInboundButtonsResponsePayload(in *waE2E.ButtonsResponseMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+	return buildInboundButtonReplyPayload(in.GetSelectedButtonID(), in.GetSelectedDisplayText(), nil)
+}
+
+func buildInboundTemplateButtonReplyPayload(in *waE2E.TemplateButtonReplyMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+	extra := map[string]any{}
+	if idx := in.GetSelectedIndex(); idx > 0 {
+		extra["index"] = idx
+	}
+	if idx := in.GetSelectedCarouselCardIndex(); idx > 0 {
+		extra["carousel_card_index"] = idx
+	}
+	return buildInboundButtonReplyPayload(in.GetSelectedID(), in.GetSelectedDisplayText(), extra)
+}
+
+func buildInboundListResponsePayload(in *waE2E.ListResponseMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+	selected := in.GetSingleSelectReply()
+	if selected == nil {
+		return nil
+	}
+	listReply := map[string]any{}
+	if id := strings.TrimSpace(selected.GetSelectedRowID()); id != "" {
+		listReply["id"] = id
+	}
+	if title := strings.TrimSpace(in.GetTitle()); title != "" {
+		listReply["title"] = title
+	}
+	if description := strings.TrimSpace(in.GetDescription()); description != "" {
+		listReply["description"] = description
+	}
+	if len(listReply) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"type":       "list_reply",
+		"list_reply": listReply,
+	}
+}
+
+func buildInboundInteractiveResponsePayload(in *waE2E.InteractiveResponseMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+
+	bodyText := strings.TrimSpace(in.GetBody().GetText())
+	native := in.GetNativeFlowResponseMessage()
+	if native == nil {
+		return nil
+	}
+
+	name := strings.TrimSpace(native.GetName())
+	paramsJSON := strings.TrimSpace(native.GetParamsJSON())
+	paramsMap := parseJSONObject(paramsJSON)
+
+	switch name {
+	case "quick_reply":
+		title := firstNonEmpty(
+			jsonObjectString(paramsMap, "title"),
+			jsonObjectString(paramsMap, "display_text"),
+			bodyText,
+		)
+		return buildInboundButtonReplyPayload(jsonObjectString(paramsMap, "id"), title, nil)
+	case "single_select":
+		return buildInboundListReplyPayload(
+			firstNonEmpty(
+				jsonObjectString(paramsMap, "id"),
+				jsonObjectString(paramsMap, "selected_row_id"),
+				jsonObjectString(paramsMap, "row_id"),
+			),
+			firstNonEmpty(
+				jsonObjectString(paramsMap, "title"),
+				jsonObjectString(paramsMap, "display_text"),
+				bodyText,
+			),
+			jsonObjectString(paramsMap, "description"),
+		)
+	}
+
+	nfmReply := map[string]any{}
+	if name != "" {
+		nfmReply["name"] = name
+	}
+	if bodyText != "" {
+		nfmReply["body"] = bodyText
+	}
+	if paramsMap != nil {
+		nfmReply["response_json"] = paramsMap
+	} else if paramsJSON != "" {
+		nfmReply["response_json"] = paramsJSON
+	}
+	if version := native.GetVersion(); version > 0 {
+		nfmReply["version"] = version
+	}
+	if len(nfmReply) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"type":      "nfm_reply",
+		"nfm_reply": nfmReply,
+	}
+}
+
+func buildInboundButtonReplyPayload(id, title string, extra map[string]any) map[string]any {
+	buttonReply := map[string]any{}
+	if id = strings.TrimSpace(id); id != "" {
+		buttonReply["id"] = id
+	}
+	if title = strings.TrimSpace(title); title != "" {
+		buttonReply["title"] = title
+	}
+	for key, value := range extra {
+		if value != nil {
+			buttonReply[key] = value
+		}
+	}
+	if len(buttonReply) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"type":         "button_reply",
+		"button_reply": buttonReply,
+	}
+}
+
+func buildInboundListReplyPayload(id, title, description string) map[string]any {
+	listReply := map[string]any{}
+	if id = strings.TrimSpace(id); id != "" {
+		listReply["id"] = id
+	}
+	if title = strings.TrimSpace(title); title != "" {
+		listReply["title"] = title
+	}
+	if description = strings.TrimSpace(description); description != "" {
+		listReply["description"] = description
+	}
+	if len(listReply) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"type":       "list_reply",
+		"list_reply": listReply,
+	}
+}
+
+func parseJSONObject(raw string) map[string]any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func jsonObjectString(in map[string]any, key string) string {
+	if in == nil {
+		return ""
+	}
+	value, ok := in[key]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }
 
 func messageContextInfo(sessionID string, cli *whatsmeow.Client, m *waE2E.Message, groupChat bool) map[string]any {

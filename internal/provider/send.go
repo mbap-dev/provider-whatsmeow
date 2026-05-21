@@ -949,8 +949,10 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			if err != nil {
 				return err
 			}
+			sendExtra := interactiveButtonSendExtra()
+			entry.Debug("interactive_button_transport=interactive_native_flow biz_node=interactive/native_flow name=mixed")
 			entry.Debug("wire_payload=%s", marshalForLog(wire))
-			resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+			resp, err := sendWithExtra(ctx, cli, jid, wire, msg.MessageID, sendExtra)
 			if err != nil {
 				entry.Error("send interactive button failed: %v", err)
 				return err
@@ -1375,7 +1377,7 @@ func buildInteractiveButtonMessage(in *InteractiveContent, ctxInfo *goE2E.Contex
 		})
 	}
 
-	messageParamsJSON := `{"from":"api"}`
+	messageParamsJSON := `{"from":"api","templateId":""}`
 	interactiveMsg := &goE2E.InteractiveMessage{
 		Body: &goE2E.InteractiveMessage_Body{
 			Text: proto.String(body),
@@ -1399,6 +1401,33 @@ func buildInteractiveButtonMessage(in *InteractiveContent, ctxInfo *goE2E.Contex
 		}
 	}
 	return &goE2E.Message{InteractiveMessage: interactiveMsg}, nil
+}
+
+func interactiveButtonSendExtra() *whatsmeow.SendRequestExtra {
+	nodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Content: []waBinary.Node{
+				{
+					Tag: "interactive",
+					Attrs: waBinary.Attrs{
+						"type": "native_flow",
+						"v":    "1",
+					},
+					Content: []waBinary.Node{
+						{
+							Tag: "native_flow",
+							Attrs: waBinary.Attrs{
+								"v":    "9",
+								"name": "mixed",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return &whatsmeow.SendRequestExtra{AdditionalNodes: &nodes}
 }
 
 func buildInteractiveListMessage(in *InteractiveContent, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {

@@ -213,3 +213,32 @@ func TestDecodeOutgoingMessageBodyAcceptsSingleItemArray(t *testing.T) {
 		t.Fatalf("interactive = %+v, want list", msg.Interactive)
 	}
 }
+
+func TestDecodeOutgoingMessageBodyAcceptsInteractiveButtonObject(t *testing.T) {
+	msg, err := decodeOutgoingMessageBody([]byte(`{
+		"messaging_product":"whatsapp",
+		"recipient_type":"individual",
+		"to":"5562933000233",
+		"type":"interactive",
+		"interactive":{
+			"type":"button",
+			"body":{"text":"Opção invalida, tente novamente."},
+			"action":{"buttons":[
+				{"type":"reply","reply":{"id":"option_1","title":"Sim"}},
+				{"type":"reply","reply":{"id":"option_2","title":"Não, pode encerrar."}}
+			]}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("decodeOutgoingMessageBody() error = %v", err)
+	}
+	if got := msg.Type; got != "interactive" {
+		t.Fatalf("type = %q", got)
+	}
+	if msg.Interactive == nil || msg.Interactive.Type != "button" {
+		t.Fatalf("interactive = %+v, want button", msg.Interactive)
+	}
+	if got := msg.Interactive.Action.Buttons[1].Reply.Title; got != "Não, pode encerrar." {
+		t.Fatalf("button title = %q", got)
+	}
+}

@@ -1478,23 +1478,19 @@ func buildInteractiveListMessage(in *InteractiveContent, ctxInfo *goE2E.ContextI
 		})
 	}
 
-	title := interactiveTextValue(in.Header)
-	if title == "" {
-		title = body
-	}
-	footer := interactiveTextValue(in.Footer)
-	if footer == "" {
-		footer = buttonText
-	}
 	listType := goE2E.ListMessage_SINGLE_SELECT
 	listMessage := &goE2E.ListMessage{
-		Title:       proto.String(title),
 		Description: proto.String(body),
 		ButtonText:  proto.String(buttonText),
-		FooterText:  proto.String(footer),
 		ListType:    &listType,
 		Sections:    sections,
 		ContextInfo: ctxInfo,
+	}
+	if title := interactiveTextValue(in.Header); title != "" {
+		listMessage.Title = proto.String(title)
+	}
+	if footer := interactiveTextValue(in.Footer); footer != "" {
+		listMessage.FooterText = proto.String(footer)
 	}
 	return &goE2E.Message{ListMessage: listMessage}, nil
 }

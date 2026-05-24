@@ -191,30 +191,31 @@ type MessageContext struct {
 }
 
 type OutgoingMessage struct {
-	MessagingProduct string              `json:"messaging_product,omitempty"`
-	RecipientType    string              `json:"recipient_type,omitempty"`
-	Type             string              `json:"type"`
-	To               string              `json:"to"`
-	Body             string              `json:"body,omitempty"`
-	Text             *TextContent        `json:"text,omitempty"`
-	Image            *ImageContent       `json:"image,omitempty"`
-	Document         *DocumentContent    `json:"document,omitempty"`
-	Video            *VideoContent       `json:"video,omitempty"`
-	Audio            *AudioContent       `json:"audio,omitempty"`
-	Sticker          *StickerContent     `json:"sticker,omitempty"`
-	Interactive      *InteractiveContent `json:"interactive,omitempty"`
-	Template         *TemplateContent    `json:"template,omitempty"`
-	Payment          *PaymentContent     `json:"payment,omitempty"`
-	OrderDetails     *PaymentContent     `json:"order_details,omitempty"`
-	Contacts         []ContactEntry      `json:"contacts,omitempty"`
-	MediaURL         string              `json:"media_url,omitempty"`
-	Caption          string              `json:"caption,omitempty"`
-	SessionID        string              `json:"session_id"`
-	MessageID        string              `json:"message_id,omitempty"`
-	Context          *MessageContext     `json:"context,omitempty"`
-	Mentions         []string            `json:"mentions,omitempty"`
-	MentionAll       bool                `json:"mention_all,omitempty"`
-	MentionAllCompat bool                `json:"mentionAll,omitempty"`
+	MessagingProduct       string              `json:"messaging_product,omitempty"`
+	RecipientType          string              `json:"recipient_type,omitempty"`
+	Type                   string              `json:"type"`
+	To                     string              `json:"to"`
+	Body                   string              `json:"body,omitempty"`
+	Text                   *TextContent        `json:"text,omitempty"`
+	Image                  *ImageContent       `json:"image,omitempty"`
+	Document               *DocumentContent    `json:"document,omitempty"`
+	Video                  *VideoContent       `json:"video,omitempty"`
+	Audio                  *AudioContent       `json:"audio,omitempty"`
+	Sticker                *StickerContent     `json:"sticker,omitempty"`
+	Interactive            *InteractiveContent `json:"interactive,omitempty"`
+	Template               *TemplateContent    `json:"template,omitempty"`
+	TemplateWebhookMessage bool                `json:"template_webhook_message,omitempty"`
+	Payment                *PaymentContent     `json:"payment,omitempty"`
+	OrderDetails           *PaymentContent     `json:"order_details,omitempty"`
+	Contacts               []ContactEntry      `json:"contacts,omitempty"`
+	MediaURL               string              `json:"media_url,omitempty"`
+	Caption                string              `json:"caption,omitempty"`
+	SessionID              string              `json:"session_id"`
+	MessageID              string              `json:"message_id,omitempty"`
+	Context                *MessageContext     `json:"context,omitempty"`
+	Mentions               []string            `json:"mentions,omitempty"`
+	MentionAll             bool                `json:"mention_all,omitempty"`
+	MentionAllCompat       bool                `json:"mentionAll,omitempty"`
 }
 
 // marshalForLog pretty-prints a proto message for logging, truncating if too long.
@@ -988,12 +989,17 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return err
 		}
 		entry.Debug("template_rendered_transport=interactive_message wire_payload=%s", marshalForLog(wire))
-		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+		resp, err := sendWithExtra(ctx, cli, jid, wire, msg.MessageID, templateSendExtra(rendered))
 		if err != nil {
 			entry.Error("send template failed: %v", err)
 			return err
 		}
 		entry.Info("template sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+		if msg.TemplateWebhookMessage {
+			if err := m.emitCloudOutgoingTemplateMessage(sessionID, cli, jid, resp.ID, rendered); err != nil {
+				return err
+			}
+		}
 		return m.emitCloudSent(sessionID, jid, resp.ID)
 
 	case "payment", "order_details":
@@ -1118,14 +1124,28 @@ func (m *ClientManager) buildStructuredTemplateMessage(ctx context.Context, cli 
 		Body: &goE2E.InteractiveMessage_Body{
 			Text: proto.String(strings.TrimSpace(rendered.Body)),
 		},
-		InteractiveMessage: &goE2E.InteractiveMessage_NativeFlowMessage_{
-			NativeFlowMessage: &goE2E.InteractiveMessage_NativeFlowMessage{
-				Buttons:           []*goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{},
-				MessageParamsJSON: proto.String(fmt.Sprintf(`{"from":"api","templateId":%d}`, time.Now().UnixMilli())),
-				MessageVersion:    proto.Int32(1),
-			},
-		},
 		ContextInfo: ctxInfo,
+	}
+	nativeFlow := &goE2E.InteractiveMessage_NativeFlowMessage{
+		Buttons:           []*goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{},
+		MessageParamsJSON: proto.String(fmt.Sprintf(`{"from":"api","templateId":%d}`, time.Now().UnixMilli())),
+		MessageVersion:    proto.Int32(1),
+	}
+	if len(rendered.OrderDetails) > 0 {
+		if err := validateTemplateOrderDetails(rendered.OrderDetails); err != nil {
+			return nil, err
+		}
+		orderDetailsJSON, err := json.Marshal(rendered.OrderDetails)
+		if err != nil {
+			return nil, fmt.Errorf("marshal template order_details: %w", err)
+		}
+		nativeFlow.Buttons = append(nativeFlow.Buttons, &goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{
+			Name:             proto.String("review_and_pay"),
+			ButtonParamsJSON: proto.String(string(orderDetailsJSON)),
+		})
+	}
+	interactiveMsg.InteractiveMessage = &goE2E.InteractiveMessage_NativeFlowMessage_{
+		NativeFlowMessage: nativeFlow,
 	}
 	if footer := strings.TrimSpace(rendered.Footer); footer != "" {
 		interactiveMsg.Footer = &goE2E.InteractiveMessage_Footer{
@@ -1174,12 +1194,61 @@ func (m *ClientManager) buildStructuredTemplateMessage(ctx context.Context, cli 
 		return nil, fmt.Errorf("unsupported template header type: %s", rendered.HeaderType)
 	}
 
-	return &goE2E.Message{
+	message := &goE2E.Message{
 		InteractiveMessage: interactiveMsg,
 		MessageContextInfo: &goE2E.MessageContextInfo{
 			DeviceListMetadata: &goE2E.DeviceListMetadata{},
 		},
-	}, nil
+	}
+	if len(rendered.OrderDetails) > 0 {
+		messageSecret := make([]byte, 32)
+		if _, err := rand.Read(messageSecret); err != nil {
+			return nil, fmt.Errorf("generate order_details message secret: %w", err)
+		}
+		message.MessageContextInfo.MessageSecret = messageSecret
+	}
+	return message, nil
+}
+
+func templateSendExtra(rendered *renderedTemplate) *whatsmeow.SendRequestExtra {
+	if rendered == nil || len(rendered.OrderDetails) == 0 {
+		return nil
+	}
+	bizNodes := []waBinary.Node{
+		{
+			Tag: "biz",
+			Attrs: waBinary.Attrs{
+				"native_flow_name": "order_details",
+			},
+		},
+	}
+	return &whatsmeow.SendRequestExtra{AdditionalNodes: &bizNodes}
+}
+
+func validateTemplateOrderDetails(orderDetails map[string]any) error {
+	if len(orderDetails) == 0 {
+		return nil
+	}
+	settings, ok := orderDetails["payment_settings"].([]any)
+	if !ok || len(settings) == 0 {
+		return fmt.Errorf("template order_details requires payment_settings with pix and/or boleto")
+	}
+	hasPaymentMethod := false
+	for _, raw := range settings {
+		setting, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		settingType := strings.ToLower(strings.TrimSpace(fmt.Sprint(setting["type"])))
+		switch settingType {
+		case "pix_static_code", "pix_dynamic_code", "boleto":
+			hasPaymentMethod = true
+		}
+	}
+	if !hasPaymentMethod {
+		return fmt.Errorf("template order_details requires pix_static_code, pix_dynamic_code and/or boleto")
+	}
+	return nil
 }
 
 func (m *ClientManager) buildButtonTemplateMessage(ctx context.Context, cli *whatsmeow.Client, sessionID string, rendered *renderedTemplate, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {

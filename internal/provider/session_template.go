@@ -1,12 +1,14 @@
 package provider
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -38,10 +40,17 @@ type TemplateParameter struct {
 	Text          string           `json:"text,omitempty"`
 	Image         *ImageContent    `json:"image,omitempty"`
 	Document      *DocumentContent `json:"document,omitempty"`
+	Action        *TemplateAction  `json:"action,omitempty"`
+}
+
+type TemplateAction struct {
+	OrderDetails map[string]any `json:"order_details,omitempty"`
 }
 
 type TemplateComponent struct {
 	Type       string              `json:"type"`
+	SubType    string              `json:"sub_type,omitempty"`
+	Index      any                 `json:"index,omitempty"`
 	Parameters []TemplateParameter `json:"parameters,omitempty"`
 }
 
@@ -60,6 +69,7 @@ type renderedTemplate struct {
 	Footer         string
 	HeaderImage    *ImageContent
 	HeaderDocument *DocumentContent
+	OrderDetails   map[string]any
 }
 
 func (m *ClientManager) ListSessionTemplates(sessionID string) []SessionTemplate {
@@ -186,6 +196,9 @@ func (m *ClientManager) renderTemplateMessage(sessionID string, in *TemplateCont
 	if out.HeaderType == "" && strings.TrimSpace(out.HeaderText) != "" {
 		out.HeaderType = "text"
 	}
+	if orderDetails := templateOrderDetails(in); len(orderDetails) > 0 {
+		out.OrderDetails = orderDetails
+	}
 	media := templateHeaderMedia(tpl, in)
 	switch out.HeaderType {
 	case "image":
@@ -200,6 +213,89 @@ func (m *ClientManager) renderTemplateMessage(sessionID string, in *TemplateCont
 		return nil, errors.New("rendered template body is empty")
 	}
 	return out, nil
+}
+
+func templateOrderDetails(in *TemplateContent) map[string]any {
+	if in == nil {
+		return nil
+	}
+	for _, component := range in.Components {
+		if !strings.EqualFold(strings.TrimSpace(component.Type), "button") {
+			continue
+		}
+		if subType := strings.TrimSpace(component.SubType); subType != "" && !strings.EqualFold(subType, "order_details") {
+			continue
+		}
+		for _, param := range component.Parameters {
+			if !strings.EqualFold(strings.TrimSpace(param.Type), "action") || param.Action == nil || len(param.Action.OrderDetails) == 0 {
+				continue
+			}
+			return normalizeTemplateOrderDetails(param.Action.OrderDetails)
+		}
+	}
+	return nil
+}
+
+func normalizeTemplateOrderDetails(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	normalized := normalizeTemplateOrderValue(in)
+	out, ok := normalized.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return out
+}
+
+func normalizeTemplateOrderValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			out[key] = normalizeTemplateOrderValueForKey(key, child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, child := range v {
+			out[i] = normalizeTemplateOrderValue(child)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func normalizeTemplateOrderValueForKey(key string, value any) any {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "value", "offset", "quantity":
+		if converted, ok := templateNumericValue(value); ok {
+			return converted
+		}
+	}
+	return normalizeTemplateOrderValue(value)
+}
+
+func templateNumericValue(value any) (int64, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		return n, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func (m *ClientManager) findSessionTemplate(sessionID, name, language string) (SessionTemplate, bool) {

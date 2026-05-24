@@ -750,6 +750,9 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	val := change["value"].(map[string]any)
 	val["contacts"] = []any{contactObj}
 	val["messages"] = []any{wireMsg}
+	if ownMessage && m.getOutgoingMessagesCoex(sessionID) {
+		convertCloudPayloadToOutgoingEchoes(payload)
+	}
 
 	log.WithSession(sessionID).WithMessageID(e.Info.ID).
 		Info("evt=message cloud payload ready field=messages type=%s", wireMsg["type"])
@@ -946,12 +949,82 @@ func (m *ClientManager) emitCloudOutgoingText(sessionID string, client *whatsmeo
 	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
 	val["contacts"] = []any{contactObj}
 	val["messages"] = []any{wireMsg}
+	if m.getOutgoingMessagesCoex(sessionID) {
+		convertCloudPayloadToOutgoingEchoes(payload)
+	}
 
 	log.WithSession(sessionID).WithMessageID(string(id)).
 		Info("evt=message_out cloud payload ready field=messages type=text to=%s", to.String())
 
 	cacheMarkSyntheticOutgoing(sessionID, string(id))
 	return m.deliverWebhook(sessionID, payload)
+}
+
+func (m *ClientManager) emitCloudOutgoingTemplateMessage(sessionID string, client *whatsmeow.Client, to types.JID, id types.MessageID, rendered *renderedTemplate) error {
+	if rendered == nil {
+		return nil
+	}
+	phone := normalizePhone(sessionID)
+	recipient := jidToPhoneNumberIfUser(to)
+
+	wireMsg := buildTemplateWebhookWireMessage(phone, string(id), rendered)
+
+	contactObj := map[string]any{
+		"profile": buildCloudProfile(sessionID, client, to, recipient, string(id)),
+		"wa_id":   recipient,
+	}
+	if isGroupJID(to) {
+		contactObj["group_id"] = to.String()
+	}
+
+	payload := cloudEnvelope(phone)
+	val := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	val["contacts"] = []any{contactObj}
+	val["messages"] = []any{wireMsg}
+	if m.getOutgoingMessagesCoex(sessionID) {
+		convertCloudPayloadToOutgoingEchoes(payload)
+	}
+
+	log.WithSession(sessionID).WithMessageID(string(id)).
+		Info("evt=message_out cloud payload ready field=messages type=%s source=template", wireMsg["type"])
+
+	cacheMarkSyntheticOutgoing(sessionID, string(id))
+	return m.deliverWebhook(sessionID, payload)
+}
+
+func buildTemplateWebhookWireMessage(phone, messageID string, rendered *renderedTemplate) map[string]any {
+	wireMsg := map[string]any{
+		"from":      strings.ReplaceAll(normalizePhone(phone), "+", ""),
+		"id":        messageID,
+		"timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	body := ""
+	if rendered != nil {
+		body = rendered.text()
+	}
+	switch {
+	case rendered != nil && rendered.HeaderDocument != nil:
+		doc := map[string]any{"caption": body}
+		if filename := strings.TrimSpace(rendered.HeaderDocument.FileName); filename != "" {
+			doc["filename"] = filename
+		}
+		if mediaID := strings.TrimSpace(rendered.HeaderDocument.ID); mediaID != "" {
+			doc["id"] = mediaID
+		}
+		wireMsg["type"] = "document"
+		wireMsg["document"] = doc
+	case rendered != nil && rendered.HeaderImage != nil:
+		image := map[string]any{"caption": body}
+		if mediaID := strings.TrimSpace(rendered.HeaderImage.ID); mediaID != "" {
+			image["id"] = mediaID
+		}
+		wireMsg["type"] = "image"
+		wireMsg["image"] = image
+	default:
+		wireMsg["type"] = "text"
+		wireMsg["text"] = map[string]any{"body": body}
+	}
+	return wireMsg
 }
 
 // =========== Helpers de mapeamento Cloud ===========
@@ -980,6 +1053,25 @@ func cloudEnvelope(phone string) map[string]any {
 	return map[string]any{
 		"object": "whatsapp_business_account",
 		"entry":  []any{entry},
+	}
+}
+
+func convertCloudPayloadToOutgoingEchoes(payload map[string]any) {
+	entries, _ := payload["entry"].([]any)
+	for _, entryAny := range entries {
+		entry, _ := entryAny.(map[string]any)
+		changes, _ := entry["changes"].([]any)
+		for _, changeAny := range changes {
+			change, _ := changeAny.(map[string]any)
+			value, _ := change["value"].(map[string]any)
+			messages, ok := value["messages"].([]any)
+			if !ok || len(messages) == 0 {
+				continue
+			}
+			change["field"] = "smb_message_echoes"
+			value["message_echoes"] = messages
+			delete(value, "messages")
+		}
 	}
 }
 

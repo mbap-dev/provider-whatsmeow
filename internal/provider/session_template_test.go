@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -119,6 +120,105 @@ func TestBuildStructuredTemplateMessageKeepsHeaderBodyAndFooter(t *testing.T) {
 	}
 	if got := native.GetMessageVersion(); got != 1 {
 		t.Fatalf("message version = %d", got)
+	}
+}
+
+func TestTemplateOrderDetailsUsesCloudAPIActionPayload(t *testing.T) {
+	manager := NewClientManager(ManagerOptions{SessionStore: t.TempDir()})
+	_, err := manager.UpsertSessionTemplate("session-a", SessionTemplate{
+		Name: "envio_boletos",
+		Body: "Olá {{1}}, total {{2}}.",
+	})
+	if err != nil {
+		t.Fatalf("UpsertSessionTemplate() error = %v", err)
+	}
+
+	rendered, err := manager.renderTemplateMessage("session-a", &TemplateContent{
+		Name: "envio_boletos",
+		Components: []TemplateComponent{
+			{
+				Type: "body",
+				Parameters: []TemplateParameter{
+					{Type: "text", Text: "Maria"},
+					{Type: "text", Text: "R$ 10,00"},
+				},
+			},
+			{
+				Type:    "button",
+				SubType: "order_details",
+				Index:   0,
+				Parameters: []TemplateParameter{
+					{
+						Type: "action",
+						Action: &TemplateAction{
+							OrderDetails: map[string]any{
+								"reference_id": "PED-1",
+								"type":         "digital-goods",
+								"payment_type": "br",
+								"currency":     "BRL",
+								"total_amount": map[string]any{"value": "1000", "offset": 100},
+								"payment_settings": []any{
+									map[string]any{
+										"type": "pix_dynamic_code",
+										"pix_dynamic_code": map[string]any{
+											"code":          "000201",
+											"merchant_name": "EnvolveNEXT",
+											"key":           "57401868000110",
+											"key_type":      "CNPJ",
+										},
+									},
+									map[string]any{
+										"type":   "boleto",
+										"boleto": map[string]any{"digitable_line": "34191790010104351004791020150008291070026000"},
+									},
+								},
+								"order": map[string]any{
+									"status":   "pending",
+									"subtotal": map[string]any{"value": "1000", "offset": 100},
+									"items": []any{
+										map[string]any{
+											"retailer_id": "1234567",
+											"name":        "Plataforma EnvolveNEXT",
+											"amount":      map[string]any{"value": "1000", "offset": 100},
+											"quantity":    "1",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("renderTemplateMessage() error = %v", err)
+	}
+	if got := rendered.Body; got != "Olá Maria, total R$ 10,00." {
+		t.Fatalf("body = %q", got)
+	}
+
+	wire, err := manager.buildStructuredTemplateMessage(nil, nil, "session-a", rendered, nil)
+	if err != nil {
+		t.Fatalf("buildStructuredTemplateMessage() error = %v", err)
+	}
+	buttons := wire.GetInteractiveMessage().GetNativeFlowMessage().GetButtons()
+	if len(buttons) != 1 {
+		t.Fatalf("buttons len = %d", len(buttons))
+	}
+	if got := buttons[0].GetName(); got != "review_and_pay" {
+		t.Fatalf("button name = %q", got)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(buttons[0].GetButtonParamsJSON()), &payload); err != nil {
+		t.Fatalf("unmarshal button params: %v", err)
+	}
+	settings := payload["payment_settings"].([]any)
+	if len(settings) != 2 {
+		t.Fatalf("payment_settings len = %d", len(settings))
+	}
+	if got := payload["total_amount"].(map[string]any)["value"]; got != float64(1000) {
+		t.Fatalf("total value = %#v", got)
 	}
 }
 

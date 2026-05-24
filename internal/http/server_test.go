@@ -248,6 +248,7 @@ func TestDecodeOutgoingMessageBodyAcceptsCloudTemplatePayload(t *testing.T) {
 		"messaging_product":"whatsapp",
 		"to":"5562933000233",
 		"type":"template",
+		"template_webhook_message":true,
 		"template":{
 			"name":"boleto_disponivel",
 			"language":{"code":"pt_BR"},
@@ -268,6 +269,9 @@ func TestDecodeOutgoingMessageBodyAcceptsCloudTemplatePayload(t *testing.T) {
 	}
 	if msg.Template == nil || msg.Template.Name != "boleto_disponivel" {
 		t.Fatalf("template = %+v", msg.Template)
+	}
+	if !msg.TemplateWebhookMessage {
+		t.Fatal("expected template_webhook_message")
 	}
 	if got := msg.Template.Components[0].Parameters[0].ParameterName; got != "nome" {
 		t.Fatalf("parameter_name = %q", got)

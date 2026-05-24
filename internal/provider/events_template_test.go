@@ -1,13 +1,19 @@
 package provider
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+)
 
 func TestBuildTemplateWebhookWireMessageText(t *testing.T) {
 	msg := buildTemplateWebhookWireMessage("553121159080", "MSG1", &renderedTemplate{
 		HeaderText: "Olá",
 		Body:       "Corpo",
 		Footer:     "Rodapé",
-	})
+	}, MediaMetadata{}, false)
 	if got := msg["type"]; got != "text" {
 		t.Fatalf("type = %#v", got)
 	}
@@ -28,7 +34,7 @@ func TestBuildTemplateWebhookWireMessageDocument(t *testing.T) {
 			Link:     "https://example.com/boleto.pdf",
 			FileName: "boleto.pdf",
 		},
-	})
+	}, MediaMetadata{}, false)
 	if got := msg["type"]; got != "document" {
 		t.Fatalf("type = %#v", got)
 	}
@@ -51,7 +57,7 @@ func TestBuildTemplateWebhookWireMessageImage(t *testing.T) {
 	msg := buildTemplateWebhookWireMessage("553121159080", "MSG1", &renderedTemplate{
 		Body:        "Corpo",
 		HeaderImage: &ImageContent{ID: "image-id", Link: "https://example.com/image.jpg"},
-	})
+	}, MediaMetadata{}, false)
 	if got := msg["type"]; got != "image" {
 		t.Fatalf("type = %#v", got)
 	}
@@ -64,6 +70,54 @@ func TestBuildTemplateWebhookWireMessageImage(t *testing.T) {
 	}
 	if _, ok := image["link"]; ok {
 		t.Fatalf("image payload should not include link: %#v", image)
+	}
+}
+
+func TestResolveTemplateWebhookDocumentPersistsAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", `attachment; filename="boleto.pdf"`)
+		_, _ = w.Write([]byte("%PDF-1.4\n"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	manager := &ClientManager{
+		mediaStore: newMediaStore(MediaStoreOptions{
+			Mode:         "local",
+			LocalDir:     filepath.Join(dir, "media"),
+			RegistryFile: filepath.Join(dir, "registry.json"),
+		}),
+	}
+	rendered := &renderedTemplate{
+		Body:           "Corpo",
+		HeaderDocument: &DocumentContent{Link: server.URL + "/boleto.pdf"},
+	}
+
+	meta, ok := manager.resolveTemplateWebhookMedia(context.Background(), "553121159080", "MSG1", rendered)
+	if !ok {
+		t.Fatal("expected persisted media metadata")
+	}
+	if got := rendered.HeaderDocument.ID; got == "" {
+		t.Fatal("expected rendered document id to be set")
+	}
+
+	msg := buildTemplateWebhookWireMessage("553121159080", "MSG1", rendered, meta, true)
+	doc := msg["document"].(map[string]any)
+	if got := doc["id"]; got == "" {
+		t.Fatalf("id = %#v", got)
+	}
+	if got := doc["mime_type"]; got != "application/pdf" {
+		t.Fatalf("mime_type = %#v", got)
+	}
+	if got := doc["filename"]; got != "boleto.pdf" {
+		t.Fatalf("filename = %#v", got)
+	}
+	if got := doc["file_length"]; got != int64(9) {
+		t.Fatalf("file_length = %#v", got)
+	}
+	if _, _, err := manager.LoadMediaContent(context.Background(), "553121159080", rendered.HeaderDocument.ID); err != nil {
+		t.Fatalf("LoadMediaContent(): %v", err)
 	}
 }
 

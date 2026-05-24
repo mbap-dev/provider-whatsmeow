@@ -967,7 +967,8 @@ func (m *ClientManager) emitCloudOutgoingTemplateMessage(sessionID string, clien
 	phone := normalizePhone(sessionID)
 	recipient := jidToPhoneNumberIfUser(to)
 
-	wireMsg := buildTemplateWebhookWireMessage(phone, string(id), rendered)
+	mediaMeta, hasMediaMeta := m.resolveTemplateWebhookMedia(context.Background(), sessionID, string(id), rendered)
+	wireMsg := buildTemplateWebhookWireMessage(phone, string(id), rendered, mediaMeta, hasMediaMeta)
 
 	contactObj := map[string]any{
 		"profile": buildCloudProfile(sessionID, client, to, recipient, string(id)),
@@ -992,7 +993,80 @@ func (m *ClientManager) emitCloudOutgoingTemplateMessage(sessionID string, clien
 	return m.deliverWebhook(sessionID, payload)
 }
 
-func buildTemplateWebhookWireMessage(phone, messageID string, rendered *renderedTemplate) map[string]any {
+func (m *ClientManager) resolveTemplateWebhookMedia(ctx context.Context, sessionID, messageID string, rendered *renderedTemplate) (MediaMetadata, bool) {
+	if m == nil || rendered == nil {
+		return MediaMetadata{}, false
+	}
+	switch {
+	case rendered.HeaderDocument != nil:
+		doc := rendered.HeaderDocument
+		if mediaID := strings.TrimSpace(doc.ID); mediaID != "" {
+			if meta, ok := m.GetMediaMetadata(sessionID, mediaID); ok {
+				return meta, true
+			}
+		}
+		link := strings.TrimSpace(doc.Link)
+		if link == "" {
+			return MediaMetadata{}, false
+		}
+		data, mimeType, header, err := downloadBytesWithHeader(ctx, link)
+		if err != nil {
+			log.WithSession(sessionID).WithMessageID(messageID).Error("template webhook document download failed: %v", err)
+			return MediaMetadata{}, false
+		}
+		filename := strings.TrimSpace(doc.FileName)
+		if filename == "" {
+			filename = filenameFromHTTPHeader(header)
+		}
+		if filename == "" {
+			filename = documentFilenameFromLink(link, messageID)
+		}
+		meta, err := m.StoreUploadedMedia(ctx, sessionID, filename, mimeType, data)
+		if err != nil {
+			log.WithSession(sessionID).WithMessageID(messageID).Error("template webhook document persist failed: %v", err)
+			return MediaMetadata{}, false
+		}
+		doc.ID = CompatibleMediaID(meta)
+		if strings.TrimSpace(doc.FileName) == "" {
+			doc.FileName = meta.Filename
+		}
+		return meta, true
+	case rendered.HeaderImage != nil:
+		img := rendered.HeaderImage
+		if mediaID := strings.TrimSpace(img.ID); mediaID != "" {
+			if meta, ok := m.GetMediaMetadata(sessionID, mediaID); ok {
+				return meta, true
+			}
+		}
+		link := strings.TrimSpace(img.Link)
+		if link == "" {
+			return MediaMetadata{}, false
+		}
+		data, mimeType, header, err := downloadBytesWithHeader(ctx, link)
+		if err != nil {
+			log.WithSession(sessionID).WithMessageID(messageID).Error("template webhook image download failed: %v", err)
+			return MediaMetadata{}, false
+		}
+		filename := filenameFromHTTPHeader(header)
+		if filename == "" {
+			filename = documentFilenameFromLink(link, messageID)
+		}
+		if filename == "" {
+			filename = filenameByMime(messageID, mimeType)
+		}
+		meta, err := m.StoreUploadedMedia(ctx, sessionID, filename, mimeType, data)
+		if err != nil {
+			log.WithSession(sessionID).WithMessageID(messageID).Error("template webhook image persist failed: %v", err)
+			return MediaMetadata{}, false
+		}
+		img.ID = CompatibleMediaID(meta)
+		return meta, true
+	default:
+		return MediaMetadata{}, false
+	}
+}
+
+func buildTemplateWebhookWireMessage(phone, messageID string, rendered *renderedTemplate, mediaMeta MediaMetadata, hasMediaMeta bool) map[string]any {
 	wireMsg := map[string]any{
 		"from":      strings.ReplaceAll(normalizePhone(phone), "+", ""),
 		"id":        messageID,
@@ -1008,14 +1082,18 @@ func buildTemplateWebhookWireMessage(phone, messageID string, rendered *rendered
 		if filename := strings.TrimSpace(rendered.HeaderDocument.FileName); filename != "" {
 			doc["filename"] = filename
 		}
-		if mediaID := strings.TrimSpace(rendered.HeaderDocument.ID); mediaID != "" {
+		if hasMediaMeta {
+			applyMediaMetadataToWebhookPart(doc, mediaMeta)
+		} else if mediaID := strings.TrimSpace(rendered.HeaderDocument.ID); mediaID != "" {
 			doc["id"] = mediaID
 		}
 		wireMsg["type"] = "document"
 		wireMsg["document"] = doc
 	case rendered != nil && rendered.HeaderImage != nil:
 		image := map[string]any{"caption": body}
-		if mediaID := strings.TrimSpace(rendered.HeaderImage.ID); mediaID != "" {
+		if hasMediaMeta {
+			applyMediaMetadataToWebhookPart(image, mediaMeta)
+		} else if mediaID := strings.TrimSpace(rendered.HeaderImage.ID); mediaID != "" {
 			image["id"] = mediaID
 		}
 		wireMsg["type"] = "image"
@@ -1025,6 +1103,39 @@ func buildTemplateWebhookWireMessage(phone, messageID string, rendered *rendered
 		wireMsg["text"] = map[string]any{"body": body}
 	}
 	return wireMsg
+}
+
+func applyMediaMetadataToWebhookPart(part map[string]any, meta MediaMetadata) {
+	if id := CompatibleMediaID(meta); id != "" {
+		part["id"] = id
+	}
+	if mimeType := strings.TrimSpace(meta.MIMEType); mimeType != "" {
+		part["mime_type"] = splitMime(mimeType)
+	}
+	if sha := strings.TrimSpace(meta.SHA256); sha != "" {
+		part["sha256"] = sha
+	}
+	if meta.FileSize > 0 {
+		part["file_length"] = meta.FileSize
+	}
+	if filename := strings.TrimSpace(meta.Filename); filename != "" {
+		part["filename"] = filename
+	}
+}
+
+func filenameFromHTTPHeader(header http.Header) string {
+	if header == nil {
+		return ""
+	}
+	cd := strings.TrimSpace(header.Get("Content-Disposition"))
+	if cd == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(cd)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(params["filename"])
 }
 
 // =========== Helpers de mapeamento Cloud ===========

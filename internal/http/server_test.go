@@ -242,3 +242,34 @@ func TestDecodeOutgoingMessageBodyAcceptsInteractiveButtonObject(t *testing.T) {
 		t.Fatalf("button title = %q", got)
 	}
 }
+
+func TestDecodeOutgoingMessageBodyAcceptsCloudTemplatePayload(t *testing.T) {
+	msg, err := decodeOutgoingMessageBody([]byte(`{
+		"messaging_product":"whatsapp",
+		"to":"5562933000233",
+		"type":"template",
+		"template":{
+			"name":"boleto_disponivel",
+			"language":{"code":"pt_BR"},
+			"components":[
+				{"type":"body","parameters":[
+					{"type":"text","parameter_name":"nome","text":"Maria"},
+					{"type":"text","text":"12345"}
+				]}
+			],
+			"variables":{"vencimento":"10/06/2026"}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("decodeOutgoingMessageBody() error = %v", err)
+	}
+	if got := msg.Type; got != "template" {
+		t.Fatalf("type = %q", got)
+	}
+	if msg.Template == nil || msg.Template.Name != "boleto_disponivel" {
+		t.Fatalf("template = %+v", msg.Template)
+	}
+	if got := msg.Template.Components[0].Parameters[0].ParameterName; got != "nome" {
+		t.Fatalf("parameter_name = %q", got)
+	}
+}

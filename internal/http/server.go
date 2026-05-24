@@ -281,6 +281,9 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleCreateSessionWebhook).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleUpdateSessionWebhook).Methods(http.MethodPut)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleDeleteSessionWebhook).Methods(http.MethodDelete)
+	router.HandleFunc(base+"/sessions/{id}/templates", s.handleListSessionTemplates).Methods(http.MethodGet)
+	router.HandleFunc(base+"/sessions/{id}/templates", s.handleUpsertSessionTemplate).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/templates/{template_id}", s.handleDeleteSessionTemplate).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions", s.handleListSessions).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions", s.handleCreateSession).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}", s.handleDeleteSession).Methods(http.MethodDelete)
@@ -1054,6 +1057,59 @@ func (s *Server) handleDeleteSessionWebhook(w http.ResponseWriter, r *http.Reque
 		"session_id": sessionID,
 		"webhook_id": webhookID,
 		"removed":    removed,
+	})
+}
+
+func (s *Server) handleListSessionTemplates(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"templates":  s.provider.ListSessionTemplates(sessionID),
+	})
+}
+
+func (s *Server) handleUpsertSessionTemplate(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	var req provider.SessionTemplate
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	tpl, err := s.provider.UpsertSessionTemplate(sessionID, req)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"template":   tpl,
+	})
+}
+
+func (s *Server) handleDeleteSessionTemplate(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	templateID := strings.TrimSpace(mux.Vars(r)["template_id"])
+	if sessionID == "" || templateID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id or template id")
+		return
+	}
+	removed, err := s.provider.DeleteSessionTemplate(sessionID, templateID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":  sessionID,
+		"template_id": templateID,
+		"removed":     removed,
 	})
 }
 

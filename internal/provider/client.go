@@ -43,6 +43,7 @@ type ClientManager struct {
 	assignmentFile  string
 	sessionCfgFile  string
 	sessionHookFile string
+	sessionTplFile  string
 	webhookBase     string
 	defaultAudioPTT bool
 	rejectCalls     bool
@@ -76,6 +77,10 @@ type ClientManager struct {
 	// registered webhook endpoints by session
 	webhooksMu      sync.RWMutex
 	sessionWebhooks map[string][]SessionWebhook
+
+	// registered Cloud API-compatible message templates by session
+	templatesMu      sync.RWMutex
+	sessionTemplates map[string][]SessionTemplate
 
 	// checkUserExists controls whether we should verify that a
 	// destination number is registered on WhatsApp before sending.
@@ -133,6 +138,7 @@ type ManagerOptions struct {
 	AssignmentFile        string
 	SessionConfigFile     string
 	SessionWebhookFile    string
+	SessionTemplateFile   string
 	MediaStoreDir         string
 	MediaRegistryFile     string
 	MediaStorageMode      string
@@ -168,6 +174,10 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	if sessionHookFile == "" {
 		sessionHookFile = filepath.Join(opts.SessionStore, "_session_webhooks.json")
 	}
+	sessionTplFile := strings.TrimSpace(opts.SessionTemplateFile)
+	if sessionTplFile == "" {
+		sessionTplFile = filepath.Join(opts.SessionStore, "_session_templates.json")
+	}
 	assigned := map[string]struct{}{}
 	for _, sid := range opts.AssignedSessions {
 		n := normalizeSessionID(sid)
@@ -190,6 +200,10 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	sessionWebhooks := map[string][]SessionWebhook{}
 	if persisted, err := loadSessionWebhookState(sessionHookFile, opts.WorkerID); err == nil && persisted != nil {
 		sessionWebhooks = persisted
+	}
+	sessionTemplates := map[string][]SessionTemplate{}
+	if persisted, err := loadSessionTemplateState(sessionTplFile, opts.WorkerID); err == nil && persisted != nil {
+		sessionTemplates = persisted
 	}
 	mediaDir := strings.TrimSpace(opts.MediaStoreDir)
 	if mediaDir == "" {
@@ -218,6 +232,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		assignmentFile:  assignmentFile,
 		sessionCfgFile:  sessionCfgFile,
 		sessionHookFile: sessionHookFile,
+		sessionTplFile:  sessionTplFile,
 		webhookBase:     opts.WebhookBase,
 		defaultAudioPTT: opts.DefaultAudioPTT,
 		rejectCalls:     opts.RejectCalls,
@@ -241,6 +256,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		sessionConfigPrefix:   opts.SessionConfigPrefix,
 		overrides:             overrides,
 		sessionWebhooks:       sessionWebhooks,
+		sessionTemplates:      sessionTemplates,
 		checkUserExists:       opts.CheckUserExists,
 		workerID:              strings.TrimSpace(opts.WorkerID),
 		workerStrict:          opts.WorkerStrict,

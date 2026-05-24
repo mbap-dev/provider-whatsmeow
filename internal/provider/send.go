@@ -203,6 +203,7 @@ type OutgoingMessage struct {
 	Audio            *AudioContent       `json:"audio,omitempty"`
 	Sticker          *StickerContent     `json:"sticker,omitempty"`
 	Interactive      *InteractiveContent `json:"interactive,omitempty"`
+	Template         *TemplateContent    `json:"template,omitempty"`
 	Payment          *PaymentContent     `json:"payment,omitempty"`
 	OrderDetails     *PaymentContent     `json:"order_details,omitempty"`
 	Contacts         []ContactEntry      `json:"contacts,omitempty"`
@@ -977,6 +978,24 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			return fmt.Errorf("unsupported interactive type: %s", msg.Interactive.Type)
 		}
 
+	case "template":
+		rendered, err := m.renderTemplateMessage(sessionID, msg.Template)
+		if err != nil {
+			return err
+		}
+		wire, err := m.buildStructuredTemplateMessage(ctx, cli, sessionID, rendered, ctxInfo)
+		if err != nil {
+			return err
+		}
+		entry.Debug("template_rendered_transport=interactive_message wire_payload=%s", marshalForLog(wire))
+		resp, err := sendWithID(ctx, cli, jid, wire, msg.MessageID)
+		if err != nil {
+			entry.Error("send template failed: %v", err)
+			return err
+		}
+		entry.Info("template sent to %s (wa_msg_id=%s)", jid.String(), resp.ID)
+		return m.emitCloudSent(sessionID, jid, resp.ID)
+
 	case "payment", "order_details":
 		payment := msg.paymentContent()
 		if payment == nil {
@@ -1072,6 +1091,348 @@ func (m *ClientManager) buildPaymentHeaderDocument(ctx context.Context, cli *wha
 		Title:         proto.String(filename),
 		FileName:      proto.String(filename),
 	}, nil
+}
+
+func (r *renderedTemplate) text() string {
+	if r == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if strings.TrimSpace(r.HeaderText) != "" {
+		parts = append(parts, strings.TrimSpace(r.HeaderText))
+	}
+	if strings.TrimSpace(r.Body) != "" {
+		parts = append(parts, strings.TrimSpace(r.Body))
+	}
+	if strings.TrimSpace(r.Footer) != "" {
+		parts = append(parts, strings.TrimSpace(r.Footer))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func (m *ClientManager) buildStructuredTemplateMessage(ctx context.Context, cli *whatsmeow.Client, sessionID string, rendered *renderedTemplate, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	if rendered == nil {
+		return nil, fmt.Errorf("missing rendered template")
+	}
+	interactiveMsg := &goE2E.InteractiveMessage{
+		Body: &goE2E.InteractiveMessage_Body{
+			Text: proto.String(strings.TrimSpace(rendered.Body)),
+		},
+		InteractiveMessage: &goE2E.InteractiveMessage_NativeFlowMessage_{
+			NativeFlowMessage: &goE2E.InteractiveMessage_NativeFlowMessage{
+				Buttons:           []*goE2E.InteractiveMessage_NativeFlowMessage_NativeFlowButton{},
+				MessageParamsJSON: proto.String(fmt.Sprintf(`{"from":"api","templateId":%d}`, time.Now().UnixMilli())),
+				MessageVersion:    proto.Int32(1),
+			},
+		},
+		ContextInfo: ctxInfo,
+	}
+	if footer := strings.TrimSpace(rendered.Footer); footer != "" {
+		interactiveMsg.Footer = &goE2E.InteractiveMessage_Footer{
+			Text: proto.String(footer),
+		}
+	}
+
+	switch rendered.HeaderType {
+	case "image":
+		if rendered.HeaderImage == nil {
+			return nil, fmt.Errorf("template header image requires an image link or id")
+		}
+		image, err := m.buildTemplateHeaderImage(ctx, cli, sessionID, rendered.HeaderImage)
+		if err != nil {
+			return nil, err
+		}
+		interactiveMsg.Header = &goE2E.InteractiveMessage_Header{
+			HasMediaAttachment: proto.Bool(true),
+			Media: &goE2E.InteractiveMessage_Header_ImageMessage{
+				ImageMessage: image,
+			},
+		}
+	case "document":
+		if rendered.HeaderDocument == nil {
+			return nil, fmt.Errorf("template header document requires a document link or id")
+		}
+		document, err := m.buildTemplateHeaderDocument(ctx, cli, sessionID, rendered.HeaderDocument)
+		if err != nil {
+			return nil, err
+		}
+		interactiveMsg.Header = &goE2E.InteractiveMessage_Header{
+			HasMediaAttachment: proto.Bool(true),
+			Media: &goE2E.InteractiveMessage_Header_DocumentMessage{
+				DocumentMessage: document,
+			},
+		}
+	case "text":
+		if title := strings.TrimSpace(rendered.HeaderText); title != "" {
+			interactiveMsg.Header = &goE2E.InteractiveMessage_Header{
+				Title:              proto.String(title),
+				HasMediaAttachment: proto.Bool(false),
+			}
+		}
+	case "":
+	default:
+		return nil, fmt.Errorf("unsupported template header type: %s", rendered.HeaderType)
+	}
+
+	return &goE2E.Message{
+		InteractiveMessage: interactiveMsg,
+		MessageContextInfo: &goE2E.MessageContextInfo{
+			DeviceListMetadata: &goE2E.DeviceListMetadata{},
+		},
+	}, nil
+}
+
+func (m *ClientManager) buildButtonTemplateMessage(ctx context.Context, cli *whatsmeow.Client, sessionID string, rendered *renderedTemplate, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	if rendered == nil {
+		return nil, fmt.Errorf("missing rendered template")
+	}
+	buttons := &goE2E.ButtonsMessage{
+		ContentText: proto.String(strings.TrimSpace(rendered.Body)),
+		ContextInfo: ctxInfo,
+	}
+	if footer := strings.TrimSpace(rendered.Footer); footer != "" {
+		buttons.FooterText = proto.String(footer)
+	}
+
+	switch rendered.HeaderType {
+	case "image":
+		if rendered.HeaderImage == nil {
+			return nil, fmt.Errorf("template header image requires an image link or id")
+		}
+		image, err := m.buildTemplateHeaderImage(ctx, cli, sessionID, rendered.HeaderImage)
+		if err != nil {
+			return nil, err
+		}
+		headerType := goE2E.ButtonsMessage_IMAGE
+		buttons.HeaderType = &headerType
+		buttons.Header = &goE2E.ButtonsMessage_ImageMessage{
+			ImageMessage: image,
+		}
+	case "document":
+		if rendered.HeaderDocument == nil {
+			return nil, fmt.Errorf("template header document requires a document link or id")
+		}
+		document, err := m.buildTemplateHeaderDocument(ctx, cli, sessionID, rendered.HeaderDocument)
+		if err != nil {
+			return nil, err
+		}
+		headerType := goE2E.ButtonsMessage_DOCUMENT
+		buttons.HeaderType = &headerType
+		buttons.Header = &goE2E.ButtonsMessage_DocumentMessage{
+			DocumentMessage: document,
+		}
+	case "text":
+		if title := strings.TrimSpace(rendered.HeaderText); title != "" {
+			headerType := goE2E.ButtonsMessage_TEXT
+			buttons.HeaderType = &headerType
+			buttons.Header = &goE2E.ButtonsMessage_Text{Text: title}
+		}
+	case "":
+		headerType := goE2E.ButtonsMessage_EMPTY
+		buttons.HeaderType = &headerType
+	default:
+		return nil, fmt.Errorf("unsupported template header type: %s", rendered.HeaderType)
+	}
+
+	return &goE2E.Message{ButtonsMessage: buttons}, nil
+}
+
+func (m *ClientManager) buildTemplateHeaderImage(ctx context.Context, cli *whatsmeow.Client, sessionID string, in *ImageContent) (*goE2E.ImageMessage, error) {
+	link := strings.TrimSpace(in.Link)
+	mediaID := strings.TrimSpace(in.ID)
+	var (
+		data []byte
+		mime string
+	)
+	if link == "" && mediaID != "" {
+		stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load template image id %q: %w", mediaID, err)
+		}
+		data = stored
+		mime = meta.MIMEType
+		if strings.TrimSpace(mime) == "" {
+			mime = http.DetectContentType(data)
+		}
+	} else {
+		if link == "" {
+			return nil, fmt.Errorf("template image header requires a link or id")
+		}
+		var err error
+		data, mime, err = downloadBytes(ctx, link)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download template image: %w", err)
+		}
+	}
+	uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, fmt.Errorf("template image upload failed: %w", err)
+	}
+	return &goE2E.ImageMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Mimetype:      proto.String(mime),
+	}, nil
+}
+
+func (m *ClientManager) buildTemplateHeaderDocument(ctx context.Context, cli *whatsmeow.Client, sessionID string, in *DocumentContent) (*goE2E.DocumentMessage, error) {
+	link := strings.TrimSpace(in.Link)
+	mediaID := strings.TrimSpace(in.ID)
+	filename := strings.TrimSpace(in.FileName)
+	var (
+		data []byte
+		mime string
+	)
+	if link == "" && mediaID != "" {
+		stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load template document id %q: %w", mediaID, err)
+		}
+		data = stored
+		mime = meta.MIMEType
+		if strings.TrimSpace(mime) == "" {
+			mime = http.DetectContentType(data)
+		}
+		if filename == "" {
+			filename = strings.TrimSpace(meta.Filename)
+		}
+	} else {
+		if link == "" {
+			return nil, fmt.Errorf("template document header requires a link or id")
+		}
+		var err error
+		data, mime, err = downloadBytes(ctx, link)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download template document: %w", err)
+		}
+	}
+	if filename == "" {
+		filename = documentFilenameFromLink(link, mediaID)
+	}
+	if filename == "" {
+		filename = "document"
+	}
+	uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return nil, fmt.Errorf("template document upload failed: %w", err)
+	}
+	return &goE2E.DocumentMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Mimetype:      proto.String(mime),
+		FileName:      proto.String(filename),
+	}, nil
+}
+
+func (m *ClientManager) buildTemplateImageMessage(ctx context.Context, cli *whatsmeow.Client, sessionID string, rendered *renderedTemplate, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	in := rendered.HeaderImage
+	link := strings.TrimSpace(in.Link)
+	mediaID := strings.TrimSpace(in.ID)
+	var (
+		data []byte
+		mime string
+	)
+	if link == "" && mediaID != "" {
+		stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load template image id %q: %w", mediaID, err)
+		}
+		data = stored
+		mime = meta.MIMEType
+		if strings.TrimSpace(mime) == "" {
+			mime = http.DetectContentType(data)
+		}
+	} else {
+		if link == "" {
+			return nil, fmt.Errorf("template image header requires a link or id")
+		}
+		var err error
+		data, mime, err = downloadBytes(ctx, link)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download template image: %w", err)
+		}
+	}
+	uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaImage)
+	if err != nil {
+		return nil, fmt.Errorf("template image upload failed: %w", err)
+	}
+	image := &goE2E.ImageMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Mimetype:      proto.String(mime),
+		Caption:       proto.String(rendered.text()),
+		ContextInfo:   ctxInfo,
+	}
+	return &goE2E.Message{ImageMessage: image}, nil
+}
+
+func (m *ClientManager) buildTemplateDocumentMessage(ctx context.Context, cli *whatsmeow.Client, sessionID string, rendered *renderedTemplate, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, error) {
+	in := rendered.HeaderDocument
+	link := strings.TrimSpace(in.Link)
+	mediaID := strings.TrimSpace(in.ID)
+	filename := strings.TrimSpace(in.FileName)
+	var (
+		data []byte
+		mime string
+	)
+	if link == "" && mediaID != "" {
+		stored, meta, err := m.LoadMediaContent(ctx, sessionID, mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load template document id %q: %w", mediaID, err)
+		}
+		data = stored
+		mime = meta.MIMEType
+		if strings.TrimSpace(mime) == "" {
+			mime = http.DetectContentType(data)
+		}
+		if filename == "" {
+			filename = strings.TrimSpace(meta.Filename)
+		}
+	} else {
+		if link == "" {
+			return nil, fmt.Errorf("template document header requires a link or id")
+		}
+		var err error
+		data, mime, err = downloadBytes(ctx, link)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download template document: %w", err)
+		}
+	}
+	if filename == "" {
+		filename = documentFilenameFromLink(link, mediaID)
+	}
+	if filename == "" {
+		filename = "document"
+	}
+	uploaded, err := cli.Upload(ctx, data, whatsmeow.MediaDocument)
+	if err != nil {
+		return nil, fmt.Errorf("template document upload failed: %w", err)
+	}
+	document := &goE2E.DocumentMessage{
+		URL:           proto.String(uploaded.URL),
+		DirectPath:    proto.String(uploaded.DirectPath),
+		MediaKey:      uploaded.MediaKey,
+		FileEncSHA256: uploaded.FileEncSHA256,
+		FileSHA256:    uploaded.FileSHA256,
+		FileLength:    proto.Uint64(uint64(len(data))),
+		Mimetype:      proto.String(mime),
+		FileName:      proto.String(filename),
+		Caption:       proto.String(rendered.text()),
+		ContextInfo:   ctxInfo,
+	}
+	return &goE2E.Message{DocumentMessage: document}, nil
 }
 
 func buildOrderDetailsMessage(in *PaymentContent, headerDoc *goE2E.DocumentMessage, ctxInfo *goE2E.ContextInfo) (*goE2E.Message, *whatsmeow.SendRequestExtra, error) {

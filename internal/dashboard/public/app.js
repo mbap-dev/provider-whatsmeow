@@ -149,6 +149,57 @@ function createWebhookFormFromItem(item) {
   }
 }
 
+function createDefaultTemplateForm() {
+  return {
+    id: '',
+    name: '',
+    language: 'pt_BR',
+    category: '',
+    header_type: '',
+    header_text: '',
+    header_link: '',
+    header_id: '',
+    header_filename: '',
+    body: '',
+    footer: '',
+  }
+}
+
+function createTemplateFormFromItem(item) {
+  const header = item?.header || {}
+  return {
+    id: item?.id || '',
+    name: item?.name || '',
+    language: item?.language || 'pt_BR',
+    category: item?.category || '',
+    header_type: header?.type || '',
+    header_text: header?.text || '',
+    header_link: header?.link || '',
+    header_id: header?.id || '',
+    header_filename: header?.filename || '',
+    body: item?.body || '',
+    footer: item?.footer || '',
+  }
+}
+
+function templateFormToPayload(form) {
+  return {
+    id: form.id.trim(),
+    name: form.name.trim(),
+    language: form.language.trim(),
+    category: form.category.trim(),
+    header: {
+      type: form.header_type.trim(),
+      text: form.header_text.trim(),
+      link: form.header_link.trim(),
+      id: form.header_id.trim(),
+      filename: form.header_filename.trim(),
+    },
+    body: form.body.trim(),
+    footer: form.footer.trim(),
+  }
+}
+
 function sessionStatus(session) {
   const raw = String(session?.status || '').trim().toLowerCase()
   if (raw === 'connected') {
@@ -393,6 +444,10 @@ function SessionCard({
           label="Hooks"
           onClick=${() => onOpenTab(session.session_id, 'webhooks')}
         />
+        <${MiniButton}
+          label="Templates"
+          onClick=${() => onOpenTab(session.session_id, 'templates')}
+        />
       </div>
     </article>
   `
@@ -493,6 +548,35 @@ function WebhookCard({ item, onEdit, onDelete }) {
   `
 }
 
+function TemplateCard({ item, onEdit, onDelete }) {
+  const header = item?.header || {}
+  const headerType = header.type || (header.text ? 'text' : 'sem cabeçalho')
+  return html`
+    <article className="webhook-card">
+      <div className="webhook-card__top">
+        <div>
+          <strong>${item.name}</strong>
+          <p>${item.language || 'idioma padrão'}${item.category ? ` · ${item.category}` : ''}</p>
+        </div>
+        <div className="inline-actions">
+          <button type="button" className="text-button" onClick=${onEdit}>Editar</button>
+          <button type="button" className="text-button text-button--danger" onClick=${onDelete}>
+            Excluir
+          </button>
+        </div>
+      </div>
+
+      <code className="webhook-card__url">${item.body || '—'}</code>
+
+      <div className="tag-row">
+        <span className="tag">Header: ${headerType}</span>
+        <span className="tag">${item.footer ? 'Com footer' : 'Sem footer'}</span>
+        <span className="tag">${item.id}</span>
+      </div>
+    </article>
+  `
+}
+
 function App() {
   const [theme, setTheme] = useState(getInitialTheme)
   const [worker, setWorker] = useState(null)
@@ -534,6 +618,12 @@ function App() {
     saving: false,
     items: [],
     form: createDefaultWebhookForm(),
+  })
+  const [templateState, setTemplateState] = useState({
+    loading: false,
+    saving: false,
+    items: [],
+    form: createDefaultTemplateForm(),
   })
 
   const refreshOverviewRef = useRef(null)
@@ -623,6 +713,27 @@ function App() {
     }
   }
 
+  async function loadTemplatesForSession(sessionId, { resetForm = false } = {}) {
+    const sid = String(sessionId || '').trim()
+    if (!sid) {
+      return
+    }
+
+    setTemplateState((current) => ({ ...current, loading: true }))
+    try {
+      const payload = await api(`/api/v1/sessions/${enc(sid)}/templates`)
+      setTemplateState((current) => ({
+        ...current,
+        loading: false,
+        items: Array.isArray(payload?.templates) ? payload.templates : [],
+        form: resetForm ? createDefaultTemplateForm() : current.form,
+      }))
+    } catch (error) {
+      setTemplateState((current) => ({ ...current, loading: false }))
+      pushToast(error.message, 'error')
+    }
+  }
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem(THEME_STORAGE_KEY, theme)
@@ -681,6 +792,12 @@ function App() {
         items: [],
         form: createDefaultWebhookForm(),
       })
+      setTemplateState({
+        loading: false,
+        saving: false,
+        items: [],
+        form: createDefaultTemplateForm(),
+      })
       return
     }
 
@@ -707,12 +824,19 @@ function App() {
       items: [],
       form: createDefaultWebhookForm(),
     })
+    setTemplateState({
+      loading: true,
+      saving: false,
+      items: [],
+      form: createDefaultTemplateForm(),
+    })
 
     Promise.all([
       api(`/api/v1/sessions/${enc(selectedSessionId)}/config`),
       api(`/api/v1/sessions/${enc(selectedSessionId)}/webhooks`),
+      api(`/api/v1/sessions/${enc(selectedSessionId)}/templates`),
     ])
-      .then(([snapshot, payload]) => {
+      .then(([snapshot, payload, templatesPayload]) => {
         if (!active) {
           return
         }
@@ -728,6 +852,12 @@ function App() {
           items: Array.isArray(payload?.webhooks) ? payload.webhooks : [],
           form: createDefaultWebhookForm(),
         })
+        setTemplateState({
+          loading: false,
+          saving: false,
+          items: Array.isArray(templatesPayload?.templates) ? templatesPayload.templates : [],
+          form: createDefaultTemplateForm(),
+        })
       })
       .catch((error) => {
         if (!active) {
@@ -735,6 +865,7 @@ function App() {
         }
         setConfigState((current) => ({ ...current, loading: false }))
         setWebhookState((current) => ({ ...current, loading: false }))
+        setTemplateState((current) => ({ ...current, loading: false }))
         pushToast(error.message, 'error')
       })
 
@@ -1100,6 +1231,57 @@ function App() {
     }
   }
 
+  async function handleSaveTemplate(event) {
+    event.preventDefault()
+    if (!selectedSessionId) {
+      return
+    }
+    if (!templateState.form.name.trim()) {
+      pushToast('Informe o nome do template.', 'error')
+      return
+    }
+    if (!templateState.form.body.trim()) {
+      pushToast('Informe o corpo do template.', 'error')
+      return
+    }
+
+    setTemplateState((current) => ({ ...current, saving: true }))
+    try {
+      await api(`/api/v1/sessions/${enc(selectedSessionId)}/templates`, {
+        method: 'POST',
+        body: JSON.stringify(templateFormToPayload(templateState.form)),
+      })
+      pushToast(`Template salvo para a sessão ${selectedSessionId}.`, 'success')
+      await loadTemplatesForSession(selectedSessionId, { resetForm: true })
+    } catch (error) {
+      pushToast(error.message, 'error')
+    } finally {
+      setTemplateState((current) => ({ ...current, saving: false }))
+    }
+  }
+
+  async function handleDeleteTemplate(templateId) {
+    if (!selectedSessionId || !templateId) {
+      return
+    }
+    if (!window.confirm(`Excluir o template "${templateId}" da sessão "${selectedSessionId}"?`)) {
+      return
+    }
+
+    setTemplateState((current) => ({ ...current, saving: true }))
+    try {
+      await api(`/api/v1/sessions/${enc(selectedSessionId)}/templates/${enc(templateId)}`, {
+        method: 'DELETE',
+      })
+      pushToast(`Template ${templateId} excluído.`, 'success')
+      await loadTemplatesForSession(selectedSessionId, { resetForm: true })
+    } catch (error) {
+      pushToast(error.message, 'error')
+    } finally {
+      setTemplateState((current) => ({ ...current, saving: false }))
+    }
+  }
+
   const filterOptions = [
     { id: 'all', label: 'Todas', count: sessions.length },
     { id: 'assigned', label: 'Atribuídas', count: assignedCount },
@@ -1409,7 +1591,7 @@ function App() {
                     </div>
 
                     <div className="tab-row">
-                      ${['overview', 'config', 'webhooks'].map(
+                      ${['overview', 'config', 'webhooks', 'templates'].map(
                         (tab) => html`
                           <button
                             key=${tab}
@@ -1421,7 +1603,9 @@ function App() {
                               ? 'Resumo'
                               : tab === 'config'
                                 ? 'Configuração'
-                                : 'Webhooks'}
+                                : tab === 'webhooks'
+                                  ? 'Webhooks'
+                                  : 'Templates'}
                           </button>
                         `
                       )}
@@ -1988,6 +2172,241 @@ function App() {
                                               }))
                                             }
                                             onDelete=${() => handleDeleteWebhook(item.id)}
+                                          />
+                                        `
+                                      )}
+                                    </div>
+                                  `}
+                          </div>
+                        `
+                      : null}
+
+                    ${selectedTab === 'templates'
+                      ? html`
+                          <form className="stack-form" onSubmit=${handleSaveTemplate}>
+                            <div className="form-grid">
+                              <${InputField}
+                                label="Template ID"
+                                value=${templateState.form.id}
+                                placeholder="vazio = nome__idioma"
+                                onInput=${(value) =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, id: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Nome Cloud API"
+                                value=${templateState.form.name}
+                                placeholder="boleto_disponivel"
+                                onInput=${(value) =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, name: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Idioma"
+                                value=${templateState.form.language}
+                                placeholder="pt_BR"
+                                onInput=${(value) =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, language: value },
+                                  }))
+                                }
+                              />
+                              <${InputField}
+                                label="Categoria"
+                                value=${templateState.form.category}
+                                placeholder="utility"
+                                onInput=${(value) =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, category: value },
+                                  }))
+                                }
+                              />
+                            </div>
+
+                            <div className="form-grid">
+                              <label className="field">
+                                <span>Tipo do cabeçalho</span>
+                                <select
+                                  value=${templateState.form.header_type}
+                                  onChange=${(event) =>
+                                    setTemplateState((current) => ({
+                                      ...current,
+                                      form: { ...current.form, header_type: event.target.value },
+                                    }))
+                                  }
+                                >
+                                  <option value="">Sem cabeçalho</option>
+                                  <option value="text">Texto</option>
+                                  <option value="image">Imagem</option>
+                                  <option value="document">Documento</option>
+                                </select>
+                              </label>
+                              <${InputField}
+                                label="Texto do cabeçalho"
+                                value=${templateState.form.header_text}
+                                placeholder="Olá {{nome}}"
+                                onInput=${(value) =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, header_text: value },
+                                  }))
+                                }
+                              />
+                            </div>
+
+                            ${templateState.form.header_type === 'image' ||
+                            templateState.form.header_type === 'document'
+                              ? html`
+                                  <div className="form-grid">
+                                    <${InputField}
+                                      label="Link padrão da mídia"
+                                      value=${templateState.form.header_link}
+                                      placeholder="https://..."
+                                      onInput=${(value) =>
+                                        setTemplateState((current) => ({
+                                          ...current,
+                                          form: { ...current.form, header_link: value },
+                                        }))
+                                      }
+                                    />
+                                    <${InputField}
+                                      label="Media ID padrão"
+                                      value=${templateState.form.header_id}
+                                      placeholder="opcional"
+                                      onInput=${(value) =>
+                                        setTemplateState((current) => ({
+                                          ...current,
+                                          form: { ...current.form, header_id: value },
+                                        }))
+                                      }
+                                    />
+                                    <${InputField}
+                                      label="Nome do arquivo"
+                                      value=${templateState.form.header_filename}
+                                      placeholder="documento.pdf"
+                                      onInput=${(value) =>
+                                        setTemplateState((current) => ({
+                                          ...current,
+                                          form: { ...current.form, header_filename: value },
+                                        }))
+                                      }
+                                    />
+                                  </div>
+                                `
+                              : null}
+
+                            <${TextAreaField}
+                              label="Corpo"
+                              value=${templateState.form.body}
+                              rows="5"
+                              placeholder="Olá {{nome}}, seu boleto {{1}} está disponível."
+                              onInput=${(value) =>
+                                setTemplateState((current) => ({
+                                  ...current,
+                                  form: { ...current.form, body: value },
+                                }))
+                              }
+                            />
+
+                            <${TextAreaField}
+                              label="Footer"
+                              value=${templateState.form.footer}
+                              rows="2"
+                              placeholder="Opcional"
+                              onInput=${(value) =>
+                                setTemplateState((current) => ({
+                                  ...current,
+                                  form: { ...current.form, footer: value },
+                                }))
+                              }
+                            />
+
+                            <div className="callout callout--muted">
+                              <strong>Variáveis aceitas</strong>
+                              <p>
+                                Use placeholders como {{'{{1}}'}} ou {{'{{nome}}'}}. No envio, eles podem
+                                vir em components.parameters por ordem, com parameter_name, ou no objeto
+                                template.variables.
+                              </p>
+                            </div>
+
+                            <div className="inline-actions inline-actions--wrap">
+                              <button
+                                type="submit"
+                                className="solid-button"
+                                disabled=${templateState.loading || templateState.saving}
+                              >
+                                ${templateState.saving ? 'Salvando...' : 'Salvar template'}
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                onClick=${() =>
+                                  setTemplateState((current) => ({
+                                    ...current,
+                                    form: createDefaultTemplateForm(),
+                                  }))
+                                }
+                              >
+                                Limpar formulário
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                disabled=${templateState.loading}
+                                onClick=${() =>
+                                  loadTemplatesForSession(selectedSessionId, { resetForm: false })
+                                }
+                              >
+                                Recarregar lista
+                              </button>
+                            </div>
+                          </form>
+
+                          <div className="subsection">
+                            <div className="panel__header panel__header--space-between">
+                              <div>
+                                <p className="eyebrow">Cadastrados</p>
+                                <h3>Templates da sessão</h3>
+                              </div>
+                              <span className="panel__hint">${templateState.items.length} item(ns)</span>
+                            </div>
+
+                            ${templateState.loading
+                              ? html`
+                                  <div className="empty-state empty-state--compact">
+                                    <strong>Carregando templates…</strong>
+                                  </div>
+                                `
+                              : templateState.items.length === 0
+                                ? html`
+                                    <div className="empty-state empty-state--compact">
+                                      <strong>Nenhum template cadastrado</strong>
+                                      <p>Preencha o formulário acima para habilitar envios type=template.</p>
+                                    </div>
+                                  `
+                                : html`
+                                    <div className="webhook-list">
+                                      ${templateState.items.map(
+                                        (item) => html`
+                                          <${TemplateCard}
+                                            key=${item.id}
+                                            item=${item}
+                                            onEdit=${() =>
+                                              setTemplateState((current) => ({
+                                                ...current,
+                                                form: createTemplateFormFromItem(item),
+                                              }))
+                                            }
+                                            onDelete=${() => handleDeleteTemplate(item.id)}
                                           />
                                         `
                                       )}

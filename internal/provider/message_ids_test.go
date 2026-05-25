@@ -3,6 +3,7 @@ package provider
 import (
 	"testing"
 
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
@@ -284,6 +285,76 @@ func TestMessageContextInfoResolvesGroupLIDParticipant(t *testing.T) {
 	}
 	if got := ctx["message_id"]; got != "5562933000233~3BD2D8D0075C6F7959B5" {
 		t.Fatalf("group LID context message_id = %q", got)
+	}
+}
+
+func TestReactionContextInfoKeepsPrivateReactionIDPlain(t *testing.T) {
+	reaction := &waE2E.ReactionMessage{
+		Text: proto.String("👍"),
+		Key: &waCommon.MessageKey{
+			ID: proto.String("BAE51C3F75F1EC9F56DC"),
+		},
+	}
+
+	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "BAE51C3F75F1EC9F56DC" {
+		t.Fatalf("private reaction context message_id = %q", got)
+	}
+}
+
+func TestReactionContextInfoAddsOwnParticipantForPrivate3EBReactionID(t *testing.T) {
+	reaction := &waE2E.ReactionMessage{
+		Text: proto.String("👍"),
+		Key: &waCommon.MessageKey{
+			ID: proto.String("3EB0B6B66E20EE6B7F63"),
+		},
+	}
+
+	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "553121159080~3EB0B6B66E20EE6B7F63" {
+		t.Fatalf("own private 3EB reaction context message_id = %q", got)
+	}
+}
+
+func TestReactionContextInfoAddsOwnPrivateReactionParticipant(t *testing.T) {
+	reaction := &waE2E.ReactionMessage{
+		Text: proto.String("👍"),
+		Key: &waCommon.MessageKey{
+			ID:     proto.String("3B8C1C3F75F1EC9F56DC"),
+			FromMe: proto.Bool(true),
+		},
+	}
+
+	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "553121159080~3B8C1C3F75F1EC9F56DC" {
+		t.Fatalf("own private reaction context message_id = %q", got)
+	}
+}
+
+func TestReactionContextInfoAddsParticipantForGroupReactionID(t *testing.T) {
+	reaction := &waE2E.ReactionMessage{
+		Text: proto.String("👍"),
+		Key: &waCommon.MessageKey{
+			ID:          proto.String("3B8C1C3F75F1EC9F56DC"),
+			Participant: proto.String("5562933000233:3@s.whatsapp.net"),
+		},
+	}
+
+	ctx := reactionContextInfo("553121159080", nil, reaction, true)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "5562933000233~3B8C1C3F75F1EC9F56DC" {
+		t.Fatalf("group reaction context message_id = %q", got)
 	}
 }
 

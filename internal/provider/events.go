@@ -437,15 +437,8 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 		wireMsg["type"] = "text"
 		wireMsg["text"] = map[string]any{"body": emoji}
-		// reply to the original message that was reacted
-		if rk := r.GetKey(); rk != nil {
-			rid := strings.TrimSpace(rk.GetID())
-			if rid != "" {
-				wireMsg["context"] = map[string]any{
-					"message_id": rid,
-					"id":         rid,
-				}
-			}
+		if ctx := reactionContextInfo(sessionID, client, r, isGroupJID(chatJID)); ctx != nil {
+			wireMsg["context"] = ctx
 		}
 	case msg.GetButtonsResponseMessage() != nil:
 		if interactive := buildInboundButtonsResponsePayload(msg.GetButtonsResponseMessage()); interactive != nil {
@@ -1797,6 +1790,37 @@ func messageContextInfo(sessionID string, cli *whatsmeow.Client, m *waE2E.Messag
 	}
 
 	return ctx
+}
+
+func reactionContextInfo(sessionID string, cli *whatsmeow.Client, r *waE2E.ReactionMessage, groupChat bool) map[string]any {
+	if r == nil || r.GetKey() == nil {
+		return nil
+	}
+	key := r.GetKey()
+	messageID := strings.TrimSpace(key.GetID())
+	if messageID == "" {
+		return nil
+	}
+	contextID := messageID
+	participant := strings.TrimSpace(key.GetParticipant())
+	if participant == "" && !groupChat && key.GetFromMe() {
+		participant = normalizePhone(sessionID)
+	}
+	if participant == "" && !groupChat && looksLikeOwnWhatsAppMessageID(messageID) {
+		participant = normalizePhone(sessionID)
+	}
+	if shouldKeepContextParticipant(sessionID, groupChat, participant) {
+		contextID = withGroupParticipantMessageID(contextParticipantMessageIDUser(sessionID, cli, participant), messageID)
+	}
+	return map[string]any{
+		"message_id": contextID,
+		"id":         contextID,
+	}
+}
+
+func looksLikeOwnWhatsAppMessageID(messageID string) bool {
+	messageID = strings.ToUpper(strings.TrimSpace(messageID))
+	return strings.HasPrefix(messageID, "3EB")
 }
 
 func shouldKeepContextParticipant(sessionID string, groupChat bool, participant string) bool {

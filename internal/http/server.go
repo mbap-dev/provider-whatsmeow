@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"go.mau.fi/whatsmeow"
@@ -92,6 +93,8 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/sessions/{id}/fakecall", s.handleFakeCall).Methods(http.MethodPost)
 	// Debug: resolve destination JID applying overrides and LID lookup
 	router.HandleFunc("/sessions/{id}/resolve", s.handleResolve).Methods(http.MethodGet)
+	router.HandleFunc("/sessions/{id}/user/check", s.handleCheckUser).Methods(http.MethodPost)
+	router.HandleFunc("/user/check", s.handleCheckUser).Methods(http.MethodPost)
 
 	// Health and readiness probes
 	router.HandleFunc("/healthz", s.handleHealth).Methods(http.MethodGet)
@@ -270,6 +273,8 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 		return
 	}
 	router.HandleFunc(base+"/sessions/{id}/messages", s.handleSendMessage).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/user/check", s.handleCheckUser).Methods(http.MethodPost)
+	router.HandleFunc(base+"/user/check", s.handleCheckUser).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/media", s.handleUploadMedia).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/media/{media_id}", s.handleGetMedia).Methods(http.MethodGet)
 	router.HandleFunc(base+"/download/{id}/{file:.+}", s.handleDownloadMedia).Methods(http.MethodGet)
@@ -316,6 +321,45 @@ type createSessionRequest struct {
 	Assign  *bool  `json:"assign,omitempty"`
 }
 
+type checkUserRequest struct {
+	Number        []string `json:"number"`
+	SessionID     string   `json:"session_id,omitempty"`
+	PhoneNumberID string   `json:"phone_number_id,omitempty"`
+	FormatJID     *bool    `json:"formatJid,omitempty"`
+}
+
+func (r *checkUserRequest) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Number        any    `json:"number"`
+		SessionID     string `json:"session_id,omitempty"`
+		PhoneNumberID string `json:"phone_number_id,omitempty"`
+		FormatJID     *bool  `json:"formatJid,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	switch v := raw.Number.(type) {
+	case []any:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("number must be an array of strings")
+			}
+			r.Number = append(r.Number, s)
+		}
+	case string:
+		r.Number = []string{v}
+	case nil:
+		r.Number = nil
+	default:
+		return fmt.Errorf("number must be an array of strings")
+	}
+	r.SessionID = raw.SessionID
+	r.PhoneNumberID = raw.PhoneNumberID
+	r.FormatJID = raw.FormatJID
+	return nil
+}
+
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -357,6 +401,58 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session_id": sessionID,
 		"connected":  shouldConnect,
 		"assigned":   shouldAssign,
+	})
+}
+
+func (s *Server) handleCheckUser(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	var req checkUserRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.SessionID)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(req.PhoneNumberID)
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("session_id"))
+	}
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("phone_number_id"))
+	}
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if len(req.Number) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "phone number is required")
+		return
+	}
+	formatJID := false
+	if req.FormatJID != nil {
+		formatJID = *req.FormatJID
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	users, err := s.provider.CheckUsers(ctx, sessionID, req.Number, formatJID)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrInvalidSessionID):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		case strings.Contains(err.Error(), "not connected"),
+			strings.Contains(err.Error(), "disconnected"):
+			writeJSONError(w, http.StatusNotFound, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "success",
+		"data":    users,
 	})
 }
 

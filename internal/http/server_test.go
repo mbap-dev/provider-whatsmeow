@@ -147,6 +147,81 @@ func TestCreateSessionEndpointRejectsInvalidID(t *testing.T) {
 	}
 }
 
+func TestCheckUserEndpointRequiresNumber(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/sessions/553121159080/user/check",
+		bytes.NewBufferString(`{"number":[]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "phone number is required") {
+		t.Fatalf("response body = %s, want phone number is required", rec.Body.String())
+	}
+}
+
+func TestCheckUserEndpointReturnsNotFoundWhenSessionDisconnected(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/sessions/553121159080/user/check",
+		bytes.NewBufferString(`{"number":["5511999999999"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not connected") {
+		t.Fatalf("response body = %s, want not connected", rec.Body.String())
+	}
+}
+
+func TestCheckUserCompatibilityEndpointUsesPhoneNumberID(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+
+	srv := NewServer(&config.Config{}, manager, nil)
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/user/check",
+		bytes.NewBufferString(`{"phone_number_id":"553121159080","number":["5511999999999"]}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "session 553121159080 not connected") {
+		t.Fatalf("response body = %s, want session id from phone_number_id", rec.Body.String())
+	}
+}
+
 func TestWorkerEndpointOmitsGlobalWhatsAppWebVersion(t *testing.T) {
 	manager := provider.NewClientManager(provider.ManagerOptions{
 		SessionStore: t.TempDir(),

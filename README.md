@@ -85,7 +85,7 @@ Funcionalidades:
   - newsletter
 - mensagens próprias da sessão (`fromMe`) seguem formato UnoAPI em `messages[]` (com `from` igual ao número da sessão) e respeitam o filtro `send_outgoing_messages`.
 
-Tudo servido pelo próprio binário Go (`go:embed`), com runtime React carregado no frontend sem etapa local obrigatória de build.
+O frontend React é compilado em `internal/dashboard/public` com Vite e servido pelo próprio binário Go (`go:embed`). Use `make dashboard-build` após alterar os arquivos em `internal/dashboard/frontend`; Node/pnpm são necessários apenas nesse passo de build, não no runtime do provider.
 
 ---
 

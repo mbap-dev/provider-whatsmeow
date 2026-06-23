@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -11,7 +12,7 @@ import (
 
 // FakeCall envia um "offer" de chamada (somente para tocar) e encerra após ringMS.
 // Retorna o call-id usado.
-func (m *ClientManager) FakeCall(sessionID, to string, ringMS int) (string, error) {
+func (m *ClientManager) FakeCall(sessionID, to string, ringMS int, deviceMode string) (string, error) {
 	ent, err := m.mustHave(sessionID)
 	if err != nil {
 		return "", err
@@ -32,25 +33,24 @@ func (m *ClientManager) FakeCall(sessionID, to string, ringMS int) (string, erro
 	}
 	// WhatsApp usa JID não-AD para eventos de call
 	dest := destJID.ToNonAD()
-	own := cli.DangerousInternals().GetOwnID().ToNonAD()
-
-	// IDs
-	stanzaID := cli.GenerateMessageID()
-	callID := string(cli.GenerateMessageID())
-
-	// Envia nó de oferta (ring)
-	offer := waBinary.Node{
-		Tag:   "offer",
-		Attrs: waBinary.Attrs{"call-id": callID, "call-creator": own},
+	own := cli.DangerousInternals().GetOwnID()
+	deviceMode = strings.ToLower(strings.TrimSpace(deviceMode))
+	if deviceMode == "" {
+		deviceMode = "direct"
 	}
-	node := waBinary.Node{
-		Tag:   "call",
-		Attrs: waBinary.Attrs{"id": stanzaID, "from": own, "to": dest, "platform": "web", "version": "2"},
-		Content: []waBinary.Node{
-			offer,
-		},
+	termDest := dest
+	termOwn := own
+	if deviceMode == "direct" {
+		termDest = cli.ResolveCallRecipient(context.Background(), dest)
+		if ownLID := cli.DangerousInternals().GetOwnLID().ToNonAD(); !ownLID.IsEmpty() {
+			termOwn = ownLID
+		} else {
+			termOwn = own.ToNonAD()
+		}
 	}
-	if err := cli.DangerousInternals().SendNode(context.Background(), node); err != nil {
+
+	callID, err := cli.OfferCallWithDeviceMode(context.Background(), dest, false, deviceMode)
+	if err != nil {
 		return "", fmt.Errorf("send offer failed: %w", err)
 	}
 
@@ -65,16 +65,20 @@ func (m *ClientManager) FakeCall(sessionID, to string, ringMS int) (string, erro
 		// Envia terminate para parar o toque
 		term := waBinary.Node{
 			Tag:   "terminate",
-			Attrs: waBinary.Attrs{"call-id": callID, "call-creator": own, "reason": "timeout"},
+			Attrs: waBinary.Attrs{"call-id": callID, "call-creator": termOwn, "reason": "timeout"},
 		}
 		tnode := waBinary.Node{
 			Tag:     "call",
-			Attrs:   waBinary.Attrs{"id": cli.GenerateMessageID(), "from": own, "to": dest},
+			Attrs:   waBinary.Attrs{"id": cli.GenerateMessageID(), "from": termOwn, "to": termDest},
 			Content: []waBinary.Node{term},
 		}
-		_ = cli.DangerousInternals().SendNode(context.Background(), tnode)
+		if err := cli.DangerousInternals().SendNode(context.Background(), tnode); err != nil {
+			ent.Log.Errorf("fake_call terminate error to=%s wire_to=%s call_id=%s err=%v", dest.String(), termDest.String(), callID, err)
+		} else {
+			ent.Log.Infof("fake_call terminate sent to=%s wire_to=%s call_id=%s node=%s", dest.String(), termDest.String(), callID, tnode.String())
+		}
 	}()
 
-	ent.Log.Infof("fake_call started to=%s call_id=%s ring_ms=%d", dest.String(), callID, ringMS)
+	ent.Log.Infof("fake_call started to=%s wire_to=%s call_id=%s ring_ms=%d device_mode=%s", dest.String(), termDest.String(), callID, ringMS, deviceMode)
 	return callID, nil
 }

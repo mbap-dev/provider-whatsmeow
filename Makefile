@@ -5,8 +5,10 @@ GOFLAGS  ?=
 BIN      ?= bin/whatsmeow-adapter
 COMPOSE  ?= docker compose
 COMPOSE_FILE ?= docker-compose.yml
+PNPM     ?= pnpm
+DASHBOARD_FRONTEND_DIR ?= internal/dashboard/frontend
 
-.PHONY: all check test build tidy vet fmt docker-build deploy deploy-up deploy-down deploy-logs deploy-ps deploy-restart deploy-smoke
+.PHONY: all check test build tidy vet fmt dashboard-install dashboard-build dashboard-dev docker-build deploy deploy-up deploy-down deploy-logs deploy-ps deploy-restart deploy-smoke
 
 all: check build
 
@@ -23,6 +25,15 @@ test:
 
 build:
 	$(GO) build $(GOFLAGS) -o $(BIN) ./cmd/whatsmeow-adapter
+
+dashboard-install:
+	cd $(DASHBOARD_FRONTEND_DIR) && $(PNPM) install --frozen-lockfile
+
+dashboard-build:
+	cd $(DASHBOARD_FRONTEND_DIR) && $(PNPM) run build
+
+dashboard-dev:
+	cd $(DASHBOARD_FRONTEND_DIR) && $(PNPM) run dev
 
 docker-build:
 	docker build -t provider-whatsmeow:local .

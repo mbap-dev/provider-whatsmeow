@@ -8,6 +8,8 @@
 bin
 data
 state
+node_modules
+internal/dashboard/frontend/node_modules
 *.log
 *.tmp
 .DS_Store

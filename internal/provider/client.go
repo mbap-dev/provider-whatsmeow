@@ -871,8 +871,12 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	// SQLite por sessão: SESSION_STORE/<sessionID>/session.db  (modernc)
 	dbPath := filepath.Join(m.SessionPath(sessionID), "session.db")
 
-	dbLog := waLog.Stdout("Database", "INFO", true)
-	clientLog := waLog.Stdout("Client", "INFO", true)
+	waLogLevel := "INFO"
+	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
+		waLogLevel = "DEBUG"
+	}
+	dbLog := waLog.Stdout("Database", waLogLevel, true)
+	clientLog := waLog.Stdout("Client", waLogLevel, true)
 
 	// PRAGMAs para reduzir SQLITE_BUSY e melhorar concorrência
 	dsn := fmt.Sprintf(

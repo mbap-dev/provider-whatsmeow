@@ -1210,12 +1210,13 @@ func (s *Server) handleDeleteSessionTemplate(w http.ResponseWriter, r *http.Requ
 }
 
 type fakeCallRequest struct {
-	To     string `json:"to"`
-	RingMS int    `json:"ring_ms"`
+	To         string `json:"to"`
+	RingMS     int    `json:"ring_ms"`
+	DeviceMode string `json:"device_mode"`
 }
 
 // handleFakeCall triggers a ring-only fake voice call to the destination.
-// Body: {"to": "<phone or jid>", "ring_ms": 15000}
+// Body: {"to": "<phone or jid>", "ring_ms": 15000, "device_mode": "direct"}
 func (s *Server) handleFakeCall(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
 	var req fakeCallRequest
@@ -1233,7 +1234,12 @@ func (s *Server) handleFakeCall(w http.ResponseWriter, r *http.Request) {
 		ringMS = 15000
 	}
 
-	callID, err := s.provider.FakeCall(id, to, ringMS)
+	deviceMode := strings.TrimSpace(req.DeviceMode)
+	if deviceMode == "" {
+		deviceMode = "direct"
+	}
+
+	callID, err := s.provider.FakeCall(id, to, ringMS, deviceMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1241,9 +1247,10 @@ func (s *Server) handleFakeCall(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"call_id": callID,
-		"ring_ms": ringMS,
-		"to":      to,
+		"call_id":     callID,
+		"device_mode": deviceMode,
+		"ring_ms":     ringMS,
+		"to":          to,
 	})
 }
 

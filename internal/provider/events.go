@@ -158,11 +158,19 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			m.stopAlwaysOnline(sessionID)
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
-			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s", e.CallCreator.String(), e.CallID)
+			nodeXML := "<nil>"
+			if e.Data != nil {
+				nodeXML = e.Data.String()
+			}
+			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s node=%s", e.CallCreator.String(), e.CallID, nodeXML)
 			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
 		case *events.CallOfferNotice:
 			// Group calls or calls from companion devices
-			log.WithSession(sessionID).Info("evt=call_offer_notice from=%s call_id=%s media=%s type=%s", e.CallCreator.String(), e.CallID, e.Media, e.Type)
+			nodeXML := "<nil>"
+			if e.Data != nil {
+				nodeXML = e.Data.String()
+			}
+			log.WithSession(sessionID).Info("evt=call_offer_notice from=%s call_id=%s media=%s type=%s node=%s", e.CallCreator.String(), e.CallID, e.Media, e.Type, nodeXML)
 			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
 		case *events.CallAccept:
 			// Log when a call is accepted (might be from another device)
@@ -172,7 +180,11 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			log.WithSession(sessionID).Info("evt=call_terminate call_id=%s reason=%s", e.CallID, e.Reason)
 		case *events.UnknownCallEvent:
 			// Log unknown call events for debugging
-			log.WithSession(sessionID).Info("evt=unknown_call_event node=%v", e.Node)
+			nodeXML := "<nil>"
+			if e.Node != nil {
+				nodeXML = e.Node.String()
+			}
+			log.WithSession(sessionID).Info("evt=unknown_call_event node=%s", nodeXML)
 		case *events.AppStateSyncComplete:
 			if e.Name == "critical_block" || e.Name == "regular_high" {
 				_ = client.SendPresence(context.Background(), types.PresenceAvailable)

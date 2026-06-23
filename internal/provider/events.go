@@ -675,12 +675,12 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		wireMsg["sticker"] = sticker
 
 	case msg.GetLocationMessage() != nil:
-		l := msg.GetLocationMessage()
 		wireMsg["type"] = "location"
-		wireMsg["location"] = map[string]any{
-			"latitude":  l.GetDegreesLatitude(),
-			"longitude": l.GetDegreesLongitude(),
-		}
+		wireMsg["location"] = buildInboundLocationPayload(msg.GetLocationMessage())
+
+	case msg.GetLiveLocationMessage() != nil:
+		wireMsg["type"] = "location"
+		wireMsg["location"] = buildInboundLiveLocationPayload(msg.GetLiveLocationMessage())
 
 	default:
 		// fallback: se nada identificado mas tem algo, tenta extrair caption/text
@@ -1582,8 +1582,32 @@ func extractMessageContextInfo(m *waE2E.Message) *waE2E.ContextInfo {
 		return m.GetAudioMessage().GetContextInfo()
 	case m.GetStickerMessage() != nil:
 		return m.GetStickerMessage().GetContextInfo()
+	case m.GetLocationMessage() != nil:
+		return m.GetLocationMessage().GetContextInfo()
+	case m.GetLiveLocationMessage() != nil:
+		return m.GetLiveLocationMessage().GetContextInfo()
 	}
 	return nil
+}
+
+func buildInboundLocationPayload(in *waE2E.LocationMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+	return map[string]any{
+		"latitude":  in.GetDegreesLatitude(),
+		"longitude": in.GetDegreesLongitude(),
+	}
+}
+
+func buildInboundLiveLocationPayload(in *waE2E.LiveLocationMessage) map[string]any {
+	if in == nil {
+		return nil
+	}
+	return map[string]any{
+		"latitude":  in.GetDegreesLatitude(),
+		"longitude": in.GetDegreesLongitude(),
+	}
 }
 
 func buildInboundButtonsResponsePayload(in *waE2E.ButtonsResponseMessage) map[string]any {

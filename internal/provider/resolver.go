@@ -112,6 +112,14 @@ func normalizeE164Local(input string) string {
 	return phonenumbers.Format(num, phonenumbers.E164)
 }
 
+func validE164PhoneNumber(input string) bool {
+	num, err := phonenumbers.Parse(strings.TrimSpace(input), "")
+	if err != nil {
+		return false
+	}
+	return phonenumbers.IsValidNumber(num)
+}
+
 // candidatesBR: for +55 DDD local, try original, with 9, and without 9.
 func candidatesBR(pnE164 string) []string {
 	if !strings.HasPrefix(pnE164, "+55") || len(pnE164) < 5 {
@@ -124,7 +132,7 @@ func candidatesBR(pnE164 string) []string {
 	ddd := rest[:2]
 	local := rest[2:]
 	with9 := pnE164
-	if !strings.HasPrefix(local, "9") {
+	if len(local) == 8 && local[0] >= '6' && local[0] <= '9' {
 		with9 = "+55" + ddd + "9" + local
 	}
 	without9 := pnE164

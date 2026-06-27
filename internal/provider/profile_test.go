@@ -120,3 +120,19 @@ func TestGroupParticipantPayloadUsesDisplayID(t *testing.T) {
 		t.Fatalf("name = %#v", got)
 	}
 }
+
+func TestGroupParticipantPayloadNormalizesBrazilMobileWAID(t *testing.T) {
+	participant := types.JID{User: "556296303132", Server: "s.whatsapp.net"}
+
+	payload := groupParticipantPayload("553121159080", nil, participant)
+
+	if got := payload["wa_id"]; got != "5562996303132" {
+		t.Fatalf("wa_id = %#v", got)
+	}
+}
+
+func TestNormalizeCloudContactWAIDKeepsLID(t *testing.T) {
+	if got := normalizeCloudContactWAID("123456@lid"); got != "123456@lid" {
+		t.Fatalf("normalizeCloudContactWAID() = %q", got)
+	}
+}

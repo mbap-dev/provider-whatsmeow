@@ -2465,6 +2465,7 @@ func groupParticipantPayload(sessionID string, cli *whatsmeow.Client, candidates
 	if displayID == "" {
 		displayID = jid.String()
 	}
+	displayID = normalizeCloudContactWAID(displayID)
 	name := displayID
 	if contactName, ok := safeGetContactName(sessionID, cli, candidates...); ok && strings.TrimSpace(contactName) != "" {
 		name = contactName
@@ -2477,6 +2478,47 @@ func groupParticipantPayload(sessionID string, cli *whatsmeow.Client, candidates
 		payload["picture"] = pic
 	}
 	return payload
+}
+
+func normalizeCloudContactWAID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasSuffix(strings.ToLower(value), "@lid") {
+		return value
+	}
+	digits := digitsOnly(value)
+	if digits == "" {
+		return value
+	}
+
+	e164 := normalizeE164Local("+" + digits)
+	if e164 == "" {
+		e164 = normalizeE164Local(digits)
+	}
+	if e164 == "" {
+		return digits
+	}
+	return strings.TrimPrefix(preferredCloudContactE164(e164), "+")
+}
+
+func preferredCloudContactE164(e164 string) string {
+	candidates := candidatesBR(e164)
+	if strings.HasPrefix(e164, "+55") {
+		best := ""
+		for _, candidate := range candidates {
+			if len(digitsOnly(candidate)) > len(digitsOnly(best)) {
+				best = candidate
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
+	for _, candidate := range candidates {
+		if validE164PhoneNumber(candidate) {
+			return candidate
+		}
+	}
+	return e164
 }
 
 func firstUsableJID(candidates ...types.JID) types.JID {

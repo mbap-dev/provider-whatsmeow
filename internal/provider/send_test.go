@@ -171,10 +171,37 @@ func TestResolveMentionTargetsUsesResolvedJIDForE164Phone(t *testing.T) {
 		},
 	}
 
-	got := manager.resolveMentionTargets(context.Background(), &whatsmeow.Client{}, []string{"+5562996303132"})
+	got, replacements := manager.resolveMentionTargetsWithReplacements(context.Background(), &whatsmeow.Client{}, []string{"+5562996303132"})
 	want := []string{"556296303132@s.whatsapp.net"}
 
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("resolveMentionTargets() = %v, want %v", got, want)
+	}
+	if got := replacements["5562996303132"]; got != "556296303132" {
+		t.Fatalf("replacement = %q, want %q", got, "556296303132")
+	}
+}
+
+func TestRewriteMentionTextUsesResolvedJIDUser(t *testing.T) {
+	got := rewriteMentionText(
+		"@5562996303132  teste",
+		map[string]string{"5562996303132": "556296303132"},
+	)
+	want := "@556296303132  teste"
+
+	if got != want {
+		t.Fatalf("rewriteMentionText() = %q, want %q", got, want)
+	}
+}
+
+func TestRewriteMentionTextDoesNotRewritePartialMention(t *testing.T) {
+	got := rewriteMentionText(
+		"@556299630313299 teste",
+		map[string]string{"5562996303132": "556296303132"},
+	)
+	want := "@556299630313299 teste"
+
+	if got != want {
+		t.Fatalf("rewriteMentionText() = %q, want %q", got, want)
 	}
 }

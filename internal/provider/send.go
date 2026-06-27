@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -357,6 +358,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 
 	requestsMentionAll := outgoingMessageRequestsMentionAll(msg)
 	var ctxInfo *goE2E.ContextInfo
+	var mentionTextReplacements map[string]string
 	if msg.Context != nil || len(msg.Mentions) > 0 || requestsMentionAll {
 		var stanzaID string
 		var participantFromID string
@@ -391,7 +393,8 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			mList = append(mList, msg.Context.Mentions...)
 		}
 		mList = append(mList, msg.Mentions...)
-		mentioned := m.resolveMentionTargets(ctx, cli, mList)
+		mentioned, replacements := m.resolveMentionTargetsWithReplacements(ctx, cli, mList)
+		mentionTextReplacements = replacements
 		if requestsMentionAll && strings.HasSuffix(jid.Server, "g.us") {
 			participants, err := resolveMentionAllJIDs(ctx, cli, jid)
 			if err != nil {
@@ -465,6 +468,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if body == "" {
 			return fmt.Errorf("empty text body")
 		}
+		body = rewriteMentionText(body, mentionTextReplacements)
 		var wire *goE2E.Message
 		if ctxInfo != nil {
 			wire = &goE2E.Message{
@@ -498,6 +502,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
+		caption = rewriteMentionText(caption, mentionTextReplacements)
 		var (
 			data []byte
 			mime string
@@ -566,6 +571,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
+		caption = rewriteMentionText(caption, mentionTextReplacements)
 		var (
 			data []byte
 			mime string
@@ -644,6 +650,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 		if caption == "" {
 			caption = strings.TrimSpace(msg.Caption)
 		}
+		caption = rewriteMentionText(caption, mentionTextReplacements)
 		var (
 			data []byte
 			mime string
@@ -2021,13 +2028,19 @@ func normalizeMentionTargets(values []string) []string {
 }
 
 func (m *ClientManager) resolveMentionTargets(ctx context.Context, cli *whatsmeow.Client, values []string) []string {
+	targets, _ := m.resolveMentionTargetsWithReplacements(ctx, cli, values)
+	return targets
+}
+
+func (m *ClientManager) resolveMentionTargetsWithReplacements(ctx context.Context, cli *whatsmeow.Client, values []string) ([]string, map[string]string) {
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
+	replacements := make(map[string]string)
 	for _, value := range values {
-		jid, ok := m.resolveMentionTarget(ctx, cli, value)
+		jid, aliases, ok := m.resolveMentionTarget(ctx, cli, value)
 		if !ok {
 			continue
 		}
@@ -2037,27 +2050,32 @@ func (m *ClientManager) resolveMentionTargets(ctx context.Context, cli *whatsmeo
 		}
 		seen[key] = struct{}{}
 		out = append(out, key)
+		addMentionTextReplacements(replacements, aliases, jid.User)
 	}
-	return out
+	if len(replacements) == 0 {
+		replacements = nil
+	}
+	return out, replacements
 }
 
-func (m *ClientManager) resolveMentionTarget(ctx context.Context, cli *whatsmeow.Client, value string) (types.JID, bool) {
+func (m *ClientManager) resolveMentionTarget(ctx context.Context, cli *whatsmeow.Client, value string) (types.JID, []string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return types.JID{}, false
+		return types.JID{}, nil, false
 	}
+	aliases := mentionTextAliases(value)
 	if cli != nil {
 		if lookup := mentionTargetPhoneLookup(value); lookup != "" {
 			if jid, ok := m.resolvePNtoJID(ctx, cli, lookup); ok {
-				return jid, true
+				return jid, append(aliases, mentionTextAliases(lookup)...), true
 			}
 		}
 	}
 	jid, err := toUserJID(value)
 	if err != nil {
-		return types.JID{}, false
+		return types.JID{}, nil, false
 	}
-	return jid, true
+	return jid, aliases, true
 }
 
 func mentionTargetPhoneLookup(value string) string {
@@ -2077,6 +2095,55 @@ func mentionTargetPhoneLookup(value string) string {
 		return ""
 	}
 	return value
+}
+
+func mentionTextAliases(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if i := strings.Index(value, "@"); i >= 0 {
+		value = strings.TrimSpace(value[:i])
+	}
+	aliases := []string{value, strings.TrimPrefix(value, "+")}
+	if digits := digitsOnly(value); digits != "" {
+		aliases = append(aliases, digits)
+		if e164 := normalizeE164Local("+" + digits); e164 != "" {
+			aliases = append(aliases, e164, strings.TrimPrefix(e164, "+"))
+			for _, candidate := range candidatesBR(e164) {
+				aliases = append(aliases, candidate, strings.TrimPrefix(candidate, "+"))
+			}
+		}
+	}
+	return appendUniqueStrings(nil, aliases...)
+}
+
+func addMentionTextReplacements(replacements map[string]string, aliases []string, jidUser string) {
+	jidUser = strings.TrimSpace(jidUser)
+	if jidUser == "" {
+		return
+	}
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || alias == jidUser {
+			continue
+		}
+		replacements[alias] = jidUser
+	}
+}
+
+func rewriteMentionText(text string, replacements map[string]string) string {
+	if text == "" || len(replacements) == 0 {
+		return text
+	}
+	for alias, jidUser := range replacements {
+		if alias == "" || jidUser == "" || alias == jidUser {
+			continue
+		}
+		pattern := regexp.MustCompile(`(^|[^[:alnum:]_])@` + regexp.QuoteMeta(alias) + `($|[^[:alnum:]_])`)
+		text = pattern.ReplaceAllString(text, `${1}@`+jidUser+`${2}`)
+	}
+	return text
 }
 
 func appendUniqueStrings(base []string, values ...string) []string {

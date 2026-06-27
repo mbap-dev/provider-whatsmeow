@@ -2465,7 +2465,6 @@ func groupParticipantPayload(sessionID string, cli *whatsmeow.Client, candidates
 	if displayID == "" {
 		displayID = jid.String()
 	}
-	displayID = normalizeCloudContactWAID(displayID)
 	name := displayID
 	if contactName, ok := safeGetContactName(sessionID, cli, candidates...); ok && strings.TrimSpace(contactName) != "" {
 		name = contactName
@@ -2474,20 +2473,23 @@ func groupParticipantPayload(sessionID string, cli *whatsmeow.Client, candidates
 		"wa_id": displayID,
 		"name":  name,
 	}
+	if phoneNumber := normalizeCloudContactPhoneNumber(displayID); phoneNumber != "" {
+		payload["phone_number"] = phoneNumber
+	}
 	if pic, ok := getAvatarURL(sessionID, cli, jid); ok && strings.TrimSpace(pic) != "" {
 		payload["picture"] = pic
 	}
 	return payload
 }
 
-func normalizeCloudContactWAID(value string) string {
+func normalizeCloudContactPhoneNumber(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.HasSuffix(strings.ToLower(value), "@lid") {
-		return value
+		return ""
 	}
 	digits := digitsOnly(value)
 	if digits == "" {
-		return value
+		return ""
 	}
 
 	e164 := normalizeE164Local("+" + digits)
@@ -2495,9 +2497,9 @@ func normalizeCloudContactWAID(value string) string {
 		e164 = normalizeE164Local(digits)
 	}
 	if e164 == "" {
-		return digits
+		return ""
 	}
-	return strings.TrimPrefix(preferredCloudContactE164(e164), "+")
+	return preferredCloudContactE164(e164)
 }
 
 func preferredCloudContactE164(e164 string) string {

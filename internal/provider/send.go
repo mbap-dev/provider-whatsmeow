@@ -391,7 +391,7 @@ func (m *ClientManager) Send(ctx context.Context, msg OutgoingMessage) error {
 			mList = append(mList, msg.Context.Mentions...)
 		}
 		mList = append(mList, msg.Mentions...)
-		mentioned := normalizeMentionTargets(mList)
+		mentioned := m.resolveMentionTargets(ctx, cli, mList)
 		if requestsMentionAll && strings.HasSuffix(jid.Server, "g.us") {
 			participants, err := resolveMentionAllJIDs(ctx, cli, jid)
 			if err != nil {
@@ -2020,6 +2020,65 @@ func normalizeMentionTargets(values []string) []string {
 	return out
 }
 
+func (m *ClientManager) resolveMentionTargets(ctx context.Context, cli *whatsmeow.Client, values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		jid, ok := m.resolveMentionTarget(ctx, cli, value)
+		if !ok {
+			continue
+		}
+		key := jid.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+func (m *ClientManager) resolveMentionTarget(ctx context.Context, cli *whatsmeow.Client, value string) (types.JID, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return types.JID{}, false
+	}
+	if cli != nil {
+		if lookup := mentionTargetPhoneLookup(value); lookup != "" {
+			if jid, ok := m.resolvePNtoJID(ctx, cli, lookup); ok {
+				return jid, true
+			}
+		}
+	}
+	jid, err := toUserJID(value)
+	if err != nil {
+		return types.JID{}, false
+	}
+	return jid, true
+}
+
+func mentionTargetPhoneLookup(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if i := strings.Index(value, "@"); i >= 0 {
+		user := strings.TrimSpace(value[:i])
+		server := strings.ToLower(strings.TrimSpace(value[i+1:]))
+		if server != types.DefaultUserServer || digitsOnly(user) == "" {
+			return ""
+		}
+		return user
+	}
+	if digitsOnly(value) == "" {
+		return ""
+	}
+	return value
+}
+
 func appendUniqueStrings(base []string, values ...string) []string {
 	if len(values) == 0 {
 		return base
@@ -2352,6 +2411,11 @@ func toUserJID(to string) (types.JID, error) {
 		}
 		if j.Server == "" {
 			j.Server = types.DefaultUserServer
+		}
+		if j.Server == types.DefaultUserServer {
+			if digits := digitsOnly(j.User); digits != "" {
+				j.User = digits
+			}
 		}
 		return j, nil
 	}

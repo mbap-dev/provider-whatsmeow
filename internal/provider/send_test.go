@@ -1,8 +1,12 @@
 package provider
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"go.mau.fi/whatsmeow"
 )
 
 func TestToUserJIDDigits(t *testing.T) {
@@ -128,15 +132,49 @@ func TestNormalizeMentionTargetsDeduplicates(t *testing.T) {
 	got := normalizeMentionTargets([]string{
 		"5562999999999",
 		"5562999999999@s.whatsapp.net",
+		"+5562996303132@s.whatsapp.net",
 		" 5562888888888 ",
 		"",
 	})
 
 	want := []string{
 		"5562999999999@s.whatsapp.net",
+		"5562996303132@s.whatsapp.net",
 		"5562888888888@s.whatsapp.net",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("normalizeMentionTargets() = %v, want %v", got, want)
+	}
+}
+
+func TestMentionTargetPhoneLookupExtractsUserJIDPhone(t *testing.T) {
+	got := mentionTargetPhoneLookup("+5562996303132@s.whatsapp.net")
+
+	if got != "+5562996303132" {
+		t.Fatalf("mentionTargetPhoneLookup() = %q", got)
+	}
+}
+
+func TestMentionTargetPhoneLookupIgnoresLID(t *testing.T) {
+	if got := mentionTargetPhoneLookup("123456@lid"); got != "" {
+		t.Fatalf("mentionTargetPhoneLookup() = %q", got)
+	}
+}
+
+func TestResolveMentionTargetsUsesResolvedJIDForE164Phone(t *testing.T) {
+	manager := &ClientManager{
+		pnCache: map[string]pnCacheItem{
+			"+5562996303132": {
+				val: "556296303132@s.whatsapp.net",
+				exp: time.Now().Add(time.Hour),
+			},
+		},
+	}
+
+	got := manager.resolveMentionTargets(context.Background(), &whatsmeow.Client{}, []string{"+5562996303132"})
+	want := []string{"556296303132@s.whatsapp.net"}
+
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("resolveMentionTargets() = %v, want %v", got, want)
 	}
 }

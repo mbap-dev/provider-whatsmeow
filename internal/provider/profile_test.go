@@ -121,18 +121,21 @@ func TestGroupParticipantPayloadUsesDisplayID(t *testing.T) {
 	}
 }
 
-func TestGroupParticipantPayloadNormalizesBrazilMobileWAID(t *testing.T) {
+func TestGroupParticipantPayloadKeepsRealWAIDAndAddsNormalizedPhoneNumber(t *testing.T) {
 	participant := types.JID{User: "556296303132", Server: "s.whatsapp.net"}
 
 	payload := groupParticipantPayload("553121159080", nil, participant)
 
-	if got := payload["wa_id"]; got != "5562996303132" {
+	if got := payload["wa_id"]; got != "556296303132" {
 		t.Fatalf("wa_id = %#v", got)
+	}
+	if got := payload["phone_number"]; got != "+5562996303132" {
+		t.Fatalf("phone_number = %#v", got)
 	}
 }
 
-func TestNormalizeCloudContactWAIDKeepsLID(t *testing.T) {
-	if got := normalizeCloudContactWAID("123456@lid"); got != "123456@lid" {
-		t.Fatalf("normalizeCloudContactWAID() = %q", got)
+func TestNormalizeCloudContactPhoneNumberIgnoresLID(t *testing.T) {
+	if got := normalizeCloudContactPhoneNumber("123456@lid"); got != "" {
+		t.Fatalf("normalizeCloudContactPhoneNumber() = %q", got)
 	}
 }

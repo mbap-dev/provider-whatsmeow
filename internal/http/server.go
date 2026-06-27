@@ -316,9 +316,11 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 type createSessionRequest struct {
-	ID      string `json:"id"`
-	Connect *bool  `json:"connect,omitempty"`
-	Assign  *bool  `json:"assign,omitempty"`
+	ID      string                      `json:"id"`
+	Connect *bool                       `json:"connect,omitempty"`
+	Assign  *bool                       `json:"assign,omitempty"`
+	Config  *updateSessionConfigRequest `json:"config,omitempty"`
+	Webhook *sessionWebhookRequest      `json:"webhook,omitempty"`
 }
 
 type checkUserRequest struct {
@@ -391,6 +393,20 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionID = norm
 	}
+	if req.Config != nil {
+		if _, err := s.provider.UpdateSessionConfig(sessionID, req.Config.toProviderPatch()); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	webhookCreated := false
+	if req.Webhook != nil {
+		if _, err := s.provider.UpsertSessionWebhook(sessionID, req.Webhook.toProviderWebhook()); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		webhookCreated = true
+	}
 	if shouldConnect {
 		if _, err := s.provider.Connect(sessionID); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -401,6 +417,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		"session_id": sessionID,
 		"connected":  shouldConnect,
 		"assigned":   shouldAssign,
+		"webhook":    webhookCreated,
 	})
 }
 
@@ -924,12 +941,35 @@ type updateSessionConfigRequest struct {
 	OutgoingMessagesCoex        *bool   `json:"outgoing_messages_coex,omitempty"`
 	AlwaysOnline                *bool   `json:"always_online,omitempty"`
 	AlwaysOnlineIntervalSeconds *int    `json:"always_online_interval_seconds,omitempty"`
+	HistorySyncEnabled          *bool   `json:"history_sync_enabled,omitempty"`
+	HistorySyncDays             *int    `json:"history_sync_days,omitempty"`
 	ProxyEnabled                *bool   `json:"proxy_enabled,omitempty"`
 	ProxyProtocol               *string `json:"proxy_protocol,omitempty"`
 	ProxyHost                   *string `json:"proxy_host,omitempty"`
 	ProxyPort                   *string `json:"proxy_port,omitempty"`
 	ProxyUsername               *string `json:"proxy_username,omitempty"`
 	ProxyPassword               *string `json:"proxy_password,omitempty"`
+}
+
+func (r updateSessionConfigRequest) toProviderPatch() provider.SessionConfigPatch {
+	return provider.SessionConfigPatch{
+		RejectCalls:                 r.RejectCalls,
+		RejectCallsMessage:          r.RejectCallsMessage,
+		MarkReadOnMessage:           r.MarkReadOnMessage,
+		IgnoreStatusBroadcast:       r.IgnoreStatusBroadcast,
+		IgnoreNewsletters:           r.IgnoreNewsletters,
+		OutgoingMessagesCoex:        r.OutgoingMessagesCoex,
+		AlwaysOnline:                r.AlwaysOnline,
+		AlwaysOnlineIntervalSeconds: r.AlwaysOnlineIntervalSeconds,
+		HistorySyncEnabled:          r.HistorySyncEnabled,
+		HistorySyncDays:             r.HistorySyncDays,
+		ProxyEnabled:                r.ProxyEnabled,
+		ProxyProtocol:               r.ProxyProtocol,
+		ProxyHost:                   r.ProxyHost,
+		ProxyPort:                   r.ProxyPort,
+		ProxyUsername:               r.ProxyUsername,
+		ProxyPassword:               r.ProxyPassword,
+	}
 }
 
 func (s *Server) handleGetSessionConfig(w http.ResponseWriter, r *http.Request) {
@@ -957,22 +997,7 @@ func (s *Server) handleUpdateSessionConfig(w http.ResponseWriter, r *http.Reques
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
 		return
 	}
-	snapshot, err := s.provider.UpdateSessionConfig(sessionID, provider.SessionConfigPatch{
-		RejectCalls:                 req.RejectCalls,
-		RejectCallsMessage:          req.RejectCallsMessage,
-		MarkReadOnMessage:           req.MarkReadOnMessage,
-		IgnoreStatusBroadcast:       req.IgnoreStatusBroadcast,
-		IgnoreNewsletters:           req.IgnoreNewsletters,
-		OutgoingMessagesCoex:        req.OutgoingMessagesCoex,
-		AlwaysOnline:                req.AlwaysOnline,
-		AlwaysOnlineIntervalSeconds: req.AlwaysOnlineIntervalSeconds,
-		ProxyEnabled:                req.ProxyEnabled,
-		ProxyProtocol:               req.ProxyProtocol,
-		ProxyHost:                   req.ProxyHost,
-		ProxyPort:                   req.ProxyPort,
-		ProxyUsername:               req.ProxyUsername,
-		ProxyPassword:               req.ProxyPassword,
-	})
+	snapshot, err := s.provider.UpdateSessionConfig(sessionID, req.toProviderPatch())
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return

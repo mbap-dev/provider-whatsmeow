@@ -111,6 +111,8 @@ type sessionOverrides struct {
 	outgoingMessagesCoex  *bool
 	alwaysOnline          *bool
 	alwaysOnlineEvery     *time.Duration
+	historySyncEnabled    *bool
+	historySyncDays       *int
 }
 
 type ManagerOptions struct {
@@ -871,9 +873,9 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	// SQLite por sessão: SESSION_STORE/<sessionID>/session.db  (modernc)
 	dbPath := filepath.Join(m.SessionPath(sessionID), "session.db")
 
-	waLogLevel := "INFO"
-	if strings.EqualFold(os.Getenv("LOG_LEVEL"), "debug") {
-		waLogLevel = "DEBUG"
+	waLogLevel := strings.ToUpper(strings.TrimSpace(os.Getenv("WHATSMEOW_LOG_LEVEL")))
+	if waLogLevel == "" {
+		waLogLevel = "INFO"
 	}
 	dbLog := waLog.Stdout("Database", waLogLevel, true)
 	clientLog := waLog.Stdout("Client", waLogLevel, true)

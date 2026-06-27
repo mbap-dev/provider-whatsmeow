@@ -296,7 +296,7 @@ func TestReactionContextInfoKeepsPrivateReactionIDPlain(t *testing.T) {
 		},
 	}
 
-	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	ctx := reactionContextInfo("553121159080", nil, reaction, false, types.JID{})
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
@@ -313,7 +313,7 @@ func TestReactionContextInfoAddsOwnParticipantForPrivate3EBReactionID(t *testing
 		},
 	}
 
-	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	ctx := reactionContextInfo("553121159080", nil, reaction, false, types.JID{})
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
@@ -331,7 +331,7 @@ func TestReactionContextInfoAddsOwnPrivateReactionParticipant(t *testing.T) {
 		},
 	}
 
-	ctx := reactionContextInfo("553121159080", nil, reaction, false)
+	ctx := reactionContextInfo("553121159080", nil, reaction, false, types.JID{})
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
@@ -349,12 +349,92 @@ func TestReactionContextInfoAddsParticipantForGroupReactionID(t *testing.T) {
 		},
 	}
 
-	ctx := reactionContextInfo("553121159080", nil, reaction, true)
+	ctx := reactionContextInfo("553121159080", nil, reaction, true, types.JID{})
 	if ctx == nil {
 		t.Fatal("expected context")
 	}
 	if got := ctx["message_id"]; got != "5562933000233~3B8C1C3F75F1EC9F56DC" {
 		t.Fatalf("group reaction context message_id = %q", got)
+	}
+}
+
+func TestReactionContextInfoAddsSenderParticipantForOwnGroupReactionID(t *testing.T) {
+	reaction := &waE2E.ReactionMessage{
+		Text: proto.String("❤️"),
+		Key: &waCommon.MessageKey{
+			ID:     proto.String("3B47D7C668CA755A0440"),
+			FromMe: proto.Bool(true),
+		},
+	}
+
+	ctx := reactionContextInfo(
+		"553121159080",
+		nil,
+		reaction,
+		true,
+		types.NewJID("5562933000233", types.DefaultUserServer),
+	)
+	if ctx == nil {
+		t.Fatal("expected context")
+	}
+	if got := ctx["message_id"]; got != "5562933000233~3B47D7C668CA755A0440" {
+		t.Fatalf("own group reaction context message_id = %q", got)
+	}
+}
+
+func TestDeletedMessagePublicIDAddsParticipantForGroupRevoke(t *testing.T) {
+	got := deletedMessagePublicID(
+		"553121159080",
+		nil,
+		"3B6F8B989F3D465157DF",
+		types.NewJID("120363404017899025", types.GroupServer),
+		types.NewJID("5562933000233", types.DefaultUserServer),
+		&waCommon.MessageKey{
+			ID:          proto.String("3B6F8B989F3D465157DF"),
+			Participant: proto.String("5562933000233:13@s.whatsapp.net"),
+		},
+	)
+
+	if got != "5562933000233~3B6F8B989F3D465157DF" {
+		t.Fatalf("deleted group id = %q", got)
+	}
+}
+
+func TestDeletedMessagePublicIDKeepsPrivateRevokePlain(t *testing.T) {
+	got := deletedMessagePublicID(
+		"553121159080",
+		nil,
+		"3B6F8B989F3D465157DF",
+		types.NewJID("5562933000233", types.DefaultUserServer),
+		types.JID{},
+		&waCommon.MessageKey{ID: proto.String("3B6F8B989F3D465157DF")},
+	)
+
+	if got != "3B6F8B989F3D465157DF" {
+		t.Fatalf("deleted private id = %q", got)
+	}
+}
+
+func TestDeletedMessagePublicIDResolvesGroupLIDParticipant(t *testing.T) {
+	cachePutLID(
+		"46849671094330@lid",
+		types.NewJID("5562933000233", types.DefaultUserServer),
+	)
+
+	got := deletedMessagePublicID(
+		"553121159080",
+		nil,
+		"3BEA5BB1CBDAC912589F",
+		types.NewJID("120363404017899025", types.GroupServer),
+		types.JID{},
+		&waCommon.MessageKey{
+			ID:          proto.String("3BEA5BB1CBDAC912589F"),
+			Participant: proto.String("46849671094330@lid"),
+		},
+	)
+
+	if got != "5562933000233~3BEA5BB1CBDAC912589F" {
+		t.Fatalf("deleted group lid id = %q", got)
 	}
 }
 

@@ -77,6 +77,7 @@ Funcionalidades:
   - marcar conversa como lida
   - ignorar status/newsletters
   - always-online por sessão
+  - sincronização de histórico por `HistorySync`, com janela em dias
 - cadastro de múltiplos webhooks por sessão (estilo UnoAPI), também dentro do inspetor da sessão:
   - incoming
   - outgoing
@@ -156,6 +157,8 @@ curl -X POST http://localhost:8080/api/v1/sessions/5562991111111/messages \
 Compatibilidade de destinatário no payload: o endpoint aceita `to` (preferencial) e fallback para `recipient_id`/`source_id`.
 
 Mensagens para grupo também aceitam `mention_all`/`mentionAll` no payload para expandir `ContextInfo.MentionedJID` com todos os participantes. Como fallback compatível com Chatwoot, o provider também ativa esse comportamento quando o texto ou caption começa com `@todos`, `@all` ou `@everyone`.
+
+Nos webhooks de grupos, `contacts[0]` inclui `group_participants` com a relação atual de participantes quando o WhatsApp disponibilizar essa informação. Alterações de participantes emitem uma mensagem `type: "group_event"` com `contacts[0].group_event.action` (`add`, `remove`, `promote`, `demote`) e a lista `participants` afetada.
 
 Exemplo de geração de código de pareamento:
 
@@ -242,6 +245,37 @@ curl -X POST http://localhost:8080/api/v1/sessions \
   -d '{"id":"5562991111111","connect":true}'
 ```
 
+Para receber histórico logo após o pareamento, configure o webhook e a janela de histórico antes da conexão:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "5562991111111",
+    "assign": true,
+    "connect": true,
+    "config": {
+      "history_sync_enabled": true,
+      "history_sync_days": 7
+    },
+    "webhook": {
+      "id": "chatwoot-main",
+      "name": "Chatwoot principal",
+      "url": "https://seu-app.com/webhooks/whatsapp",
+      "append_session": true,
+      "enabled": true,
+      "timeout_ms": 5000,
+      "send_incoming_messages": true,
+      "send_outgoing_messages": true,
+      "send_update_messages": true,
+      "send_group_messages": true,
+      "send_newsletter_messages": false,
+      "header": "Authorization",
+      "token": "Bearer xxxxx"
+    }
+  }'
+```
+
 ## Exemplo de configuração por sessão (sem env)
 
 ```bash
@@ -254,6 +288,8 @@ curl -X PUT http://localhost:8080/api/v1/sessions/5562991111111/config \
     "ignore_status_broadcast": true,
     "ignore_newsletters": true,
     "outgoing_messages_coex": true,
+    "history_sync_enabled": true,
+    "history_sync_days": 7,
     "always_online": false,
     "always_online_interval_seconds": 60
   }'
@@ -292,6 +328,7 @@ Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md
 - `HTTP_ADDR` (default `:8080`)
 - `SESSION_STORE` (default `./state/whatsmeow`)
 - `LOG_LEVEL` (`error|info|debug`)
+- `WHATSMEOW_LOG_LEVEL` (`ERROR|WARN|INFO|DEBUG`, default `INFO`)
 
 ### AMQP ingestão (outgoing)
 

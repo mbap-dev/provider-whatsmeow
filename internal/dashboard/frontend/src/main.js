@@ -78,6 +78,8 @@ function createDefaultConfigForm() {
     ignore_status_broadcast: false,
     ignore_newsletters: false,
     outgoing_messages_coex: false,
+    history_sync_enabled: false,
+    history_sync_days: '7',
     always_online: false,
     always_online_interval_seconds: '60',
     proxy_enabled: false,
@@ -98,6 +100,12 @@ function createConfigFormFromSnapshot(snapshot) {
     ignore_status_broadcast: Boolean(cfg.ignore_status_broadcast),
     ignore_newsletters: Boolean(cfg.ignore_newsletters),
     outgoing_messages_coex: Boolean(cfg.outgoing_messages_coex),
+    history_sync_enabled: Boolean(cfg.history_sync_enabled),
+    history_sync_days: String(
+      Number.isFinite(Number(cfg.history_sync_days)) && Number(cfg.history_sync_days) > 0
+        ? Number(cfg.history_sync_days)
+        : 7
+    ),
     always_online: Boolean(cfg.always_online),
     always_online_interval_seconds: String(
       Number.isFinite(Number(cfg.always_online_interval_seconds))
@@ -110,6 +118,34 @@ function createConfigFormFromSnapshot(snapshot) {
     proxy_port: cfg.proxy_port || '',
     proxy_username: cfg.proxy_username || '',
     proxy_password: cfg.proxy_password || '',
+  }
+}
+
+function webhookFormToPayload(form) {
+  const timeout = parseInt(form.timeout_ms, 10)
+  return {
+    id: form.id.trim(),
+    name: form.name.trim(),
+    url: form.url.trim(),
+    url_absolute: form.url_absolute.trim(),
+    header: form.header.trim(),
+    token: form.token.trim(),
+    timeout_ms: Number.isFinite(timeout) && timeout > 0 ? timeout : 5000,
+    enabled: form.enabled,
+    append_session: form.append_session,
+    send_incoming_messages: form.send_incoming_messages,
+    send_outgoing_messages: form.send_outgoing_messages,
+    send_update_messages: form.send_update_messages,
+    send_group_messages: form.send_group_messages,
+    send_newsletter_messages: form.send_newsletter_messages,
+  }
+}
+
+function historyConfigPayload(enabled, days) {
+  const parsedDays = parseInt(days, 10)
+  return {
+    history_sync_enabled: Boolean(enabled),
+    history_sync_days: Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 0,
   }
 }
 
@@ -601,6 +637,9 @@ function App() {
     id: '',
     assign: true,
     connect: true,
+    history_sync_enabled: false,
+    history_sync_days: '7',
+    webhook: createDefaultWebhookForm(),
   })
   const [messageForm, setMessageForm] = useState({
     session: '',
@@ -931,23 +970,49 @@ function App() {
       pushToast('Informe o ID da sessão.', 'error')
       return
     }
+    const historyDays = parseInt(createSessionForm.history_sync_days, 10)
+    if (createSessionForm.history_sync_enabled) {
+      if (!Number.isFinite(historyDays) || historyDays <= 0) {
+        pushToast('Informe a quantidade de dias do histórico.', 'error')
+        return
+      }
+      if (
+        !createSessionForm.webhook.url.trim() &&
+        !createSessionForm.webhook.url_absolute.trim()
+      ) {
+        pushToast('Informe o webhook antes de ativar a sincronização de histórico.', 'error')
+        return
+      }
+    }
 
     const busyKey = `create:${sid}`
     setBusy(busyKey, true)
     try {
+      const config = historyConfigPayload(
+        createSessionForm.history_sync_enabled,
+        createSessionForm.history_sync_days
+      )
+      const body = {
+        id: sid,
+        assign: createSessionForm.assign,
+        connect: createSessionForm.connect,
+        config,
+      }
+      if (createSessionForm.history_sync_enabled) {
+        body.webhook = webhookFormToPayload(createSessionForm.webhook)
+      }
       await api('/api/v1/sessions', {
         method: 'POST',
-        body: JSON.stringify({
-          id: sid,
-          assign: createSessionForm.assign,
-          connect: createSessionForm.connect,
-        }),
+        body: JSON.stringify(body),
       })
       pushToast(`Sessão ${sid} solicitada com sucesso.`, 'success')
       setCreateSessionForm({
         id: '',
         assign: true,
         connect: true,
+        history_sync_enabled: false,
+        history_sync_days: '7',
+        webhook: createDefaultWebhookForm(),
       })
       setSelectedSessionId(sid)
       setSelectedTab('overview')
@@ -1067,6 +1132,11 @@ function App() {
       pushToast('O intervalo de always-online deve ser maior que zero.', 'error')
       return
     }
+    const historyDays = parseInt(configState.form.history_sync_days, 10)
+    if (configState.form.history_sync_enabled && (!Number.isFinite(historyDays) || historyDays <= 0)) {
+      pushToast('A quantidade de dias do histórico deve ser maior que zero.', 'error')
+      return
+    }
     if (configState.form.proxy_enabled) {
       if (!configState.form.proxy_host.trim()) {
         pushToast('Informe o host do proxy.', 'error')
@@ -1089,6 +1159,8 @@ function App() {
           ignore_status_broadcast: configState.form.ignore_status_broadcast,
           ignore_newsletters: configState.form.ignore_newsletters,
           outgoing_messages_coex: configState.form.outgoing_messages_coex,
+          history_sync_enabled: configState.form.history_sync_enabled,
+          history_sync_days: configState.form.history_sync_enabled ? historyDays : 0,
           always_online: configState.form.always_online,
           always_online_interval_seconds: interval,
           proxy_enabled: configState.form.proxy_enabled,
@@ -1193,22 +1265,7 @@ function App() {
     try {
       await api(`/api/v1/sessions/${enc(selectedSessionId)}/webhooks`, {
         method: 'POST',
-        body: JSON.stringify({
-          id: webhookState.form.id.trim(),
-          name: webhookState.form.name.trim(),
-          url: webhookState.form.url.trim(),
-          url_absolute: webhookState.form.url_absolute.trim(),
-          header: webhookState.form.header.trim(),
-          token: webhookState.form.token.trim(),
-          timeout_ms: timeout,
-          enabled: webhookState.form.enabled,
-          append_session: webhookState.form.append_session,
-          send_incoming_messages: webhookState.form.send_incoming_messages,
-          send_outgoing_messages: webhookState.form.send_outgoing_messages,
-          send_update_messages: webhookState.form.send_update_messages,
-          send_group_messages: webhookState.form.send_group_messages,
-          send_newsletter_messages: webhookState.form.send_newsletter_messages,
-        }),
+        body: JSON.stringify(webhookFormToPayload(webhookState.form)),
       })
       pushToast(`Webhook salvo para a sessão ${selectedSessionId}.`, 'success')
       await loadWebhooksForSession(selectedSessionId, { resetForm: true })
@@ -1502,7 +1559,97 @@ function App() {
                         setCreateSessionForm((current) => ({ ...current, connect: checked }))
                       }
                     />
+                    <${CheckField}
+                      label="Sincronizar histórico"
+                      description="Configure o webhook antes da conexão para receber o HistorySync."
+                      checked=${createSessionForm.history_sync_enabled}
+                      onChange=${(checked) =>
+                        setCreateSessionForm((current) => ({
+                          ...current,
+                          history_sync_enabled: checked,
+                        }))
+                      }
+                    />
                   </div>
+
+                  ${createSessionForm.history_sync_enabled
+                    ? html`
+                        <div className="form-grid">
+                          <${InputField}
+                            label="Dias de histórico"
+                            value=${createSessionForm.history_sync_days}
+                            type="number"
+                            min="1"
+                            step="1"
+                            onInput=${(value) =>
+                              setCreateSessionForm((current) => ({
+                                ...current,
+                                history_sync_days: value,
+                              }))
+                            }
+                          />
+                          <${InputField}
+                            label="Webhook ID"
+                            value=${createSessionForm.webhook.id}
+                            placeholder="vazio = auto"
+                            onInput=${(value) =>
+                              setCreateSessionForm((current) => ({
+                                ...current,
+                                webhook: { ...current.webhook, id: value },
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <${InputField}
+                          label="URL base do webhook"
+                          value=${createSessionForm.webhook.url}
+                          placeholder="https://seu-app.com/webhooks/whatsapp"
+                          onInput=${(value) =>
+                            setCreateSessionForm((current) => ({
+                              ...current,
+                              webhook: { ...current.webhook, url: value },
+                            }))
+                          }
+                        />
+                        <${InputField}
+                          label="URL absoluta do webhook"
+                          value=${createSessionForm.webhook.url_absolute}
+                          placeholder="https://seu-app.com/webhooks/whatsapp/5562..."
+                          onInput=${(value) =>
+                            setCreateSessionForm((current) => ({
+                              ...current,
+                              webhook: { ...current.webhook, url_absolute: value },
+                            }))
+                          }
+                        />
+
+                        <div className="form-grid">
+                          <${InputField}
+                            label="Header auth"
+                            value=${createSessionForm.webhook.header}
+                            placeholder="Authorization"
+                            onInput=${(value) =>
+                              setCreateSessionForm((current) => ({
+                                ...current,
+                                webhook: { ...current.webhook, header: value },
+                              }))
+                            }
+                          />
+                          <${InputField}
+                            label="Token"
+                            value=${createSessionForm.webhook.token}
+                            placeholder="Bearer xxxxx"
+                            onInput=${(value) =>
+                              setCreateSessionForm((current) => ({
+                                ...current,
+                                webhook: { ...current.webhook, token: value },
+                              }))
+                            }
+                          />
+                        </div>
+                      `
+                    : null}
                   <button
                     type="submit"
                     className="solid-button solid-button--wide"
@@ -1643,7 +1790,7 @@ function App() {
                       : null}
 
                     <div className="tab-row">
-                      ${['quick', 'webhooks', 'templates'].map(
+                      ${['quick', 'config', 'webhooks', 'templates'].map(
                         (tab) => html`
                           <button
                             key=${tab}
@@ -1651,7 +1798,13 @@ function App() {
                             className=${`tab-button ${selectedTab === tab ? 'tab-button--active' : ''}`}
                             onClick=${() => setSelectedTab(tab)}
                           >
-                            ${tab === 'quick' ? 'Teste rápido' : tab === 'webhooks' ? 'Webhook' : 'Templates'}
+                            ${tab === 'quick'
+                              ? 'Teste rápido'
+                              : tab === 'config'
+                                ? 'Config'
+                                : tab === 'webhooks'
+                                  ? 'Webhook'
+                                  : 'Templates'}
                           </button>
                         `
                       )}
@@ -1848,6 +2001,17 @@ function App() {
                                 }
                               />
                               <${CheckField}
+                                label="Sincronizar histórico"
+                                description="Envia HistorySync recebido para webhooks cadastrados."
+                                checked=${configState.form.history_sync_enabled}
+                                onChange=${(checked) =>
+                                  setConfigState((current) => ({
+                                    ...current,
+                                    form: { ...current.form, history_sync_enabled: checked },
+                                  }))
+                                }
+                              />
+                              <${CheckField}
                                 label="Usar proxy nesta sessão"
                                 checked=${configState.form.proxy_enabled}
                                 onChange=${(checked) =>
@@ -1881,6 +2045,19 @@ function App() {
                                 setConfigState((current) => ({
                                   ...current,
                                   form: { ...current.form, always_online_interval_seconds: value },
+                                }))
+                              }
+                            />
+                            <${InputField}
+                              label="Dias de histórico"
+                              value=${configState.form.history_sync_days}
+                              type="number"
+                              min="1"
+                              step="1"
+                              onInput=${(value) =>
+                                setConfigState((current) => ({
+                                  ...current,
+                                  form: { ...current.form, history_sync_days: value },
                                 }))
                               }
                             />

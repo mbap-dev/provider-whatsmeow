@@ -74,11 +74,8 @@ func (m *ClientManager) FakeCall(sessionID, to string, ringMS int, deviceMode st
 		}
 		if err := cli.DangerousInternals().SendNode(context.Background(), tnode); err != nil {
 			ent.Log.Errorf("fake_call terminate error to=%s wire_to=%s call_id=%s err=%v", dest.String(), termDest.String(), callID, err)
-		} else {
-			ent.Log.Infof("fake_call terminate sent to=%s wire_to=%s call_id=%s node=%s", dest.String(), termDest.String(), callID, tnode.String())
 		}
 	}()
 
-	ent.Log.Infof("fake_call started to=%s wire_to=%s call_id=%s ring_ms=%d device_mode=%s", dest.String(), termDest.String(), callID, ringMS, deviceMode)
 	return callID, nil
 }

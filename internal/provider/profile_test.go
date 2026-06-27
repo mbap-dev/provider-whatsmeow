@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 func TestBuildCloudProfileDefaultsPictureField(t *testing.T) {
@@ -91,5 +92,31 @@ func TestBuildCloudContactObjectForGroupKeepsChatwootShape(t *testing.T) {
 	}
 	if got := contact["profile"]; !reflect.DeepEqual(got, profile) {
 		t.Fatalf("profile = %#v", got)
+	}
+}
+
+func TestGroupParticipantChangeMapsGroupInfoActions(t *testing.T) {
+	participant := types.JID{User: "5562999999999", Server: "s.whatsapp.net"}
+
+	action, affected := groupParticipantChange(&events.GroupInfo{Join: []types.JID{participant}})
+
+	if action != "add" {
+		t.Fatalf("action = %q, want add", action)
+	}
+	if !reflect.DeepEqual(affected, []types.JID{participant}) {
+		t.Fatalf("affected = %#v", affected)
+	}
+}
+
+func TestGroupParticipantPayloadUsesDisplayID(t *testing.T) {
+	participant := types.JID{User: "5562999999999", Server: "s.whatsapp.net"}
+
+	payload := groupParticipantPayload("553121159080", nil, participant)
+
+	if got := payload["wa_id"]; got != "5562999999999" {
+		t.Fatalf("wa_id = %#v", got)
+	}
+	if got := payload["name"]; got != "5562999999999" {
+		t.Fatalf("name = %#v", got)
 	}
 }

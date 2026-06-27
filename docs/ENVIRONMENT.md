@@ -24,6 +24,7 @@ Este documento detalha todas as variáveis suportadas pelo `provider-whatsmeow`,
 | `HTTP_ADDR` | string | `:8080` | Endereço HTTP do serviço (dashboard + API). |
 | `SESSION_STORE` | string | `./state/whatsmeow` | Diretório persistente de sessões (SQLite por sessão). |
 | `LOG_LEVEL` | string | `error` | Nível de log (`error`, `info`, `debug`). |
+| `WHATSMEOW_LOG_LEVEL` | string | `INFO` | Nível do logger interno do whatsmeow (`ERROR`, `WARN`, `INFO`, `DEBUG`), separado de `LOG_LEVEL`. |
 | `UI_ENABLED` | bool | `true` | Habilita dashboard web em `/`. |
 | `UI_TITLE` | string | `WhatsMeow Control Center` | Título exibido no dashboard. |
 | `UI_AUTH_ENABLED` | bool | `false` (ou `true` se `UI_AUTH_USER` e `UI_AUTH_PASS` definidos) | Liga autenticação HTTP Basic para rotas da UI. |

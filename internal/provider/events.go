@@ -20,6 +20,7 @@ import (
 	"your.org/provider-whatsmeow/internal/status"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -158,19 +159,11 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			m.stopAlwaysOnline(sessionID)
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
-			nodeXML := "<nil>"
-			if e.Data != nil {
-				nodeXML = e.Data.String()
-			}
-			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s node=%s", e.CallCreator.String(), e.CallID, nodeXML)
+			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s", e.CallCreator.String(), e.CallID)
 			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
 		case *events.CallOfferNotice:
 			// Group calls or calls from companion devices
-			nodeXML := "<nil>"
-			if e.Data != nil {
-				nodeXML = e.Data.String()
-			}
-			log.WithSession(sessionID).Info("evt=call_offer_notice from=%s call_id=%s media=%s type=%s node=%s", e.CallCreator.String(), e.CallID, e.Media, e.Type, nodeXML)
+			log.WithSession(sessionID).Info("evt=call_offer_notice from=%s call_id=%s media=%s type=%s", e.CallCreator.String(), e.CallID, e.Media, e.Type)
 			m.handleCallRejection(sessionID, client, e.CallCreator, e.CallID)
 		case *events.CallAccept:
 			// Log when a call is accepted (might be from another device)
@@ -180,11 +173,7 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			log.WithSession(sessionID).Info("evt=call_terminate call_id=%s reason=%s", e.CallID, e.Reason)
 		case *events.UnknownCallEvent:
 			// Log unknown call events for debugging
-			nodeXML := "<nil>"
-			if e.Node != nil {
-				nodeXML = e.Node.String()
-			}
-			log.WithSession(sessionID).Info("evt=unknown_call_event node=%s", nodeXML)
+			log.WithSession(sessionID).Info("evt=unknown_call_event")
 		case *events.AppStateSyncComplete:
 			if e.Name == "critical_block" || e.Name == "regular_high" {
 				_ = client.SendPresence(context.Background(), types.PresenceAvailable)
@@ -198,6 +187,16 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			if m.getAutoMarkRead(sessionID) {
 				go m.markReadEvent(sessionID, client, e)
 			}
+		case *events.GroupInfo:
+			if err := m.emitCloudGroupInfo(sessionID, client, e); err != nil {
+				log.WithSession(sessionID).Error("webhook cloud group info error: %v", err)
+			}
+		case *events.JoinedGroup:
+			if err := m.emitCloudJoinedGroup(sessionID, client, e); err != nil {
+				log.WithSession(sessionID).Error("webhook cloud joined group error: %v", err)
+			}
+		case *events.HistorySync:
+			go m.emitCloudHistorySync(sessionID, client, e)
 		case *events.Receipt:
 			if err := m.emitCloudReceipt(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).Error("webhook cloud receipt error: %v", err)
@@ -206,6 +205,52 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			// Silencia outros eventos no webhook (Uno espera apenas messages/statuses)
 		}
 	})
+}
+
+func (m *ClientManager) emitCloudHistorySync(sessionID string, client *whatsmeow.Client, e *events.HistorySync) {
+	entry := log.WithSession(sessionID)
+	if e == nil || e.Data == nil {
+		return
+	}
+	if !m.getHistorySyncEnabled(sessionID) {
+		return
+	}
+	if len(m.ListSessionWebhooks(sessionID)) == 0 {
+		return
+	}
+	days := m.getHistorySyncDays(sessionID)
+	var cutoff time.Time
+	if days > 0 {
+		cutoff = time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	}
+	for _, conv := range e.Data.GetConversations() {
+		if conv == nil {
+			continue
+		}
+		chat, err := types.ParseJID(conv.GetID())
+		if err != nil {
+			entry.Error("evt=history_sync conversation parse failed id=%q err=%v", conv.GetID(), err)
+			continue
+		}
+		for _, historyMsg := range conv.GetMessages() {
+			if historyMsg == nil || historyMsg.GetMessage() == nil {
+				continue
+			}
+			msgTS := time.Unix(int64(historyMsg.GetMessage().GetMessageTimestamp()), 0)
+			if !cutoff.IsZero() && msgTS.Before(cutoff) {
+				continue
+			}
+			evt, err := client.ParseWebMessage(chat, historyMsg.GetMessage())
+			if err != nil {
+				entry.Error("evt=history_sync message parse failed chat=%s err=%v", chat.String(), err)
+				continue
+			}
+			if err := m.emitCloudMessage(sessionID, client, evt); err != nil {
+				entry.WithMessageID(evt.Info.ID).Error("evt=history_sync webhook emit failed chat=%s err=%v", chat.String(), err)
+				continue
+			}
+		}
+	}
 }
 
 // =========== Emissão de mensagens no formato Cloud ===========
@@ -246,17 +291,6 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	if e.Info.SenderAlt != (types.JID{}) && !isLIDJID(e.Info.SenderAlt) && e.Info.SenderAlt.Server != "" {
 		senderJID = e.Info.SenderAlt
 	}
-	log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
-		"msg_source own=%t from_me=%t device_sent=%t chat=%s sender=%s sender_alt=%s recipient_alt=%s",
-		ownMessage,
-		fromMe,
-		e.Info.DeviceSentMeta != nil,
-		chatJID.String(),
-		senderJID.String(),
-		e.Info.SenderAlt.String(),
-		e.Info.RecipientAlt.String(),
-	)
-
 	// Ignore optional channels per configuration
 	if m.getIgnoreStatusBroadcast(sessionID) && (isStatusBroadcastJID(chatJID) || isStatusBroadcastJID(senderJID)) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: status_broadcast")
@@ -356,7 +390,8 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 				// Without the original id, do nothing
 				return nil
 			}
-			if err := m.emitCloudDeleted(sessionID, client, e, rid); err != nil {
+			revokedID := deletedMessagePublicID(sessionID, client, rid, e.Info.Chat, e.Info.Sender, pm.GetKey())
+			if err := m.emitCloudDeleted(sessionID, client, e, revokedID); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud deleted error: %v", err)
 			}
 			return nil
@@ -449,7 +484,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 		}
 		wireMsg["type"] = "text"
 		wireMsg["text"] = map[string]any{"body": emoji}
-		if ctx := reactionContextInfo(sessionID, client, r, isGroupJID(chatJID)); ctx != nil {
+		if ctx := reactionContextInfo(sessionID, client, r, isGroupJID(chatJID), senderJID); ctx != nil {
 			wireMsg["context"] = ctx
 		}
 	case msg.GetButtonsResponseMessage() != nil:
@@ -741,6 +776,11 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	profile := buildCloudProfile(sessionID, client, profileAvatar, dispName, e.Info.ID)
 	contactObj := buildCloudContactObject(profile, contactPhone, chatJID, groupSubject, groupPicture)
 	if isGroupJID(chatJID) {
+		if participants := m.groupParticipantsPayload(sessionID, client, chatJID); len(participants) > 0 {
+			contactObj["group_participants"] = participants
+		}
+	}
+	if isGroupJID(chatJID) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
 			"contact_group built group_id=%s subject=%q wa_id=%s sender_name=%q", chatJID.String(), groupSubject, contactPhone, dispName,
 		)
@@ -762,6 +802,92 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	log.WithSession(sessionID).WithMessageID(e.Info.ID).
 		Info("evt=message cloud payload ready field=messages type=%s", wireMsg["type"])
 
+	return m.deliverWebhook(sessionID, payload)
+}
+
+func (m *ClientManager) emitCloudJoinedGroup(sessionID string, client *whatsmeow.Client, e *events.JoinedGroup) error {
+	if e == nil {
+		return nil
+	}
+	evt := &events.GroupInfo{
+		JID:       e.JID,
+		Notify:    e.Notify,
+		Sender:    e.Sender,
+		SenderPN:  e.SenderPN,
+		Timestamp: time.Now(),
+		Join:      []types.JID{},
+	}
+	if e.JID.User == "" || e.JID.Server == "" {
+		return nil
+	}
+	return m.emitCloudGroupInfo(sessionID, client, evt)
+}
+
+func (m *ClientManager) emitCloudGroupInfo(sessionID string, client *whatsmeow.Client, e *events.GroupInfo) error {
+	if e == nil || !isGroupJID(e.JID) {
+		return nil
+	}
+
+	action, affected := groupParticipantChange(e)
+	if action == "" && len(affected) == 0 {
+		return nil
+	}
+
+	phone := normalizePhone(sessionID)
+	groupSubject := strings.TrimSpace(e.JID.User)
+	if groupName, ok := safeGetGroupName(client, e.JID); ok && strings.TrimSpace(groupName) != "" {
+		groupSubject = groupName
+	}
+	groupPicture := ""
+	if pic, ok := getAvatarURL(sessionID, client, e.JID); ok && strings.TrimSpace(pic) != "" {
+		groupPicture = pic
+	}
+
+	actorJID := groupEventActorJID(e)
+	actorID := jidDisplayMaybeResolve(sessionID, client, actorJID)
+	if actorID == "" {
+		actorID = phone
+	}
+	actorName := actorID
+	if name, ok := safeGetContactName(sessionID, client, actorJID); ok && strings.TrimSpace(name) != "" {
+		actorName = name
+	}
+	profile := buildCloudProfile(sessionID, client, actorJID, actorName, "")
+	contactObj := buildCloudContactObject(profile, actorID, e.JID, groupSubject, groupPicture)
+
+	participants := m.groupParticipantsPayload(sessionID, client, e.JID)
+	if len(participants) > 0 {
+		contactObj["group_participants"] = participants
+	}
+	contactObj["group_event"] = map[string]any{
+		"action":       action,
+		"actor":        groupEventParticipantPayload(sessionID, client, actorJID),
+		"participants": groupEventParticipantsPayload(sessionID, client, affected),
+		"timestamp":    groupEventTimestamp(e).Unix(),
+	}
+
+	msgID := fmt.Sprintf("group-event-%s-%s-%d", e.JID.User, action, groupEventTimestamp(e).UnixNano())
+	wireMsg := map[string]any{
+		"from":      normalizeFromField(actorID),
+		"id":        msgID,
+		"timestamp": strconv.FormatInt(groupEventTimestamp(e).Unix(), 10),
+		"type":      "group_event",
+		"text":      map[string]any{"body": action},
+	}
+
+	payload := cloudEnvelope(phone)
+	change := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
+	val := change["value"].(map[string]any)
+	val["contacts"] = []any{contactObj}
+	val["messages"] = []any{wireMsg}
+
+	log.WithSession(sessionID).Info(
+		"evt=group_info cloud payload ready group=%s action=%s affected=%d participants=%d",
+		e.JID.String(),
+		action,
+		len(affected),
+		len(participants),
+	)
 	return m.deliverWebhook(sessionID, payload)
 }
 
@@ -922,6 +1048,31 @@ func (m *ClientManager) emitCloudDeleted(sessionID string, client *whatsmeow.Cli
 
 	log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=deleted cloud payload ready revoked_id=%s", revokedID)
 	return m.deliverWebhook(sessionID, payload)
+}
+
+func deletedMessagePublicID(sessionID string, cli *whatsmeow.Client, messageID string, chat, sender types.JID, key *waCommon.MessageKey) string {
+	revokedID := strings.TrimSpace(messageID)
+	if revokedID == "" {
+		return ""
+	}
+	if !isGroupJID(chat) {
+		return revokedID
+	}
+
+	participant := strings.TrimSpace(key.GetParticipant())
+	if participant == "" && key.GetFromMe() {
+		participant = sender.String()
+	}
+	if participant == "" {
+		participant = sender.String()
+	}
+
+	participantID := contextParticipantMessageIDUser(sessionID, cli, participant)
+	if participantID == "" {
+		participantID = participant
+	}
+
+	return withGroupParticipantMessageID(participantID, revokedID)
 }
 
 // emitCloudOutgoingText publishes an outgoing text message event in the same
@@ -1828,7 +1979,7 @@ func messageContextInfo(sessionID string, cli *whatsmeow.Client, m *waE2E.Messag
 	return ctx
 }
 
-func reactionContextInfo(sessionID string, cli *whatsmeow.Client, r *waE2E.ReactionMessage, groupChat bool) map[string]any {
+func reactionContextInfo(sessionID string, cli *whatsmeow.Client, r *waE2E.ReactionMessage, groupChat bool, sender types.JID) map[string]any {
 	if r == nil || r.GetKey() == nil {
 		return nil
 	}
@@ -1839,6 +1990,9 @@ func reactionContextInfo(sessionID string, cli *whatsmeow.Client, r *waE2E.React
 	}
 	contextID := messageID
 	participant := strings.TrimSpace(key.GetParticipant())
+	if participant == "" && groupChat && key.GetFromMe() {
+		participant = sender.String()
+	}
 	if participant == "" && !groupChat && key.GetFromMe() {
 		participant = normalizePhone(sessionID)
 	}
@@ -2264,6 +2418,137 @@ func buildCloudContactObject(profile map[string]any, waID string, chatJID types.
 		}
 	}
 	return contactObj
+}
+
+func (m *ClientManager) groupParticipantsPayload(sessionID string, cli *whatsmeow.Client, groupJID types.JID) []any {
+	if cli == nil || !isGroupJID(groupJID) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	info, err := cli.GetGroupInfo(ctx, groupJID)
+	cancel()
+	if err != nil || info == nil {
+		log.WithSession(sessionID).Debug("group_participants fetch failed group=%s err=%v", groupJID.String(), err)
+		return nil
+	}
+
+	participants := make([]any, 0, len(info.Participants))
+	for _, participant := range info.Participants {
+		cacheGroupParticipantLID(participant.PhoneNumber, participant.LID)
+		payload := groupParticipantPayload(sessionID, cli, participant.JID, participant.PhoneNumber, participant.LID)
+		if payload == nil {
+			continue
+		}
+		payload["is_admin"] = participant.IsAdmin
+		payload["is_super_admin"] = participant.IsSuperAdmin
+		if strings.TrimSpace(participant.DisplayName) != "" {
+			payload["name"] = strings.TrimSpace(participant.DisplayName)
+		}
+		participants = append(participants, payload)
+	}
+	return participants
+}
+
+func cacheGroupParticipantLID(phoneNumber, lid types.JID) {
+	if phoneNumber.User == "" || lid.User == "" || !isLIDJID(lid) {
+		return
+	}
+	cachePutLID(lid.String(), normalizedContactLookupJID(phoneNumber))
+}
+
+func groupParticipantPayload(sessionID string, cli *whatsmeow.Client, candidates ...types.JID) map[string]any {
+	jid := firstUsableJID(candidates...)
+	if jid == (types.JID{}) {
+		return nil
+	}
+	displayID := jidDisplayMaybeResolve(sessionID, cli, jid)
+	if displayID == "" {
+		displayID = jid.String()
+	}
+	name := displayID
+	if contactName, ok := safeGetContactName(sessionID, cli, candidates...); ok && strings.TrimSpace(contactName) != "" {
+		name = contactName
+	}
+	payload := map[string]any{
+		"wa_id": displayID,
+		"name":  name,
+	}
+	if pic, ok := getAvatarURL(sessionID, cli, jid); ok && strings.TrimSpace(pic) != "" {
+		payload["picture"] = pic
+	}
+	return payload
+}
+
+func firstUsableJID(candidates ...types.JID) types.JID {
+	for _, candidate := range candidates {
+		if candidate.User != "" && candidate.Server != "" && !isLIDJID(candidate) {
+			return candidate
+		}
+	}
+	for _, candidate := range candidates {
+		if candidate.User != "" && candidate.Server != "" {
+			return candidate
+		}
+	}
+	return types.JID{}
+}
+
+func groupEventActorJID(e *events.GroupInfo) types.JID {
+	if e == nil {
+		return types.JID{}
+	}
+	if e.SenderPN != nil && e.SenderPN.User != "" {
+		return *e.SenderPN
+	}
+	if e.Sender != nil {
+		return *e.Sender
+	}
+	return types.JID{}
+}
+
+func groupEventTimestamp(e *events.GroupInfo) time.Time {
+	if e == nil || e.Timestamp.IsZero() {
+		return time.Now()
+	}
+	return e.Timestamp
+}
+
+func groupParticipantChange(e *events.GroupInfo) (string, []types.JID) {
+	if e == nil {
+		return "", nil
+	}
+	switch {
+	case len(e.Join) > 0:
+		return "add", e.Join
+	case len(e.Leave) > 0:
+		return "remove", e.Leave
+	case len(e.Promote) > 0:
+		return "promote", e.Promote
+	case len(e.Demote) > 0:
+		return "demote", e.Demote
+	default:
+		return "", nil
+	}
+}
+
+func groupEventParticipantPayload(sessionID string, cli *whatsmeow.Client, jid types.JID) map[string]any {
+	payload := groupParticipantPayload(sessionID, cli, jid)
+	if payload == nil {
+		return map[string]any{}
+	}
+	return payload
+}
+
+func groupEventParticipantsPayload(sessionID string, cli *whatsmeow.Client, participants []types.JID) []any {
+	out := make([]any, 0, len(participants))
+	for _, participant := range participants {
+		payload := groupParticipantPayload(sessionID, cli, participant)
+		if payload == nil {
+			continue
+		}
+		out = append(out, payload)
+	}
+	return out
 }
 
 // markReadEvent marks the given message as read when configured to do so.

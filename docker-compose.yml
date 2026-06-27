@@ -60,7 +60,8 @@ services:
       PROXY_PORT: "${PROXY_PORT:-}"
       PROXY_USERNAME: "${PROXY_USERNAME:-}"
       PROXY_PASSWORD: "${PROXY_PASSWORD:-}"
-      LOG_LEVEL: debug
+      LOG_LEVEL: "${LOG_LEVEL:-debug}"
+      WHATSMEOW_LOG_LEVEL: "${WHATSMEOW_LOG_LEVEL:-INFO}"
     volumes:
       - ./data/worker-a:/var/lib/whatsmeow
     ports:

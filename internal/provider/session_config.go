@@ -20,6 +20,8 @@ type SessionConfigValues struct {
 	OutgoingMessagesCoex        bool   `json:"outgoing_messages_coex"`
 	AlwaysOnline                bool   `json:"always_online"`
 	AlwaysOnlineIntervalSeconds int    `json:"always_online_interval_seconds"`
+	HistorySyncEnabled          bool   `json:"history_sync_enabled"`
+	HistorySyncDays             int    `json:"history_sync_days"`
 	ProxyEnabled                bool   `json:"proxy_enabled"`
 	ProxyProtocol               string `json:"proxy_protocol"`
 	ProxyHost                   string `json:"proxy_host"`
@@ -39,6 +41,8 @@ type SessionConfigPatch struct {
 	OutgoingMessagesCoex        *bool   `json:"outgoing_messages_coex,omitempty"`
 	AlwaysOnline                *bool   `json:"always_online,omitempty"`
 	AlwaysOnlineIntervalSeconds *int    `json:"always_online_interval_seconds,omitempty"`
+	HistorySyncEnabled          *bool   `json:"history_sync_enabled,omitempty"`
+	HistorySyncDays             *int    `json:"history_sync_days,omitempty"`
 	ProxyEnabled                *bool   `json:"proxy_enabled,omitempty"`
 	ProxyProtocol               *string `json:"proxy_protocol,omitempty"`
 	ProxyHost                   *string `json:"proxy_host,omitempty"`
@@ -64,6 +68,8 @@ func (p SessionConfigPatch) hasChanges() bool {
 		p.OutgoingMessagesCoex != nil ||
 		p.AlwaysOnline != nil ||
 		p.AlwaysOnlineIntervalSeconds != nil ||
+		p.HistorySyncEnabled != nil ||
+		p.HistorySyncDays != nil ||
 		p.ProxyEnabled != nil ||
 		p.ProxyProtocol != nil ||
 		p.ProxyHost != nil ||
@@ -142,6 +148,9 @@ func (m *ClientManager) UpdateSessionConfig(sessionID string, patch SessionConfi
 	if patch.AlwaysOnlineIntervalSeconds != nil && *patch.AlwaysOnlineIntervalSeconds <= 0 {
 		return SessionConfigSnapshot{}, errors.New("always_online_interval_seconds must be > 0")
 	}
+	if patch.HistorySyncDays != nil && *patch.HistorySyncDays < 0 {
+		return SessionConfigSnapshot{}, errors.New("history_sync_days must be >= 0")
+	}
 	proxyChanged := patch.hasProxyChanges()
 	if err := validateProxyPatch(m.proxyDefault, patch); err != nil {
 		return SessionConfigSnapshot{}, err
@@ -214,6 +223,8 @@ func (m *ClientManager) effectiveSessionConfig(sessionID string) SessionConfigVa
 		OutgoingMessagesCoex:        m.getOutgoingMessagesCoex(sessionID),
 		AlwaysOnline:                alwaysOnline,
 		AlwaysOnlineIntervalSeconds: int(interval / time.Second),
+		HistorySyncEnabled:          m.getHistorySyncEnabled(sessionID),
+		HistorySyncDays:             m.getHistorySyncDays(sessionID),
 		ProxyEnabled:                proxyCfg.Enabled,
 		ProxyProtocol:               proxyCfg.Protocol,
 		ProxyHost:                   proxyCfg.Host,
@@ -238,6 +249,8 @@ func (m *ClientManager) sessionOverridePatch(sessionID string) (SessionConfigPat
 		IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
 		OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
 		AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
+		HistorySyncEnabled:    cloneBoolPtr(ov.historySyncEnabled),
+		HistorySyncDays:       cloneIntPtr(ov.historySyncDays),
 		ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
 		ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
 		ProxyHost:             cloneStringPtr(ov.proxyHost),
@@ -288,6 +301,14 @@ func applySessionConfigPatch(ov *sessionOverrides, patch SessionConfigPatch) {
 		d := time.Duration(*patch.AlwaysOnlineIntervalSeconds) * time.Second
 		ov.alwaysOnlineEvery = &d
 	}
+	if patch.HistorySyncEnabled != nil {
+		v := *patch.HistorySyncEnabled
+		ov.historySyncEnabled = &v
+	}
+	if patch.HistorySyncDays != nil && *patch.HistorySyncDays >= 0 {
+		v := *patch.HistorySyncDays
+		ov.historySyncDays = &v
+	}
 	if patch.ProxyEnabled != nil {
 		v := *patch.ProxyEnabled
 		ov.proxyEnabled = &v
@@ -324,6 +345,8 @@ func cloneSessionOverrides(in sessionOverrides) sessionOverrides {
 		outgoingMessagesCoex:  cloneBoolPtr(in.outgoingMessagesCoex),
 		alwaysOnline:          cloneBoolPtr(in.alwaysOnline),
 		proxyEnabled:          cloneBoolPtr(in.proxyEnabled),
+		historySyncEnabled:    cloneBoolPtr(in.historySyncEnabled),
+		historySyncDays:       cloneIntPtr(in.historySyncDays),
 		proxyProtocol:         cloneStringPtr(in.proxyProtocol),
 		proxyHost:             cloneStringPtr(in.proxyHost),
 		proxyPort:             cloneStringPtr(in.proxyPort),
@@ -351,6 +374,32 @@ func cloneStringPtr(in *string) *string {
 	}
 	v := *in
 	return &v
+}
+
+func cloneIntPtr(in *int) *int {
+	if in == nil {
+		return nil
+	}
+	v := *in
+	return &v
+}
+
+func (m *ClientManager) getHistorySyncEnabled(sessionID string) bool {
+	m.overridesMu.RLock()
+	defer m.overridesMu.RUnlock()
+	if ov, ok := m.overrides[sessionID]; ok && ov.historySyncEnabled != nil {
+		return *ov.historySyncEnabled
+	}
+	return false
+}
+
+func (m *ClientManager) getHistorySyncDays(sessionID string) int {
+	m.overridesMu.RLock()
+	defer m.overridesMu.RUnlock()
+	if ov, ok := m.overrides[sessionID]; ok && ov.historySyncDays != nil && *ov.historySyncDays > 0 {
+		return *ov.historySyncDays
+	}
+	return 0
 }
 
 func (m *ClientManager) refreshAlwaysOnlineForSession(sessionID string) {
@@ -415,6 +464,8 @@ type sessionOverridePayload struct {
 	OutgoingMessagesCoex        *bool   `json:"outgoing_messages_coex,omitempty"`
 	AlwaysOnline                *bool   `json:"always_online,omitempty"`
 	AlwaysOnlineIntervalSeconds *int    `json:"always_online_interval_seconds,omitempty"`
+	HistorySyncEnabled          *bool   `json:"history_sync_enabled,omitempty"`
+	HistorySyncDays             *int    `json:"history_sync_days,omitempty"`
 	ProxyEnabled                *bool   `json:"proxy_enabled,omitempty"`
 	ProxyProtocol               *string `json:"proxy_protocol,omitempty"`
 	ProxyHost                   *string `json:"proxy_host,omitempty"`
@@ -456,6 +507,8 @@ func loadSessionOverrideState(path, workerID string) (map[string]sessionOverride
 			ignoreNewsletters:     cloneBoolPtr(raw.IgnoreNewsletters),
 			outgoingMessagesCoex:  cloneBoolPtr(raw.OutgoingMessagesCoex),
 			alwaysOnline:          cloneBoolPtr(raw.AlwaysOnline),
+			historySyncEnabled:    cloneBoolPtr(raw.HistorySyncEnabled),
+			historySyncDays:       cloneIntPtr(raw.HistorySyncDays),
 			proxyEnabled:          cloneBoolPtr(raw.ProxyEnabled),
 			proxyProtocol:         cloneStringPtr(raw.ProxyProtocol),
 			proxyHost:             cloneStringPtr(raw.ProxyHost),
@@ -497,6 +550,8 @@ func saveSessionOverrideState(path, workerID string, overrides map[string]sessio
 			IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
 			OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
 			AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
+			HistorySyncEnabled:    cloneBoolPtr(ov.historySyncEnabled),
+			HistorySyncDays:       cloneIntPtr(ov.historySyncDays),
 			ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
 			ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
 			ProxyHost:             cloneStringPtr(ov.proxyHost),

@@ -231,7 +231,6 @@ func (cli *Client) OfferCallWithDeviceMode(ctx context.Context, callTo types.JID
 			Content: offerContent,
 		}},
 	}
-	cli.Log.Infof("outgoing_call_offer call_id=%s to=%s wire_to=%s own=%s from=%s device_mode=%s devices=%v node=%s", callID, callTo, callToWire, ownID, callFrom, deviceMode, callDevices, node.String())
 	err = cli.sendNode(ctx, node)
 	if err != nil {
 		return "", err

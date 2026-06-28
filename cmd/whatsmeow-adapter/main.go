@@ -45,13 +45,16 @@ func main() {
 	// first boot. When unset, the manager keeps using the JSON files.
 	var metadataStore provider.MetadataStore
 	var authHandler *auth.Handler
+	var pgPool *pgxpool.Pool
 	if cfg.PostgresURL != "" {
-		pool, err := connectPostgresWithRetry(cfg.PostgresURL)
+		var err error
+		pgPool, err = connectPostgresWithRetry(cfg.PostgresURL)
 		if err != nil {
 			ilog.Errorf("evt=postgres_connect failed err=%v", err)
 			os.Exit(1)
 		}
-		defer pool.Close()
+		defer pgPool.Close()
+		pool := pgPool
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		metadataStore = provider.NewPostgresStore(pool)
 		if imported, err := provider.ImportFileStateIfEmpty(ctx, provider.NewFileStore(cfg.SessionStore), metadataStore, cfg.WorkerID); err != nil {
@@ -89,6 +92,7 @@ func main() {
 	// message consumer.
 	clientManager := provider.NewClientManager(provider.ManagerOptions{
 		MetadataStore:         metadataStore,
+		PGPool:                pgPool,
 		PostgresURL:           cfg.PostgresURL,
 		SessionStore:          cfg.SessionStore,
 		WebhookBase:           cfg.WebhookBase,

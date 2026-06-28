@@ -1,3 +1,29 @@
+-- Media registry -------------------------------------------------------------
+
+-- name: CountMediaRecords :one
+SELECT COUNT(*) FROM media_records;
+
+-- name: UpsertMediaRecord :exec
+INSERT INTO media_records (
+    session_id, media_id, messaging_product, mime_type, sha256,
+    file_size, id, filename, relative_path, storage_key, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (session_id, media_id) DO UPDATE SET
+    messaging_product = EXCLUDED.messaging_product,
+    mime_type         = EXCLUDED.mime_type,
+    sha256            = EXCLUDED.sha256,
+    file_size         = EXCLUDED.file_size,
+    id                = EXCLUDED.id,
+    filename          = EXCLUDED.filename,
+    relative_path     = EXCLUDED.relative_path,
+    storage_key       = EXCLUDED.storage_key;
+
+-- name: GetAllMediaRecords :many
+SELECT session_id, media_id, messaging_product, mime_type, sha256,
+       file_size, id, filename, relative_path, storage_key, created_at
+FROM media_records
+ORDER BY created_at;
+
 -- Worker assignments -------------------------------------------------------
 
 -- name: ListAssignments :many

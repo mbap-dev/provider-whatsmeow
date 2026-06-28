@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countMediaRecords = `-- name: CountMediaRecords :one
+
+SELECT COUNT(*) FROM media_records
+`
+
+// Media registry -------------------------------------------------------------
+func (q *Queries) CountMediaRecords(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countMediaRecords)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 
 SELECT COUNT(*) FROM users
@@ -210,6 +223,45 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, keyHash string) (ApiKey, 
 		&i.ExpiresAt,
 	)
 	return i, err
+}
+
+const getAllMediaRecords = `-- name: GetAllMediaRecords :many
+SELECT session_id, media_id, messaging_product, mime_type, sha256,
+       file_size, id, filename, relative_path, storage_key, created_at
+FROM media_records
+ORDER BY created_at
+`
+
+func (q *Queries) GetAllMediaRecords(ctx context.Context) ([]MediaRecord, error) {
+	rows, err := q.db.Query(ctx, getAllMediaRecords)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MediaRecord{}
+	for rows.Next() {
+		var i MediaRecord
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.MediaID,
+			&i.MessagingProduct,
+			&i.MimeType,
+			&i.Sha256,
+			&i.FileSize,
+			&i.ID,
+			&i.Filename,
+			&i.RelativePath,
+			&i.StorageKey,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getSessionByTokenHash = `-- name: GetSessionByTokenHash :one
@@ -442,6 +494,53 @@ UPDATE api_keys SET last_used_at = now() WHERE id = $1
 
 func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, updateAPIKeyLastUsed, id)
+	return err
+}
+
+const upsertMediaRecord = `-- name: UpsertMediaRecord :exec
+INSERT INTO media_records (
+    session_id, media_id, messaging_product, mime_type, sha256,
+    file_size, id, filename, relative_path, storage_key, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (session_id, media_id) DO UPDATE SET
+    messaging_product = EXCLUDED.messaging_product,
+    mime_type         = EXCLUDED.mime_type,
+    sha256            = EXCLUDED.sha256,
+    file_size         = EXCLUDED.file_size,
+    id                = EXCLUDED.id,
+    filename          = EXCLUDED.filename,
+    relative_path     = EXCLUDED.relative_path,
+    storage_key       = EXCLUDED.storage_key
+`
+
+type UpsertMediaRecordParams struct {
+	SessionID        string
+	MediaID          string
+	MessagingProduct string
+	MimeType         pgtype.Text
+	Sha256           pgtype.Text
+	FileSize         pgtype.Int8
+	ID               string
+	Filename         pgtype.Text
+	RelativePath     string
+	StorageKey       string
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertMediaRecord(ctx context.Context, arg UpsertMediaRecordParams) error {
+	_, err := q.db.Exec(ctx, upsertMediaRecord,
+		arg.SessionID,
+		arg.MediaID,
+		arg.MessagingProduct,
+		arg.MimeType,
+		arg.Sha256,
+		arg.FileSize,
+		arg.ID,
+		arg.Filename,
+		arg.RelativePath,
+		arg.StorageKey,
+		arg.CreatedAt,
+	)
 	return err
 }
 

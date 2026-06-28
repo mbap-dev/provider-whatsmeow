@@ -20,7 +20,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	ilog "your.org/provider-whatsmeow/internal/log"
+	"your.org/provider-whatsmeow/internal/store/pg/pgdb"
 )
 
 type MediaStoreOptions struct {
@@ -28,6 +31,7 @@ type MediaStoreOptions struct {
 	LocalDir      string
 	RegistryFile  string
 	URLTTLSeconds int
+	PGPool        *pgxpool.Pool
 
 	S3Bucket         string
 	S3Region         string
@@ -96,6 +100,8 @@ type mediaStore struct {
 	s3Endpoint  string
 	s3PathStyle bool
 
+	pgQueries *pgdb.Queries
+
 	state mediaRegistryState
 }
 
@@ -133,6 +139,10 @@ func newMediaStore(opts MediaStoreOptions) *mediaStore {
 			store.s3Endpoint = strings.TrimSpace(opts.S3Endpoint)
 			store.s3PathStyle = opts.S3ForcePathStyle
 		}
+	}
+
+	if opts.PGPool != nil {
+		store.pgQueries = pgdb.New(opts.PGPool)
 	}
 
 	store.logInit(mode, opts)
@@ -362,11 +372,16 @@ func (s *mediaStore) Save(ctx context.Context, sessionID, mediaID string, data [
 	s.state.Records[key] = rec
 	s.state.Index[mediaID] = key
 	s.state.Paths[relativePath] = key
-	err := s.persistRegistryLocked()
+	var persistErr error
+	if s.pgQueries != nil {
+		persistErr = s.upsertMediaRecordPG(ctx, rec)
+	} else {
+		persistErr = s.persistRegistryLocked()
+	}
 	s.mu.Unlock()
-	if err != nil {
-		entry.Error("evt=media_save failed step=persist_registry file=%s err=%v", s.registryFile, err)
-		return MediaMetadata{}, err
+	if persistErr != nil {
+		entry.Error("evt=media_save failed step=persist_registry err=%v", persistErr)
+		return MediaMetadata{}, persistErr
 	}
 	entry.Info(
 		"evt=media_save success mode=%s media_id=%s public_id=%s bytes=%d mime=%s relative_path=%s storage_key=%s filename=%q",
@@ -637,6 +652,9 @@ func (s *mediaStore) s3ObjectKey(relative string) string {
 }
 
 func (s *mediaStore) loadRegistry() error {
+	if s.pgQueries != nil {
+		return s.loadRegistryFromPG()
+	}
 	if strings.TrimSpace(s.registryFile) == "" {
 		return nil
 	}
@@ -663,6 +681,98 @@ func (s *mediaStore) loadRegistry() error {
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *mediaStore) loadRegistryFromPG() error {
+	ctx := context.Background()
+	count, err := s.pgQueries.CountMediaRecords(ctx)
+	if err != nil {
+		return fmt.Errorf("count media records: %w", err)
+	}
+	if count == 0 && strings.TrimSpace(s.registryFile) != "" {
+		imported, importErr := s.importJSONRegistryToPG(ctx)
+		if importErr != nil {
+			ilog.Warnf("evt=media_registry pg_import_failed err=%v", importErr)
+		} else if imported > 0 {
+			ilog.Infof("evt=media_registry pg_import_ok records=%d", imported)
+		}
+	}
+	rows, err := s.pgQueries.GetAllMediaRecords(ctx)
+	if err != nil {
+		return fmt.Errorf("load media records: %w", err)
+	}
+	s.mu.Lock()
+	for _, r := range rows {
+		rec := pgRowToMediaRecord(r)
+		key := compositeMediaKey(rec.SessionID, rec.MediaID)
+		if key == "" {
+			continue
+		}
+		s.state.Records[key] = rec
+		if rec.MediaID != "" {
+			s.state.Index[rec.MediaID] = key
+		}
+		if rec.RelativePath != "" {
+			s.state.Paths[rec.RelativePath] = key
+		}
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *mediaStore) importJSONRegistryToPG(ctx context.Context) (int, error) {
+	b, err := os.ReadFile(s.registryFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	st := mediaRegistryState{}
+	if err := jsonUnmarshal(b, &st); err != nil {
+		return 0, fmt.Errorf("parse json registry: %w", err)
+	}
+	imported := 0
+	for _, rec := range st.Records {
+		if err := s.upsertMediaRecordPG(ctx, rec); err != nil {
+			ilog.Warnf("evt=media_registry pg_import_row_failed media_id=%s err=%v", rec.MediaID, err)
+			continue
+		}
+		imported++
+	}
+	return imported, nil
+}
+
+func (s *mediaStore) upsertMediaRecordPG(ctx context.Context, rec mediaRecord) error {
+	return s.pgQueries.UpsertMediaRecord(ctx, pgdb.UpsertMediaRecordParams{
+		SessionID:        rec.SessionID,
+		MediaID:          rec.MediaID,
+		MessagingProduct: rec.MessagingProduct,
+		MimeType:         pgtype.Text{String: rec.MIMEType, Valid: rec.MIMEType != ""},
+		Sha256:           pgtype.Text{String: rec.SHA256, Valid: rec.SHA256 != ""},
+		FileSize:         pgtype.Int8{Int64: rec.FileSize, Valid: rec.FileSize > 0},
+		ID:               rec.ID,
+		Filename:         pgtype.Text{String: rec.Filename, Valid: rec.Filename != ""},
+		RelativePath:     rec.RelativePath,
+		StorageKey:       rec.StorageKey,
+		CreatedAt:        pgtype.Timestamptz{Time: rec.CreatedAt, Valid: !rec.CreatedAt.IsZero()},
+	})
+}
+
+func pgRowToMediaRecord(r pgdb.MediaRecord) mediaRecord {
+	return mediaRecord{
+		SessionID:        r.SessionID,
+		MediaID:          r.MediaID,
+		MessagingProduct: r.MessagingProduct,
+		MIMEType:         r.MimeType.String,
+		SHA256:           r.Sha256.String,
+		FileSize:         r.FileSize.Int64,
+		ID:               r.ID,
+		Filename:         r.Filename.String,
+		RelativePath:     r.RelativePath,
+		StorageKey:       r.StorageKey,
+		CreatedAt:        r.CreatedAt.Time,
+	}
 }
 
 func (s *mediaStore) persistRegistryLocked() error {

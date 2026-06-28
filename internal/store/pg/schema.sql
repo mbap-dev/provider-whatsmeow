@@ -33,6 +33,23 @@ CREATE TABLE session_templates (
     PRIMARY KEY (worker_id, session_id)
 );
 
+-- Media registry (migration 0003) --
+
+CREATE TABLE media_records (
+    session_id        text        NOT NULL,
+    media_id          text        NOT NULL,
+    messaging_product text        NOT NULL DEFAULT 'whatsapp',
+    mime_type         text,
+    sha256            text,
+    file_size         bigint,
+    id                text        NOT NULL,
+    filename          text,
+    relative_path     text        NOT NULL,
+    storage_key       text        NOT NULL,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, media_id)
+);
+
 -- Auth tables (migration 0002) --
 
 CREATE TABLE users (

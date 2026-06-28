@@ -18,6 +18,20 @@ type ApiKey struct {
 	ExpiresAt  pgtype.Timestamptz
 }
 
+type MediaRecord struct {
+	SessionID        string
+	MediaID          string
+	MessagingProduct string
+	MimeType         pgtype.Text
+	Sha256           pgtype.Text
+	FileSize         pgtype.Int8
+	ID               string
+	Filename         pgtype.Text
+	RelativePath     string
+	StorageKey       string
+	CreatedAt        pgtype.Timestamptz
+}
+
 type SessionOverride struct {
 	WorkerID  string
 	SessionID string

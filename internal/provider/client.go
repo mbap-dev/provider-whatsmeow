@@ -14,6 +14,7 @@ import (
 	"time"
 
 	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
@@ -147,6 +148,9 @@ type ManagerOptions struct {
 	// MetadataStore, when set, replaces the default JSON-file persistence for
 	// assignments/overrides/webhooks/templates (e.g. a Postgres-backed store).
 	MetadataStore         MetadataStore
+	// PGPool, when set, is reused for the media registry Postgres backend.
+	// The pool is expected to be fully initialised (migrations applied).
+	PGPool                *pgxpool.Pool
 	// PostgresURL, when set, uses Postgres as the whatsmeow session store
 	// instead of per-session SQLite files. All devices share a single pool.
 	PostgresURL           string
@@ -234,6 +238,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		LocalDir:         mediaDir,
 		RegistryFile:     mediaRegistry,
 		URLTTLSeconds:    opts.MediaURLTTLSeconds,
+		PGPool:           opts.PGPool,
 		S3Bucket:         opts.S3Bucket,
 		S3Region:         opts.S3Region,
 		S3Endpoint:       opts.S3Endpoint,

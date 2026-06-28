@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
 	broker "your.org/provider-whatsmeow/internal/broker"
 	"your.org/provider-whatsmeow/internal/auth"
@@ -45,19 +46,13 @@ func main() {
 	var metadataStore provider.MetadataStore
 	var authHandler *auth.Handler
 	if cfg.PostgresURL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := pg.Migrate(ctx, cfg.PostgresURL); err != nil {
-			cancel()
-			ilog.Errorf("evt=postgres_migrate failed err=%v", err)
-			os.Exit(1)
-		}
-		pool, err := pg.Connect(ctx, cfg.PostgresURL)
+		pool, err := connectPostgresWithRetry(cfg.PostgresURL)
 		if err != nil {
-			cancel()
 			ilog.Errorf("evt=postgres_connect failed err=%v", err)
 			os.Exit(1)
 		}
 		defer pool.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		metadataStore = provider.NewPostgresStore(pool)
 		if imported, err := provider.ImportFileStateIfEmpty(ctx, provider.NewFileStore(cfg.SessionStore), metadataStore, cfg.WorkerID); err != nil {
 			ilog.Errorf("evt=postgres_import_json failed err=%v", err)
@@ -227,6 +222,40 @@ func main() {
 	if err := srv.Shutdown(context.Background()); err != nil {
 		ilog.Errorf("failed to shutdown HTTP server: %v", err)
 	}
+}
+
+// connectPostgresWithRetry retries pg.Migrate + pg.Connect for up to 60 s so
+// the adapter survives Docker Swarm starting it before Postgres is ready.
+func connectPostgresWithRetry(dsn string) (*pgxpool.Pool, error) {
+	const maxAttempts = 30
+	const delay = 2 * time.Second
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		migrateErr := pg.Migrate(ctx, dsn)
+		cancel()
+		if migrateErr != nil {
+			lastErr = migrateErr
+			ilog.Warnf("evt=postgres_not_ready attempt=%d/%d err=%v", attempt, maxAttempts, migrateErr)
+			time.Sleep(delay)
+			continue
+		}
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		pool, connectErr := pg.Connect(ctx, dsn)
+		cancel()
+		if connectErr != nil {
+			lastErr = connectErr
+			ilog.Warnf("evt=postgres_connect_failed attempt=%d/%d err=%v", attempt, maxAttempts, connectErr)
+			time.Sleep(delay)
+			continue
+		}
+		if attempt > 1 {
+			ilog.Infof("evt=postgres_ready attempts=%d", attempt)
+		}
+		return pool, nil
+	}
+	return nil, lastErr
 }
 
 func initAMQPExchangeWithRetry(cfg *config.Config) error {

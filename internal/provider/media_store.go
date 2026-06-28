@@ -685,11 +685,11 @@ func (s *mediaStore) loadRegistry() error {
 
 func (s *mediaStore) loadRegistryFromPG() error {
 	ctx := context.Background()
-	count, err := s.pgQueries.CountMediaRecords(ctx)
-	if err != nil {
-		return fmt.Errorf("count media records: %w", err)
-	}
-	if count == 0 && strings.TrimSpace(s.registryFile) != "" {
+	// Always attempt to import from the local JSON file so that data from
+	// multiple containers/workers can be merged into the shared Postgres.
+	// The UPSERT in importJSONRegistryToPG is idempotent: existing rows are
+	// updated with identical values, new rows are inserted.
+	if strings.TrimSpace(s.registryFile) != "" {
 		imported, importErr := s.importJSONRegistryToPG(ctx)
 		if importErr != nil {
 			ilog.Warnf("evt=media_registry pg_import_failed err=%v", importErr)

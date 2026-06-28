@@ -72,7 +72,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(h.sessionTTL),
 		HttpOnly: true,
 		Secure:   h.secureCookie,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 	})
 	writeJSON(w, http.StatusOK, userResponse(u))
 }

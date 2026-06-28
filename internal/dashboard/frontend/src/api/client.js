@@ -19,7 +19,7 @@ export async function request(path, options = {}) {
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(path, { ...init, headers })
+  const response = await fetch(path, { credentials: 'include', ...init, headers })
 
   if (!response.ok) {
     throw new ApiError(await extractError(response), response.status)

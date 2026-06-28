@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -40,10 +42,7 @@ type ClientManager struct {
 	mu              sync.RWMutex
 	clients         map[string]*clientEntry
 	sessionStore    string
-	assignmentFile  string
-	sessionCfgFile  string
-	sessionHookFile string
-	sessionTplFile  string
+	store           MetadataStore
 	webhookBase     string
 	defaultAudioPTT bool
 	rejectCalls     bool
@@ -93,6 +92,10 @@ type ClientManager struct {
 
 	// media storage and metadata registry (local/S3)
 	mediaStore *mediaStore
+
+	// waContainer is non-nil when whatsmeow session storage uses a shared
+	// Postgres backend instead of per-session SQLite files.
+	waContainer *sqlstore.Container
 }
 
 type sessionOverrides struct {
@@ -141,6 +144,12 @@ type ManagerOptions struct {
 	SessionConfigFile     string
 	SessionWebhookFile    string
 	SessionTemplateFile   string
+	// MetadataStore, when set, replaces the default JSON-file persistence for
+	// assignments/overrides/webhooks/templates (e.g. a Postgres-backed store).
+	MetadataStore         MetadataStore
+	// PostgresURL, when set, uses Postgres as the whatsmeow session store
+	// instead of per-session SQLite files. All devices share a single pool.
+	PostgresURL           string
 	MediaStoreDir         string
 	MediaRegistryFile     string
 	MediaStorageMode      string
@@ -180,6 +189,11 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	if sessionTplFile == "" {
 		sessionTplFile = filepath.Join(opts.SessionStore, "_session_templates.json")
 	}
+	var store MetadataStore = opts.MetadataStore
+	if store == nil {
+		store = newFileStore(assignmentFile, sessionCfgFile, sessionHookFile, sessionTplFile)
+	}
+	loadCtx := context.Background()
 	assigned := map[string]struct{}{}
 	for _, sid := range opts.AssignedSessions {
 		n := normalizeSessionID(sid)
@@ -187,7 +201,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 			assigned[n] = struct{}{}
 		}
 	}
-	if persisted, err := loadAssignments(assignmentFile, opts.WorkerID); err == nil {
+	if persisted, err := store.LoadAssignments(loadCtx, opts.WorkerID); err == nil {
 		for _, sid := range persisted {
 			n := normalizeSessionID(sid)
 			if n != "" {
@@ -196,15 +210,15 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		}
 	}
 	overrides := map[string]sessionOverrides{}
-	if persisted, err := loadSessionOverrideState(sessionCfgFile, opts.WorkerID); err == nil && persisted != nil {
+	if persisted, err := store.LoadOverrides(loadCtx, opts.WorkerID); err == nil && persisted != nil {
 		overrides = persisted
 	}
 	sessionWebhooks := map[string][]SessionWebhook{}
-	if persisted, err := loadSessionWebhookState(sessionHookFile, opts.WorkerID); err == nil && persisted != nil {
+	if persisted, err := store.LoadWebhooks(loadCtx, opts.WorkerID); err == nil && persisted != nil {
 		sessionWebhooks = persisted
 	}
 	sessionTemplates := map[string][]SessionTemplate{}
-	if persisted, err := loadSessionTemplateState(sessionTplFile, opts.WorkerID); err == nil && persisted != nil {
+	if persisted, err := store.LoadTemplates(loadCtx, opts.WorkerID); err == nil && persisted != nil {
 		sessionTemplates = persisted
 	}
 	mediaDir := strings.TrimSpace(opts.MediaStoreDir)
@@ -228,13 +242,10 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		S3ForcePathStyle: opts.S3ForcePathStyle,
 		S3Prefix:         opts.S3Prefix,
 	})
-	return &ClientManager{
+	m := &ClientManager{
 		clients:         make(map[string]*clientEntry),
 		sessionStore:    opts.SessionStore,
-		assignmentFile:  assignmentFile,
-		sessionCfgFile:  sessionCfgFile,
-		sessionHookFile: sessionHookFile,
-		sessionTplFile:  sessionTplFile,
+		store:           store,
 		webhookBase:     opts.WebhookBase,
 		defaultAudioPTT: opts.DefaultAudioPTT,
 		rejectCalls:     opts.RejectCalls,
@@ -265,6 +276,24 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		assigned:              assigned,
 		mediaStore:            media,
 	}
+	if u := strings.TrimSpace(opts.PostgresURL); u != "" {
+		pgxCfg, err := pgxv5.ParseConfig(u)
+		if err != nil {
+			ilog.Errorf("evt=wastore_postgres_parse err=%v — falling back to SQLite", err)
+		} else {
+			storeLog := waLog.Stdout("WAStore", "ERROR", false)
+			sqlDB := stdlib.OpenDB(*pgxCfg)
+			c := sqlstore.NewWithDB(sqlDB, "pgx", storeLog)
+			if err := c.Upgrade(context.Background()); err != nil {
+				ilog.Errorf("evt=wastore_postgres_upgrade err=%v — falling back to SQLite", err)
+				_ = sqlDB.Close()
+			} else {
+				m.waContainer = c
+				ilog.Infof("evt=wastore_backend backend=postgres")
+			}
+		}
+	}
+	return m
 }
 
 func normalizeSessionID(sessionID string) string {
@@ -384,11 +413,11 @@ func (m *ClientManager) AssignSession(sessionID string) (string, error) {
 		sessions = append(sessions, sid)
 	}
 	sort.Strings(sessions)
-	file := m.assignmentFile
+	store := m.store
 	workerID := m.workerID
 	m.mu.Unlock()
 
-	if err := saveAssignments(file, workerID, sessions); err != nil {
+	if err := store.SaveAssignments(context.Background(), workerID, sessions); err != nil {
 		if !existed {
 			m.mu.Lock()
 			delete(m.assigned, norm)
@@ -421,11 +450,11 @@ func (m *ClientManager) UnassignSession(sessionID string) (bool, error) {
 		sessions = append(sessions, sid)
 	}
 	sort.Strings(sessions)
-	file := m.assignmentFile
+	store := m.store
 	workerID := m.workerID
 	m.mu.Unlock()
 
-	if err := saveAssignments(file, workerID, sessions); err != nil {
+	if err := store.SaveAssignments(context.Background(), workerID, sessions); err != nil {
 		m.mu.Lock()
 		m.assigned[norm] = struct{}{}
 		m.mu.Unlock()
@@ -863,15 +892,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	// Mark status as connecting
 	status.Set(sessionID, "connecting")
 
-	// Garante diretório por sessão
-	if err := os.MkdirAll(m.SessionPath(sessionID), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir session dir: %w", err)
-	}
-
 	ctx := context.Background()
-
-	// SQLite por sessão: SESSION_STORE/<sessionID>/session.db  (modernc)
-	dbPath := filepath.Join(m.SessionPath(sessionID), "session.db")
 
 	waLogLevel := strings.ToUpper(strings.TrimSpace(os.Getenv("WHATSMEOW_LOG_LEVEL")))
 	if waLogLevel == "" {
@@ -880,24 +901,47 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	dbLog := waLog.Stdout("Database", waLogLevel, true)
 	clientLog := waLog.Stdout("Client", waLogLevel, true)
 
-	// PRAGMAs para reduzir SQLITE_BUSY e melhorar concorrência
-	dsn := fmt.Sprintf(
-		"file:%s?cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		dbPath,
-	)
-	storeContainer, err := sqlstore.New(ctx, "sqlite", dsn, dbLog)
-	if err != nil {
-		return nil, fmt.Errorf("sqlstore.New: %w", err)
-	}
+	var storeContainer *sqlstore.Container
+	var device *store.Device
 
-	// Pega primeiro device (cria se não existir) ou cria manualmente
-	device, err := storeContainer.GetFirstDevice(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get first device: %w", err)
-	}
-	if device == nil {
-		// NewDevice NÃO tem argumentos e NÃO retorna erro
-		device = storeContainer.NewDevice()
+	if m.waContainer != nil {
+		// Postgres mode: shared container — find device by JID user (phone number).
+		storeContainer = m.waContainer
+		devices, err := storeContainer.GetAllDevices(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("wastore get devices: %w", err)
+		}
+		for _, d := range devices {
+			if d.ID != nil && d.ID.User == sessionID {
+				device = d
+				break
+			}
+		}
+		if device == nil {
+			device = storeContainer.NewDevice()
+		}
+	} else {
+		// SQLite mode: per-session file in SESSION_STORE/<sessionID>/session.db
+		if err := os.MkdirAll(m.SessionPath(sessionID), 0o755); err != nil {
+			return nil, fmt.Errorf("mkdir session dir: %w", err)
+		}
+		dbPath := filepath.Join(m.SessionPath(sessionID), "session.db")
+		dsn := fmt.Sprintf(
+			"file:%s?cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+			dbPath,
+		)
+		var err error
+		storeContainer, err = sqlstore.New(ctx, "sqlite", dsn, dbLog)
+		if err != nil {
+			return nil, fmt.Errorf("sqlstore.New: %w", err)
+		}
+		device, err = storeContainer.GetFirstDevice(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get first device: %w", err)
+		}
+		if device == nil {
+			device = storeContainer.NewDevice()
+		}
 	}
 
 	// (Opcional) ajustar props do device; deixamos simples
@@ -1233,6 +1277,9 @@ func (m *ClientManager) ListSessions() []SessionOverview {
 }
 
 func (m *ClientManager) KnownSessions() []string {
+	if m.waContainer != nil {
+		return m.knownSessionsFromPostgres()
+	}
 	entries, err := os.ReadDir(m.sessionStore)
 	if err != nil {
 		return nil
@@ -1247,6 +1294,26 @@ func (m *ClientManager) KnownSessions() []string {
 			continue
 		}
 		out = append(out, sid)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (m *ClientManager) knownSessionsFromPostgres() []string {
+	devices, err := m.waContainer.GetAllDevices(context.Background())
+	if err != nil {
+		ilog.Errorf("evt=wastore_get_devices err=%v", err)
+		return nil
+	}
+	out := make([]string, 0, len(devices))
+	for _, d := range devices {
+		if d.ID == nil {
+			continue
+		}
+		sid := normalizeSessionID(d.ID.User)
+		if sid != "" {
+			out = append(out, sid)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -1490,15 +1557,20 @@ func (m *ClientManager) RestoreSavedSessions() ([]string, error) {
 
 	var restored []string
 	for _, sid := range candidates {
-		dbFile := filepath.Join(m.SessionPath(sid), "session.db")
-		if _, err := os.Stat(dbFile); err == nil {
-			go func(id string) {
-				if _, err := m.Connect(id); err != nil {
-					// opcional: logar erro
-				}
-			}(sid)
-			restored = append(restored, sid)
+		if m.waContainer == nil {
+			// SQLite mode: only restore sessions that have a database file on disk.
+			dbFile := filepath.Join(m.SessionPath(sid), "session.db")
+			if _, err := os.Stat(dbFile); err != nil {
+				continue
+			}
 		}
+		// Postgres mode: KnownSessions already returns only paired devices.
+		go func(id string) {
+			if _, err := m.Connect(id); err != nil {
+				// optional: log error
+			}
+		}(sid)
+		restored = append(restored, sid)
 	}
 	return restored, nil
 }

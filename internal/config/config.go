@@ -67,6 +67,12 @@ type Config struct {
 	ProxyUsername string
 	ProxyPassword string
 
+	// PostgresURL points to an optional Postgres instance used to persist
+	// session metadata (assignments, config overrides, webhooks, templates).
+	// When empty, the provider falls back to the JSON files under SessionStore.
+	// Example: postgres://user:pass@localhost:5432/whatsmeow?sslmode=disable
+	PostgresURL string
+
 	// RedisURL points to an optional Redis instance used by status/config.
 	// Example: redis://user:pass@localhost:6379/0
 	RedisURL string
@@ -133,6 +139,17 @@ type Config struct {
 	// useful for compatibility with Graph API style requests.
 	APIAuthAllowQuery bool
 
+	// AdminEmail / AdminPassword seed the first owner account when POSTGRES_URL
+	// is set and no users exist yet. Subsequent boots ignore these values.
+	AdminEmail    string
+	AdminPassword string
+	// AuthSecureCookie marks the session cookie Secure (HTTPS-only). Set to
+	// true in production behind TLS; defaults to false for local dev.
+	AuthSecureCookie bool
+	// SessionTTLHours controls how long a login session remains valid.
+	// Default: 168 (7 days).
+	SessionTTLHours int
+
 	// Media storage mode. Supports: auto, local, s3.
 	MediaStorageMode string
 	// MediaStoreDir is the local path used to store media blobs when mode=local
@@ -189,6 +206,7 @@ func NewConfig() *Config {
 	cfg.ProxyPassword = getEnv("PROXY_PASSWORD", "")
 
 	// Optional Redis for distributed status/config
+	cfg.PostgresURL = strings.TrimSpace(firstNonEmpty(getEnv("POSTGRES_URL", ""), getEnv("DATABASE_URL", "")))
 	cfg.RedisURL = getEnv("REDIS_URL", "")
 	cfg.StatusPrefix = getEnv("STATUS_PREFIX", "provider-whatsmeow-status:")
 	cfg.SessionConfigPrefix = getEnv("SESSION_CONFIG_PREFIX", "provider-whatsmeow-config:")
@@ -265,6 +283,16 @@ func NewConfig() *Config {
 	cfg.APIAuthAllowQuery = getEnvBool("API_AUTH_ALLOW_QUERY", true)
 	if strings.TrimSpace(cfg.APIAuthToken) == "" {
 		cfg.APIAuthEnabled = false
+	}
+
+	cfg.AdminEmail = getEnv("ADMIN_EMAIL", "")
+	cfg.AdminPassword = getEnv("ADMIN_PASSWORD", "")
+	cfg.AuthSecureCookie = getEnvBool("AUTH_SECURE_COOKIE", false)
+	cfg.SessionTTLHours = 168
+	if v := getEnv("SESSION_TTL_HOURS", ""); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SessionTTLHours = n
+		}
 	}
 
 	cfg.MediaStorageMode = strings.ToLower(getEnv("MEDIA_STORAGE_MODE", "auto"))

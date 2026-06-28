@@ -80,7 +80,7 @@ func TestDeleteSessionEndpoint(t *testing.T) {
 		t.Fatalf("WriteFile(): %v", err)
 	}
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/"+sessionID, nil)
 	rec := httptest.NewRecorder()
 
@@ -103,7 +103,7 @@ func TestPairingCodeEndpointRequiresPhone(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/sessions/553121159080/pairing-code",
@@ -128,7 +128,7 @@ func TestCreateSessionEndpointRejectsInvalidID(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/sessions",
@@ -153,7 +153,7 @@ func TestCheckUserEndpointRequiresNumber(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/sessions/553121159080/user/check",
@@ -178,7 +178,7 @@ func TestCheckUserEndpointReturnsNotFoundWhenSessionDisconnected(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/sessions/553121159080/user/check",
@@ -203,7 +203,7 @@ func TestCheckUserCompatibilityEndpointUsesPhoneNumberID(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/user/check",
@@ -228,7 +228,7 @@ func TestWorkerEndpointOmitsGlobalWhatsAppWebVersion(t *testing.T) {
 		WorkerID:     "worker-test",
 	})
 
-	srv := NewServer(&config.Config{}, manager, nil)
+	srv := NewServer(&config.Config{}, manager, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/worker", nil)
 	rec := httptest.NewRecorder()
 

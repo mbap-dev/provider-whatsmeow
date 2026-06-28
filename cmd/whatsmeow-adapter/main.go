@@ -9,11 +9,13 @@ import (
 
 	amqpconsumer "your.org/provider-whatsmeow/internal/amqp"
 	broker "your.org/provider-whatsmeow/internal/broker"
+	"your.org/provider-whatsmeow/internal/auth"
 	"your.org/provider-whatsmeow/internal/config"
 	httpserver "your.org/provider-whatsmeow/internal/http"
 	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/provider"
 	"your.org/provider-whatsmeow/internal/status"
+	"your.org/provider-whatsmeow/internal/store/pg"
 )
 
 // main is the entrypoint for the WhatsMeow adapter.  It wires together the
@@ -37,11 +39,62 @@ func main() {
 	// Init status writer (in-memory + optional Redis mirror)
 	status.Init(cfg.RedisURL, cfg.StatusPrefix)
 
+	// Optional Postgres-backed metadata store. When POSTGRES_URL is set we
+	// connect, apply embedded migrations and import any existing JSON state on
+	// first boot. When unset, the manager keeps using the JSON files.
+	var metadataStore provider.MetadataStore
+	var authHandler *auth.Handler
+	if cfg.PostgresURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := pg.Migrate(ctx, cfg.PostgresURL); err != nil {
+			cancel()
+			ilog.Errorf("evt=postgres_migrate failed err=%v", err)
+			os.Exit(1)
+		}
+		pool, err := pg.Connect(ctx, cfg.PostgresURL)
+		if err != nil {
+			cancel()
+			ilog.Errorf("evt=postgres_connect failed err=%v", err)
+			os.Exit(1)
+		}
+		defer pool.Close()
+		metadataStore = provider.NewPostgresStore(pool)
+		if imported, err := provider.ImportFileStateIfEmpty(ctx, provider.NewFileStore(cfg.SessionStore), metadataStore, cfg.WorkerID); err != nil {
+			ilog.Errorf("evt=postgres_import_json failed err=%v", err)
+		} else if imported {
+			ilog.Infof("evt=postgres_import_json success worker_id=%s", cfg.WorkerID)
+		}
+		// Wire up Postgres-backed auth.
+		authStore := auth.NewStore(pool)
+		if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
+			if created, err := authStore.BootstrapOwner(ctx, cfg.AdminEmail, cfg.AdminPassword); err != nil {
+				ilog.Warnf("evt=auth_bootstrap err=%v", err)
+			} else if created {
+				ilog.Infof("evt=auth_bootstrap created owner email=%s", cfg.AdminEmail)
+			}
+		}
+		authHandler = auth.NewHandler(authStore, cfg.AuthSecureCookie, time.Duration(cfg.SessionTTLHours)*time.Hour)
+		// Start background session cleanup — runs every hour, independent of request lifecycle.
+		go func(store *auth.Store) {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := store.PurgeExpiredSessions(context.Background()); err != nil {
+					ilog.Warnf("evt=auth_session_purge err=%v", err)
+				}
+			}
+		}(authStore)
+		cancel()
+		ilog.Infof("evt=metadata_store backend=postgres")
+	}
+
 	// Create a manager for WhatsApp clients.  The manager is responsible
 	// for bootstrapping new sessions, keeping track of connected clients
 	// and exposing helper functions used by the HTTP handlers and the
 	// message consumer.
 	clientManager := provider.NewClientManager(provider.ManagerOptions{
+		MetadataStore:         metadataStore,
+		PostgresURL:           cfg.PostgresURL,
 		SessionStore:          cfg.SessionStore,
 		WebhookBase:           cfg.WebhookBase,
 		DefaultAudioPTT:       cfg.AudioPTTDefault,
@@ -131,7 +184,7 @@ func main() {
 	// Spin up the HTTP server exposing health checks, QR code
 	// retrieval and basic session lifecycle management.  The consumer is
 	// passed into the server so it can report readiness.
-	srv := httpserver.NewServer(cfg, clientManager, consumer)
+	srv := httpserver.NewServer(cfg, clientManager, consumer, authHandler)
 
 	// The root context is cancelled on SIGINT or SIGTERM which signals
 	// all subordinate goroutines to stop.  Each component listens for

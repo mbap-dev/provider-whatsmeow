@@ -326,9 +326,8 @@ func saveSessionWebhookState(path, workerID string, webhooks map[string][]Sessio
 func (m *ClientManager) persistSessionWebhooks() error {
 	m.webhooksMu.RLock()
 	snapshot := cloneSessionWebhookMap(m.sessionWebhooks)
-	file := m.sessionHookFile
 	m.webhooksMu.RUnlock()
-	return saveSessionWebhookState(file, m.workerID, snapshot)
+	return m.store.SaveWebhooks(context.Background(), m.workerID, snapshot)
 }
 
 func (m *ClientManager) postSessionWebhookAsync(sessionID string, hook SessionWebhook, payload any) {

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -533,7 +534,6 @@ func (m *ClientManager) persistSessionTemplates() error {
 	for sid, items := range m.sessionTemplates {
 		snapshot[sid] = cloneSessionTemplates(items)
 	}
-	file := m.sessionTplFile
 	m.templatesMu.RUnlock()
-	return saveSessionTemplateState(file, m.workerID, snapshot)
+	return m.store.SaveTemplates(context.Background(), m.workerID, snapshot)
 }

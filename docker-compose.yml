@@ -16,6 +16,29 @@ services:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
 
+  # Dedicated, isolated Postgres for the provider only. It is NOT published on
+  # the host (no 5432 mapping) to avoid colliding with any other Postgres you
+  # already run; the workers reach it over the compose network as "postgres".
+  # If you need external access, uncomment the ports mapping (host 5433).
+  postgres:
+    image: postgres:16
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-whatsmeow}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-whatsmeow}"
+      POSTGRES_DB: "${POSTGRES_DB:-whatsmeow}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-whatsmeow} -d ${POSTGRES_DB:-whatsmeow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    # ports:
+    #   - "5433:5432"   # uncomment for host access on port 5433
+
   worker-a:
     build: .
     image: ghcr.io/mbap-dev/provider-whatsmeow:latest
@@ -23,8 +46,11 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      POSTGRES_URL: "postgres://${POSTGRES_USER:-whatsmeow}:${POSTGRES_PASSWORD:-whatsmeow}@postgres:5432/${POSTGRES_DB:-whatsmeow}?sslmode=disable"
       AMQP_EXCHANGE: provider.whatsmeow.outgoing
       AMQP_BINDING_PREFIX: provider.whatsmeow
       AMQP_WEBHOOK_EXCHANGE: provider.whatsmeow.webhooks
@@ -43,6 +69,10 @@ services:
       API_AUTH_TOKEN: "${API_AUTH_TOKEN:-}"
       UNOAPI_AUTH_TOKEN: "${UNOAPI_AUTH_TOKEN:-}"
       API_AUTH_ALLOW_QUERY: "${API_AUTH_ALLOW_QUERY:-true}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      AUTH_SECURE_COOKIE: "${AUTH_SECURE_COOKIE:-false}"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       OUTGOING_MESSAGES_COEX: "${OUTGOING_MESSAGES_COEX:-false}"
       MEDIA_STORAGE_MODE: "${MEDIA_STORAGE_MODE:-auto}"
       MEDIA_STORE_DIR: "${MEDIA_STORE_DIR:-/var/lib/whatsmeow/_media}"
@@ -73,9 +103,13 @@ services:
     image: ghcr.io/mbap-dev/provider-whatsmeow:latest
     restart: unless-stopped
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
       AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      POSTGRES_URL: "postgres://${POSTGRES_USER:-whatsmeow}:${POSTGRES_PASSWORD:-whatsmeow}@postgres:5432/${POSTGRES_DB:-whatsmeow}?sslmode=disable"
       AMQP_EXCHANGE: provider.whatsmeow.outgoing
       AMQP_BINDING_PREFIX: provider.whatsmeow
       AMQP_WEBHOOK_EXCHANGE: provider.whatsmeow.webhooks
@@ -91,6 +125,10 @@ services:
       API_AUTH_TOKEN: "${API_AUTH_TOKEN:-}"
       UNOAPI_AUTH_TOKEN: "${UNOAPI_AUTH_TOKEN:-}"
       API_AUTH_ALLOW_QUERY: "${API_AUTH_ALLOW_QUERY:-true}"
+      ADMIN_EMAIL: "${ADMIN_EMAIL:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      AUTH_SECURE_COOKIE: "${AUTH_SECURE_COOKIE:-false}"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       OUTGOING_MESSAGES_COEX: "${OUTGOING_MESSAGES_COEX:-false}"
       MEDIA_STORAGE_MODE: "${MEDIA_STORAGE_MODE:-auto}"
       MEDIA_STORE_DIR: "${MEDIA_STORE_DIR:-/var/lib/whatsmeow/_media}"

@@ -23,6 +23,7 @@ Este documento detalha todas as variáveis suportadas pelo `provider-whatsmeow`,
 |---|---|---|---|
 | `HTTP_ADDR` | string | `:8080` | Endereço HTTP do serviço (dashboard + API). |
 | `SESSION_STORE` | string | `./state/whatsmeow` | Diretório persistente de sessões (SQLite por sessão). |
+| `POSTGRES_URL` | string | `""` | Postgres opcional para metadados (atribuições, overrides, webhooks, templates). Vazio = arquivos JSON em `SESSION_STORE`. Aceita `DATABASE_URL` como alias. |
 | `LOG_LEVEL` | string | `error` | Nível de log (`error`, `info`, `debug`). |
 | `WHATSMEOW_LOG_LEVEL` | string | `INFO` | Nível do logger interno do whatsmeow (`ERROR`, `WARN`, `INFO`, `DEBUG`), separado de `LOG_LEVEL`. |
 | `UI_ENABLED` | bool | `true` | Habilita dashboard web em `/`. |
@@ -47,6 +48,30 @@ Quando `UI_AUTH_ENABLED=true`, ficam protegidas as rotas:
 | `API_AUTH_TOKEN` | string | `""` | Token de acesso esperado (Bearer). |
 | `UNOAPI_AUTH_TOKEN` | string | `""` | Alias compatível de token (fallback para `API_AUTH_TOKEN`). |
 | `API_AUTH_ALLOW_QUERY` | bool | `true` | Permite token em query string (`?access_token=`), além de `Authorization: Bearer`. |
+
+### Auth Postgres (sessions + API keys)
+
+Disponível apenas quando `POSTGRES_URL` está definido. Ativa as rotas `/auth/*` no servidor HTTP.
+
+| Variável | Tipo | Default | Descrição |
+|---|---|---|---|
+| `ADMIN_EMAIL` | string | `""` | E-mail do owner bootstrap. Usado **uma única vez** no primeiro boot, quando a tabela `users` está vazia. |
+| `ADMIN_PASSWORD` | string | `""` | Senha do owner bootstrap (hash argon2id gerado na hora). |
+| `AUTH_SECURE_COOKIE` | bool | `false` | Marca o cookie de sessão como `Secure` (HTTPS-only). Ativar em produção por TLS. |
+| `SESSION_TTL_HOURS` | int | `168` | Validade da sessão de login (horas). Default: 7 dias. |
+
+#### Endpoints expostos
+
+| Método | Rota | Auth | Descrição |
+|---|---|---|---|
+| `POST` | `/auth/login` | — | Login com email+senha → define cookie `wm_session`. |
+| `POST` | `/auth/logout` | cookie/bearer | Invalida a sessão atual. |
+| `GET` | `/auth/me` | obrigatória | Retorna dados do usuário autenticado. |
+| `GET` | `/auth/api-keys` | obrigatória | Lista API keys do usuário. |
+| `POST` | `/auth/api-keys` | obrigatória | Cria nova API key (retorna `key` apenas na criação). |
+| `DELETE` | `/auth/api-keys/{id}` | obrigatória | Remove uma API key. |
+
+API keys têm prefixo `wm_` e são aceitas via `Authorization: Bearer wm_...`. O cookie `wm_session` (HttpOnly, SameSite=Strict) é usado pelo dashboard browser.
 
 Quando `API_AUTH_ENABLED=true`, todos os endpoints (exceto `/`, `/assets/*`, `/healthz`, `/readyz`) exigem token, com duas exceções:
 
@@ -118,6 +143,7 @@ Observações:
 - O dashboard/API também permite override por sessão de `REJECT_CALLS`, `REJECT_CALLS_MESSAGE`, `MARK_READ_ON_MESSAGE`, `IGNORE_STATUS_BROADCAST`, `IGNORE_NEWSLETTERS`, `OUTGOING_MESSAGES_COEX` e `ALWAYS_ONLINE`.
 - Esses overrides são persistidos em `SESSION_STORE/_session_overrides.json`.
 - O dashboard/API permite cadastro de múltiplos webhooks por sessão (com filtros de eventos), persistidos em `SESSION_STORE/_session_webhooks.json`.
+- Quando `POSTGRES_URL` está definido, todos esses metadados (atribuições, overrides, webhooks e templates) são persistidos no Postgres em vez dos arquivos JSON. No primeiro boot com banco vazio, o estado JSON existente é importado automaticamente (sem sobrescrever dados já presentes). As migrações de schema rodam embutidas no startup. O store de sessão do whatsmeow continua em SQLite por sessão.
 - Mensagens próprias da sessão (`fromMe`) dependem de `send_outgoing_messages` no webhook da sessão e podem sair em `messages[]` (padrão) ou `message_echoes` (`OUTGOING_MESSAGES_COEX=true`).
 
 ### Webhook de saída

@@ -8,7 +8,9 @@ COMPOSE_FILE ?= docker-compose.yml
 PNPM     ?= pnpm
 DASHBOARD_FRONTEND_DIR ?= internal/dashboard/frontend
 
-.PHONY: all check test build tidy vet fmt dashboard-install dashboard-build dashboard-dev docker-build deploy deploy-up deploy-down deploy-logs deploy-ps deploy-restart deploy-smoke
+SQLC     ?= sqlc
+
+.PHONY: all check test build build-migrate tidy vet fmt sqlc-generate dashboard-install dashboard-build dashboard-dev docker-build deploy deploy-up deploy-down deploy-logs deploy-ps deploy-restart deploy-smoke
 
 all: check build
 
@@ -25,6 +27,15 @@ test:
 
 build:
 	$(GO) build $(GOFLAGS) -o $(BIN) ./cmd/whatsmeow-adapter
+
+build-migrate:
+	$(GO) build $(GOFLAGS) -o bin/migrate-sessions ./cmd/migrate-sessions
+
+# Regenerate the sqlc data-access code from internal/store/pg/{schema,query}.sql.
+# Requires sqlc (https://sqlc.dev) >= 1.31 and Go >= 1.26. The generated code in
+# internal/store/pg/pgdb is committed, so this is only needed after SQL changes.
+sqlc-generate:
+	$(SQLC) generate
 
 dashboard-install:
 	cd $(DASHBOARD_FRONTEND_DIR) && $(PNPM) install --frozen-lockfile

@@ -6,7 +6,7 @@ Provider WhatsApp baseado em [WhatsMeow](https://github.com/tulir/whatsmeow), co
 
 - `provider-whatsmeow` agora pode rodar **sem depender do unoapi-cloud**.
 - Suporte nativo a **workers por números/sessões** (`WORKER_NUMBERS`).
-- Dashboard React responsivo embutido no binário Go (sem etapa local de build).
+- Dashboard React + Tailwind CSS v4 responsivo embutido no binário Go (sem etapa local de build).
 - Configuração de sessões diretamente no dashboard (sem obrigatoriedade de `WORKER_NUMBERS` em env).
 - Autenticação de sessão por `QR code` ou `código de pareamento`.
 - API HTTP para:
@@ -86,7 +86,18 @@ Funcionalidades:
   - newsletter
 - mensagens próprias da sessão (`fromMe`) seguem formato UnoAPI em `messages[]` (com `from` igual ao número da sessão) e respeitam o filtro `send_outgoing_messages`.
 
-O frontend React é compilado em `internal/dashboard/public` com Vite e servido pelo próprio binário Go (`go:embed`). Use `make dashboard-build` após alterar os arquivos em `internal/dashboard/frontend`; Node/pnpm são necessários apenas nesse passo de build, não no runtime do provider.
+O frontend é uma SPA React (JSX) estilizada com **Tailwind CSS v4** (config CSS-first via `@theme`, sem `tailwind.config.js`), com tema claro/escuro. O código vive em `internal/dashboard/frontend/src` (`api/`, `hooks/`, `lib/`, `components/`). É compilado em `internal/dashboard/public` com Vite e servido pelo próprio binário Go (`go:embed`). Use `make dashboard-build` após alterar os arquivos em `internal/dashboard/frontend`; Node/pnpm são necessários apenas nesse passo de build, não no runtime do provider.
+
+### Autenticação do dashboard (Postgres)
+
+Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenticação próprio:
+
+- No primeiro boot com banco vazio, `ADMIN_EMAIL` + `ADMIN_PASSWORD` criam a conta **owner** automaticamente.
+- A tela de login (cookie `wm_session`, HttpOnly, SameSite=Strict) substitui a rota raiz quando não autenticado.
+- Após o login, o menu do usuário (canto superior direito) exibe e-mail, papel (owner/admin/user) e acesso a **API Keys**.
+- **API Keys** com prefixo `wm_` são geradas no dashboard e aceitas como `Authorization: Bearer wm_...` para uso machine-to-machine. O valor bruto é exibido apenas uma vez na criação.
+- `AUTH_SECURE_COOKIE=true` é obrigatório em produção (TLS). Em dev local, use `false`.
+- Quando `POSTGRES_URL` não está definido, o dashboard funciona normalmente sem login (retrocompatível).
 
 ---
 
@@ -134,6 +145,15 @@ Compatibilidade:
   - `GET /{version}/{phone_number_id}/{media_id}` (metadados + URL)
   - `GET /{version}/{media_id}?phone_number_id={phone_number_id}` (compatível com o fluxo usado pelo Chatwoot/UnoAPI)
   - `GET /{version}/download/{phone_number_id}/{file}` (download/stream)
+
+### Auth (requer `POSTGRES_URL`)
+
+- `POST /auth/login` — body `{"email":"…","password":"…"}` → seta cookie `wm_session`
+- `POST /auth/logout` — invalida sessão atual
+- `GET /auth/me` — retorna usuário autenticado
+- `GET /auth/api-keys` — lista API keys do usuário
+- `POST /auth/api-keys` — cria API key, body `{"name":"…","expires_at":"…(RFC3339, opcional)"}` → retorna `key` apenas na criação
+- `DELETE /auth/api-keys/{id}` — revoga uma API key
 
 ### Saúde
 
@@ -327,6 +347,7 @@ Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md
 
 - `HTTP_ADDR` (default `:8080`)
 - `SESSION_STORE` (default `./state/whatsmeow`)
+- `POSTGRES_URL` (opcional; alias `DATABASE_URL`) — persiste metadados em Postgres
 - `LOG_LEVEL` (`error|info|debug`)
 - `WHATSMEOW_LOG_LEVEL` (`ERROR|WARN|INFO|DEBUG`, default `INFO`)
 
@@ -351,6 +372,8 @@ Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md
 > As atribuições são persistidas em `SESSION_STORE/_worker_assignments.json`.
 > As configurações por sessão são persistidas em `SESSION_STORE/_session_overrides.json`.
 > Os webhooks por sessão são persistidos em `SESSION_STORE/_session_webhooks.json`.
+>
+> Com `POSTGRES_URL` definido, esses metadados (atribuições, overrides, webhooks e templates) passam a ser persistidos no Postgres em vez dos arquivos JSON. As migrações de schema rodam embutidas no startup e, no primeiro boot com banco vazio, o estado JSON existente é importado automaticamente. O store de sessão do whatsmeow permanece em SQLite por sessão. O `docker-compose.yml` já inclui um Postgres dedicado e isolado (não publicado no host) para o provider. A camada de acesso usa `pgx` + `sqlc` (código gerado commitado em `internal/store/pg/pgdb`; regenere com `make sqlc-generate`) e migrações `goose` embutidas.
 
 ### Webhook de saída
 
@@ -370,17 +393,16 @@ Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md
 - `UNOAPI_AUTH_TOKEN` (alias de compatibilidade)
 - `API_AUTH_ALLOW_QUERY` (aceita `?access_token=...`, default `true`)
 
-Quando a autenticação UI está ativa, ficam protegidas as rotas:
+### Auth Postgres
 
-- `/`
-- `/assets/*`
-- `/api/*`
-- `/sessions/*`
+- `ADMIN_EMAIL` — e-mail do owner criado no primeiro boot (tabela `users` vazia)
+- `ADMIN_PASSWORD` — senha do owner (hash argon2id; gerado na hora)
+- `AUTH_SECURE_COOKIE` (default `false`) — marcar cookie `wm_session` como `Secure` (ativar em produção com TLS)
+- `SESSION_TTL_HOURS` (default `168`) — validade da sessão de login em horas
 
-Quando o token de API está ativo:
-
-- envie `Authorization: Bearer <TOKEN>` nas requisições;
-- ou use `?access_token=<TOKEN>` se `API_AUTH_ALLOW_QUERY=true`.
+> O sistema de auth Postgres é ativado automaticamente quando `POSTGRES_URL` está definido.  
+> Sem `POSTGRES_URL`, o dashboard funciona normalmente sem login (retrocompatível).  
+> As rotas `/auth/*` retornam 404 quando auth não está disponível — o frontend detecta isso e não exibe login.
 
 ### Armazenamento de mídia
 

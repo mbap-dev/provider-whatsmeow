@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -474,6 +475,59 @@ type sessionOverridePayload struct {
 	ProxyPassword               *string `json:"proxy_password,omitempty"`
 }
 
+// payloadToOverrides converts the serialized payload form into the in-memory
+// override representation. Shared by the file and Postgres stores.
+func payloadToOverrides(raw sessionOverridePayload) sessionOverrides {
+	ov := sessionOverrides{
+		rejectCalls:           cloneBoolPtr(raw.RejectCalls),
+		rejectMsg:             cloneStringPtr(raw.RejectCallsMessage),
+		autoMarkRead:          cloneBoolPtr(raw.MarkReadOnMessage),
+		ignoreStatusBroadcast: cloneBoolPtr(raw.IgnoreStatusBroadcast),
+		ignoreNewsletters:     cloneBoolPtr(raw.IgnoreNewsletters),
+		outgoingMessagesCoex:  cloneBoolPtr(raw.OutgoingMessagesCoex),
+		alwaysOnline:          cloneBoolPtr(raw.AlwaysOnline),
+		historySyncEnabled:    cloneBoolPtr(raw.HistorySyncEnabled),
+		historySyncDays:       cloneIntPtr(raw.HistorySyncDays),
+		proxyEnabled:          cloneBoolPtr(raw.ProxyEnabled),
+		proxyProtocol:         cloneStringPtr(raw.ProxyProtocol),
+		proxyHost:             cloneStringPtr(raw.ProxyHost),
+		proxyPort:             cloneStringPtr(raw.ProxyPort),
+		proxyUsername:         cloneStringPtr(raw.ProxyUsername),
+		proxyPassword:         cloneStringPtr(raw.ProxyPassword),
+	}
+	if raw.AlwaysOnlineIntervalSeconds != nil && *raw.AlwaysOnlineIntervalSeconds > 0 {
+		d := time.Duration(*raw.AlwaysOnlineIntervalSeconds) * time.Second
+		ov.alwaysOnlineEvery = &d
+	}
+	return ov
+}
+
+// overridesToPayload converts the in-memory override into its serialized form.
+func overridesToPayload(ov sessionOverrides) sessionOverridePayload {
+	item := sessionOverridePayload{
+		RejectCalls:           cloneBoolPtr(ov.rejectCalls),
+		RejectCallsMessage:    cloneStringPtr(ov.rejectMsg),
+		MarkReadOnMessage:     cloneBoolPtr(ov.autoMarkRead),
+		IgnoreStatusBroadcast: cloneBoolPtr(ov.ignoreStatusBroadcast),
+		IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
+		OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
+		AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
+		HistorySyncEnabled:    cloneBoolPtr(ov.historySyncEnabled),
+		HistorySyncDays:       cloneIntPtr(ov.historySyncDays),
+		ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
+		ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
+		ProxyHost:             cloneStringPtr(ov.proxyHost),
+		ProxyPort:             cloneStringPtr(ov.proxyPort),
+		ProxyUsername:         cloneStringPtr(ov.proxyUsername),
+		ProxyPassword:         cloneStringPtr(ov.proxyPassword),
+	}
+	if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
+		secs := int((*ov.alwaysOnlineEvery) / time.Second)
+		item.AlwaysOnlineIntervalSeconds = &secs
+	}
+	return item
+}
+
 func loadSessionOverrideState(path, workerID string) (map[string]sessionOverrides, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -499,28 +553,7 @@ func loadSessionOverrideState(path, workerID string) (map[string]sessionOverride
 		if sid == "" {
 			continue
 		}
-		ov := sessionOverrides{
-			rejectCalls:           cloneBoolPtr(raw.RejectCalls),
-			rejectMsg:             cloneStringPtr(raw.RejectCallsMessage),
-			autoMarkRead:          cloneBoolPtr(raw.MarkReadOnMessage),
-			ignoreStatusBroadcast: cloneBoolPtr(raw.IgnoreStatusBroadcast),
-			ignoreNewsletters:     cloneBoolPtr(raw.IgnoreNewsletters),
-			outgoingMessagesCoex:  cloneBoolPtr(raw.OutgoingMessagesCoex),
-			alwaysOnline:          cloneBoolPtr(raw.AlwaysOnline),
-			historySyncEnabled:    cloneBoolPtr(raw.HistorySyncEnabled),
-			historySyncDays:       cloneIntPtr(raw.HistorySyncDays),
-			proxyEnabled:          cloneBoolPtr(raw.ProxyEnabled),
-			proxyProtocol:         cloneStringPtr(raw.ProxyProtocol),
-			proxyHost:             cloneStringPtr(raw.ProxyHost),
-			proxyPort:             cloneStringPtr(raw.ProxyPort),
-			proxyUsername:         cloneStringPtr(raw.ProxyUsername),
-			proxyPassword:         cloneStringPtr(raw.ProxyPassword),
-		}
-		if raw.AlwaysOnlineIntervalSeconds != nil && *raw.AlwaysOnlineIntervalSeconds > 0 {
-			d := time.Duration(*raw.AlwaysOnlineIntervalSeconds) * time.Second
-			ov.alwaysOnlineEvery = &d
-		}
-		out[sid] = ov
+		out[sid] = payloadToOverrides(raw)
 	}
 	return out, nil
 }
@@ -542,28 +575,7 @@ func saveSessionOverrideState(path, workerID string, overrides map[string]sessio
 		if sid == "" {
 			continue
 		}
-		item := sessionOverridePayload{
-			RejectCalls:           cloneBoolPtr(ov.rejectCalls),
-			RejectCallsMessage:    cloneStringPtr(ov.rejectMsg),
-			MarkReadOnMessage:     cloneBoolPtr(ov.autoMarkRead),
-			IgnoreStatusBroadcast: cloneBoolPtr(ov.ignoreStatusBroadcast),
-			IgnoreNewsletters:     cloneBoolPtr(ov.ignoreNewsletters),
-			OutgoingMessagesCoex:  cloneBoolPtr(ov.outgoingMessagesCoex),
-			AlwaysOnline:          cloneBoolPtr(ov.alwaysOnline),
-			HistorySyncEnabled:    cloneBoolPtr(ov.historySyncEnabled),
-			HistorySyncDays:       cloneIntPtr(ov.historySyncDays),
-			ProxyEnabled:          cloneBoolPtr(ov.proxyEnabled),
-			ProxyProtocol:         cloneStringPtr(ov.proxyProtocol),
-			ProxyHost:             cloneStringPtr(ov.proxyHost),
-			ProxyPort:             cloneStringPtr(ov.proxyPort),
-			ProxyUsername:         cloneStringPtr(ov.proxyUsername),
-			ProxyPassword:         cloneStringPtr(ov.proxyPassword),
-		}
-		if ov.alwaysOnlineEvery != nil && *ov.alwaysOnlineEvery > 0 {
-			secs := int((*ov.alwaysOnlineEvery) / time.Second)
-			item.AlwaysOnlineIntervalSeconds = &secs
-		}
-		payload.Sessions[sid] = item
+		payload.Sessions[sid] = overridesToPayload(ov)
 	}
 	b, err := jsonMarshalIndent(payload)
 	if err != nil {
@@ -578,7 +590,6 @@ func (m *ClientManager) persistSessionOverrides() error {
 	for sid, ov := range m.overrides {
 		snapshot[sid] = cloneSessionOverrides(ov)
 	}
-	file := m.sessionCfgFile
 	m.overridesMu.RUnlock()
-	return saveSessionOverrideState(file, m.workerID, snapshot)
+	return m.store.SaveOverrides(context.Background(), m.workerID, snapshot)
 }

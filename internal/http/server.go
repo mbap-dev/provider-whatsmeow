@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/mux"
 	"go.mau.fi/whatsmeow"
 	"your.org/provider-whatsmeow/internal/amqp"
+	"your.org/provider-whatsmeow/internal/auth"
 	"your.org/provider-whatsmeow/internal/config"
 	"your.org/provider-whatsmeow/internal/dashboard"
 	ilog "your.org/provider-whatsmeow/internal/log"
@@ -31,26 +32,31 @@ import (
 // readiness.  When Start is called the server begins listening on
 // cfg.HTTPAddr.  Shutdown gracefully stops the listener.
 type Server struct {
-	cfg      *config.Config
-	provider *provider.ClientManager
-	consumer *amqp.Consumer
-	assets   http.Handler
-	httpSrv  *http.Server
-	ready    bool
+	cfg         *config.Config
+	provider    *provider.ClientManager
+	consumer    *amqp.Consumer
+	authHandler *auth.Handler
+	assets      http.Handler
+	httpSrv     *http.Server
+	ready       bool
 }
 
 // NewServer constructs a new HTTP server.  It wires up all routes
 // using Gorilla mux.  The server will report itself as ready once
-// Start has been invoked.
-func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *amqp.Consumer) *Server {
+// Start has been invoked.  authHandler may be nil when Postgres is not configured.
+func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *amqp.Consumer, authHandler *auth.Handler) *Server {
 	s := &Server{
-		cfg:      cfg,
-		provider: provider,
-		consumer: consumer,
+		cfg:         cfg,
+		provider:    provider,
+		consumer:    consumer,
+		authHandler: authHandler,
 	}
 	router := mux.NewRouter()
 	router.Use(s.uiAuthMiddleware)
 	router.Use(s.apiTokenMiddleware)
+	if authHandler != nil {
+		authHandler.Register(router)
+	}
 	if cfg.UIEnabled {
 		if assets, err := dashboard.AssetsHandler(); err == nil {
 			s.assets = assets
@@ -133,7 +139,10 @@ func (s *Server) uiAuthMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) apiTokenMiddleware(next http.Handler) http.Handler {
-	if s == nil || s.cfg == nil || !s.cfg.APIAuthEnabled {
+	postgresAuth := s.authHandler != nil
+	legacyAuth := s != nil && s.cfg != nil && s.cfg.APIAuthEnabled
+	// When neither auth system is active, skip the middleware entirely.
+	if !postgresAuth && !legacyAuth {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,13 +150,18 @@ func (s *Server) apiTokenMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		// UI users authenticated with Basic Auth can use the frontend without
-		// manually injecting Bearer token in browser fetch calls.
+		// Postgres session cookie or wm_* Bearer API key.
+		if postgresAuth && s.authHandler.UserFromRequest(r) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Legacy Basic Auth (UI users — browser dashboard compatibility).
 		if s.hasValidUIBasicAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if s.hasValidAPIToken(r) {
+		// Legacy static Bearer token (external clients e.g. Chatwoot).
+		if legacyAuth && s.hasValidAPIToken(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -239,6 +253,10 @@ func isAPITokenProtectedPath(path string) bool {
 		return false
 	}
 	if strings.HasPrefix(path, "/assets/") {
+		return false
+	}
+	// /auth/* routes manage their own auth (RequireAuth middleware).
+	if strings.HasPrefix(path, "/auth/") {
 		return false
 	}
 	return true

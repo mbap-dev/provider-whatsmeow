@@ -68,10 +68,20 @@ Disponível apenas quando `POSTGRES_URL` está definido. Ativa as rotas `/auth/*
 | `POST` | `/auth/logout` | cookie/bearer | Invalida a sessão atual. |
 | `GET` | `/auth/me` | obrigatória | Retorna dados do usuário autenticado. |
 | `GET` | `/auth/api-keys` | obrigatória | Lista API keys do usuário. |
-| `POST` | `/auth/api-keys` | obrigatória | Cria nova API key (retorna `key` apenas na criação). |
+| `POST` | `/auth/api-keys` | owner/admin | Cria nova API key (retorna `key` apenas na criação). |
 | `DELETE` | `/auth/api-keys/{id}` | obrigatória | Remove uma API key. |
+| `GET` | `/auth/users` | owner | Lista usuários do dashboard. |
+| `POST` | `/auth/users` | owner | Cria usuário com `email`, `password`, `role` e `assigned_sessions`. |
+| `PUT` | `/auth/users/{id}` | owner | Atualiza e-mail/papel, vínculos de sessão e opcionalmente senha. |
+| `DELETE` | `/auth/users/{id}` | owner | Remove usuário. Não permite apagar o próprio usuário nem o último `owner`. |
 
-API keys têm prefixo `wm_` e são aceitas via `Authorization: Bearer wm_...`. O cookie `wm_session` (HttpOnly, SameSite=Strict) é usado pelo dashboard browser.
+API keys têm prefixo `wm_` e são aceitas via `Authorization: Bearer wm_...`. O cookie `wm_session` (HttpOnly, SameSite=Lax) é usado pelo dashboard browser.
+
+Papéis:
+
+- `owner`: acessa todas as instâncias e gerencia usuários, webhooks globais e ciclo de vida/atribuição de sessões.
+- `admin`: acessa apenas as instâncias listadas em `assigned_sessions` e pode criar API keys próprias. As API keys herdam o mesmo escopo.
+- `user`: acessa apenas as instâncias listadas em `assigned_sessions` e não cria API keys.
 
 Quando `API_AUTH_ENABLED=true`, todos os endpoints (exceto `/`, `/assets/*`, `/healthz`, `/readyz`) exigem token, com duas exceções:
 
@@ -144,6 +154,7 @@ Observações:
 - Esses overrides são persistidos em `SESSION_STORE/_session_overrides.json`.
 - O dashboard/API permite cadastro de múltiplos webhooks por sessão (com filtros de eventos), persistidos em `SESSION_STORE/_session_webhooks.json`.
 - Quando `POSTGRES_URL` está definido, todos esses metadados (atribuições, overrides, webhooks e templates) são persistidos no Postgres em vez dos arquivos JSON. No primeiro boot com banco vazio, o estado JSON existente é importado automaticamente (sem sobrescrever dados já presentes). As migrações de schema rodam embutidas no startup. O store de sessão do whatsmeow continua em SQLite por sessão.
+- Webhooks globais são persistidos junto com os demais metadados (`global_webhooks` no Postgres ou `_global_webhooks.json` em arquivo). O primeiro evento suportado é `session.disconnected`, enviado quando o WhatsMeow fecha, encerra ou substitui o stream de uma sessão. As rotas `/api/{version}/webhooks/global` exigem usuário `owner` quando o auth Postgres está ativo.
 - Mensagens próprias da sessão (`fromMe`) dependem de `send_outgoing_messages` no webhook da sessão e podem sair em `messages[]` (padrão) ou `message_echoes` (`OUTGOING_MESSAGES_COEX=true`).
 
 ### Webhook de saída

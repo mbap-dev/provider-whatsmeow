@@ -62,6 +62,14 @@ Com isso você escala horizontalmente sem colisão de responsabilidade entre wor
 
 Acesse `GET /`.
 
+Rotas da SPA:
+
+- `/` — visão geral do worker e criação de sessão
+- `/instances` — lista de instâncias
+- `/instances/{id}` — detalhe da instância
+- `/instances/{id}/config`, `/instances/{id}/webhooks`, `/instances/{id}/templates` — abas da instância
+- `/settings/users` e `/settings/webhooks` — configurações do owner
+
 Funcionalidades:
 
 - visão do worker (`id`, fila, bindings, sessões atribuídas)
@@ -93,8 +101,12 @@ O frontend é uma SPA React (JSX) estilizada com **Tailwind CSS v4** (config CSS
 Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenticação próprio:
 
 - No primeiro boot com banco vazio, `ADMIN_EMAIL` + `ADMIN_PASSWORD` criam a conta **owner** automaticamente.
-- A tela de login (cookie `wm_session`, HttpOnly, SameSite=Strict) substitui a rota raiz quando não autenticado.
+- A tela de login (cookie `wm_session`, HttpOnly, SameSite=Lax) substitui a rota raiz quando não autenticado.
 - Após o login, o menu do usuário (canto superior direito) exibe e-mail, papel (owner/admin/user) e acesso a **API Keys**.
+- Usuários `owner` podem usar a aba **Configurações** para cadastrar, editar e apagar usuários do dashboard e webhooks globais.
+- `owner` tem acesso a todas as instâncias. `admin` e `user` acessam apenas instâncias vinculadas pelo owner no cadastro/edição do usuário.
+- `admin` pode criar API Keys próprias. Essas chaves herdam o mesmo escopo de instâncias do usuário admin. `user` não cria API Keys.
+- Webhooks globais recebem eventos administrativos de todas as sessões do worker. O primeiro evento suportado é `session.disconnected`, emitido quando o WhatsMeow fecha, encerra ou substitui o stream de uma sessão.
 - **API Keys** com prefixo `wm_` são geradas no dashboard e aceitas como `Authorization: Bearer wm_...` para uso machine-to-machine. O valor bruto é exibido apenas uma vez na criação.
 - `AUTH_SECURE_COOKIE=true` é obrigatório em produção (TLS). Em dev local, use `false`.
 - Quando `POSTGRES_URL` não está definido, o dashboard funciona normalmente sem login (retrocompatível).
@@ -130,6 +142,10 @@ Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenti
 - `POST /api/{version}/sessions/{id}/webhooks`
 - `PUT /api/{version}/sessions/{id}/webhooks/{webhook_id}`
 - `DELETE /api/{version}/sessions/{id}/webhooks/{webhook_id}`
+- `GET /api/{version}/webhooks/global` — lista webhooks globais (requer `owner` quando auth Postgres está ativo)
+- `POST /api/{version}/webhooks/global` — cria/atualiza webhook global
+- `PUT /api/{version}/webhooks/global/{webhook_id}` — atualiza webhook global
+- `DELETE /api/{version}/webhooks/global/{webhook_id}` — remove webhook global
 - `POST /api/{version}/worker/assignments`
 - `DELETE /api/{version}/worker/assignments/{id}`
 
@@ -152,8 +168,12 @@ Compatibilidade:
 - `POST /auth/logout` — invalida sessão atual
 - `GET /auth/me` — retorna usuário autenticado
 - `GET /auth/api-keys` — lista API keys do usuário
-- `POST /auth/api-keys` — cria API key, body `{"name":"…","expires_at":"…(RFC3339, opcional)"}` → retorna `key` apenas na criação
+- `POST /auth/api-keys` — cria API key, body `{"name":"…","expires_at":"…(RFC3339, opcional)"}` → retorna `key` apenas na criação (requer `owner` ou `admin`)
 - `DELETE /auth/api-keys/{id}` — revoga uma API key
+- `GET /auth/users` — lista usuários (requer `owner`)
+- `POST /auth/users` — cria usuário, body `{"email":"…","password":"…","role":"owner|admin|user","assigned_sessions":["5511999999999"]}` (requer `owner`)
+- `PUT /auth/users/{id}` — atualiza e-mail/papel, vínculos de instância e, se enviada, senha (requer `owner`)
+- `DELETE /auth/users/{id}` — apaga usuário (requer `owner`; não permite apagar o próprio usuário nem o último `owner`)
 
 ### Saúde
 
@@ -373,7 +393,21 @@ Referência detalhada (com finalidade, defaults e impacto): [docs/ENVIRONMENT.md
 > As configurações por sessão são persistidas em `SESSION_STORE/_session_overrides.json`.
 > Os webhooks por sessão são persistidos em `SESSION_STORE/_session_webhooks.json`.
 >
-> Com `POSTGRES_URL` definido, esses metadados (atribuições, overrides, webhooks e templates) passam a ser persistidos no Postgres em vez dos arquivos JSON. As migrações de schema rodam embutidas no startup e, no primeiro boot com banco vazio, o estado JSON existente é importado automaticamente. O store de sessão do whatsmeow permanece em SQLite por sessão. O `docker-compose.yml` já inclui um Postgres dedicado e isolado (não publicado no host) para o provider. A camada de acesso usa `pgx` + `sqlc` (código gerado commitado em `internal/store/pg/pgdb`; regenere com `make sqlc-generate`) e migrações `goose` embutidas.
+> Com `POSTGRES_URL` definido, esses metadados (atribuições, overrides, webhooks por sessão, webhooks globais e templates) passam a ser persistidos no Postgres em vez dos arquivos JSON. As migrações de schema rodam embutidas no startup e, no primeiro boot com banco vazio, o estado JSON existente é importado automaticamente. O store de sessão do whatsmeow permanece em SQLite por sessão. O `docker-compose.yml` já inclui um Postgres dedicado e isolado (não publicado no host) para o provider. A camada de acesso usa `pgx` + `sqlc` (código gerado commitado em `internal/store/pg/pgdb`; regenere com `make sqlc-generate`) e migrações `goose` embutidas.
+
+#### Migração SQLite → Postgres (`migrate-sessions`)
+
+Para mover ambientes legados (SQLite por sessão) para um Postgres compartilhado, use a ferramenta `cmd/migrate-sessions`. Aponte `--dir` para a raiz do `SESSION_STORE` — ela copia tanto as credenciais do whatsmeow (`session.db` de cada sessão, tabelas `whatsmeow_*`) **quanto** os metadados JSON que ficam na raiz (`_worker_assignments.json`, `_session_overrides.json`, `_session_webhooks.json`, `_global_webhooks.json`, `_session_templates.json`):
+
+```bash
+migrate-sessions --dir ./state/whatsmeow --postgres "$POSTGRES_URL"
+```
+
+- A ferramenta é idempotente: sessões já presentes são puladas (`ON CONFLICT DO NOTHING`) e os metadados são mesclados com o que já existe no Postgres (não sobrescrevem).
+- O import de metadados ignora o `worker_id` gravado nos JSON ao **ler**, então um `WORKER_ID` diferente nunca descarta dados silenciosamente. Por padrão grava sob o `worker_id` detectado nos arquivos; use `--worker-id <id>` para gravar sob um worker fixo.
+- **Consolidar vários containers em um só worker:** rode a ferramenta uma vez por container antigo, todos com o mesmo `--worker-id`. Cada execução faz load-merge-save, unindo as sessões/webhooks/templates sob aquele worker. Depois suba o container final com `WORKER_ID` igual a esse valor.
+- No modo `--sqlite` (arquivo único) o import de metadados é pulado, pois os JSON ficam na raiz do `SESSION_STORE`, não junto do `session.db`. Use `--dir` para incluí-los.
+- O registry de mídia (`_media_registry.json`) **não** é importado por esta ferramenta: ele é importado automaticamente pelo adapter no startup quando `POSTGRES_URL` está definido.
 
 ### Webhook de saída
 

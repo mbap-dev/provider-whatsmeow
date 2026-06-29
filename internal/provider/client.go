@@ -77,6 +77,7 @@ type ClientManager struct {
 	// registered webhook endpoints by session
 	webhooksMu      sync.RWMutex
 	sessionWebhooks map[string][]SessionWebhook
+	globalWebhooks  []SessionWebhook
 
 	// registered Cloud API-compatible message templates by session
 	templatesMu      sync.RWMutex
@@ -147,24 +148,24 @@ type ManagerOptions struct {
 	SessionTemplateFile   string
 	// MetadataStore, when set, replaces the default JSON-file persistence for
 	// assignments/overrides/webhooks/templates (e.g. a Postgres-backed store).
-	MetadataStore         MetadataStore
+	MetadataStore MetadataStore
 	// PGPool, when set, is reused for the media registry Postgres backend.
 	// The pool is expected to be fully initialised (migrations applied).
-	PGPool                *pgxpool.Pool
+	PGPool *pgxpool.Pool
 	// PostgresURL, when set, uses Postgres as the whatsmeow session store
 	// instead of per-session SQLite files. All devices share a single pool.
-	PostgresURL           string
-	MediaStoreDir         string
-	MediaRegistryFile     string
-	MediaStorageMode      string
-	MediaURLTTLSeconds    int
-	S3Bucket              string
-	S3Region              string
-	S3Endpoint            string
-	S3AccessKeyID         string
-	S3SecretAccessKey     string
-	S3ForcePathStyle      bool
-	S3Prefix              string
+	PostgresURL        string
+	MediaStoreDir      string
+	MediaRegistryFile  string
+	MediaStorageMode   string
+	MediaURLTTLSeconds int
+	S3Bucket           string
+	S3Region           string
+	S3Endpoint         string
+	S3AccessKeyID      string
+	S3SecretAccessKey  string
+	S3ForcePathStyle   bool
+	S3Prefix           string
 }
 
 var (
@@ -189,13 +190,14 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	if sessionHookFile == "" {
 		sessionHookFile = filepath.Join(opts.SessionStore, "_session_webhooks.json")
 	}
+	globalHookFile := filepath.Join(opts.SessionStore, "_global_webhooks.json")
 	sessionTplFile := strings.TrimSpace(opts.SessionTemplateFile)
 	if sessionTplFile == "" {
 		sessionTplFile = filepath.Join(opts.SessionStore, "_session_templates.json")
 	}
 	var store MetadataStore = opts.MetadataStore
 	if store == nil {
-		store = newFileStore(assignmentFile, sessionCfgFile, sessionHookFile, sessionTplFile)
+		store = newFileStore(assignmentFile, sessionCfgFile, sessionHookFile, globalHookFile, sessionTplFile)
 	}
 	loadCtx := context.Background()
 	assigned := map[string]struct{}{}
@@ -220,6 +222,10 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	sessionWebhooks := map[string][]SessionWebhook{}
 	if persisted, err := store.LoadWebhooks(loadCtx, opts.WorkerID); err == nil && persisted != nil {
 		sessionWebhooks = persisted
+	}
+	globalWebhooks := []SessionWebhook{}
+	if persisted, err := store.LoadGlobalWebhooks(loadCtx, opts.WorkerID); err == nil && persisted != nil {
+		globalWebhooks = persisted
 	}
 	sessionTemplates := map[string][]SessionTemplate{}
 	if persisted, err := store.LoadTemplates(loadCtx, opts.WorkerID); err == nil && persisted != nil {
@@ -274,6 +280,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		sessionConfigPrefix:   opts.SessionConfigPrefix,
 		overrides:             overrides,
 		sessionWebhooks:       sessionWebhooks,
+		globalWebhooks:        globalWebhooks,
 		sessionTemplates:      sessionTemplates,
 		checkUserExists:       opts.CheckUserExists,
 		workerID:              strings.TrimSpace(opts.WorkerID),

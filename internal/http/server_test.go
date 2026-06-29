@@ -64,6 +64,50 @@ func TestMediaRequestSessionIDFromQuery(t *testing.T) {
 	}
 }
 
+func TestDashboardRoutesAreNotAPITokenProtected(t *testing.T) {
+	for _, path := range []string{"/", "/instances", "/instances/553121159080", "/instances/553121159080/config", "/settings/users"} {
+		if !isDashboardRoute(path) {
+			t.Fatalf("isDashboardRoute(%q) = false, want true", path)
+		}
+		if isAPITokenProtectedPath(path) {
+			t.Fatalf("isAPITokenProtectedPath(%q) = true, want false", path)
+		}
+	}
+}
+
+func TestAPIRoutesStayTokenProtected(t *testing.T) {
+	for _, path := range []string{"/api/v1/sessions", "/sessions/553121159080/qr", "/v19.0/553121159080/messages"} {
+		if isDashboardRoute(path) {
+			t.Fatalf("isDashboardRoute(%q) = true, want false", path)
+		}
+		if !isAPITokenProtectedPath(path) {
+			t.Fatalf("isAPITokenProtectedPath(%q) = false, want true", path)
+		}
+	}
+}
+
+func TestDashboardRoutesWinOverMetaCompatibilityRoutes(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+	srv := NewServer(&config.Config{UIEnabled: true}, manager, nil, nil)
+
+	for _, path := range []string{"/instances/553121159080/config", "/settings/users"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+
+		srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want %d body=%s", path, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+			t.Fatalf("GET %s content-type = %q, want text/html", path, got)
+		}
+	}
+}
+
 func TestDeleteSessionEndpoint(t *testing.T) {
 	root := t.TempDir()
 	manager := provider.NewClientManager(provider.ManagerOptions{

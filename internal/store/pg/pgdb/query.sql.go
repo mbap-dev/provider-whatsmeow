@@ -24,6 +24,17 @@ func (q *Queries) CountMediaRecords(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countOwners = `-- name: CountOwners :one
+SELECT COUNT(*) FROM users WHERE role = 'owner'
+`
+
+func (q *Queries) CountOwners(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countOwners)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 
 SELECT COUNT(*) FROM users
@@ -167,6 +178,15 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context) error {
 	return err
 }
 
+const deleteGlobalWebhooksByWorker = `-- name: DeleteGlobalWebhooksByWorker :exec
+DELETE FROM global_webhooks WHERE worker_id = $1
+`
+
+func (q *Queries) DeleteGlobalWebhooksByWorker(ctx context.Context, workerID string) error {
+	_, err := q.db.Exec(ctx, deleteGlobalWebhooksByWorker, workerID)
+	return err
+}
+
 const deleteOverridesByWorker = `-- name: DeleteOverridesByWorker :exec
 DELETE FROM session_overrides WHERE worker_id = $1
 `
@@ -191,6 +211,33 @@ DELETE FROM session_templates WHERE worker_id = $1
 
 func (q *Queries) DeleteTemplatesByWorker(ctx context.Context, workerID string) error {
 	_, err := q.db.Exec(ctx, deleteTemplatesByWorker, workerID)
+	return err
+}
+
+const deleteUser = `-- name: DeleteUser :one
+DELETE FROM users WHERE id = $1 RETURNING id, email, password_hash, role, created_at, updated_at
+`
+
+func (q *Queries) DeleteUser(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, deleteUser, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteUserSessionAccess = `-- name: DeleteUserSessionAccess :exec
+DELETE FROM user_session_access WHERE user_id = $1
+`
+
+func (q *Queries) DeleteUserSessionAccess(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUserSessionAccess, userID)
 	return err
 }
 
@@ -337,6 +384,22 @@ func (q *Queries) InsertAssignment(ctx context.Context, arg InsertAssignmentPara
 	return err
 }
 
+const insertUserSessionAccess = `-- name: InsertUserSessionAccess :exec
+INSERT INTO user_session_access (user_id, session_id)
+VALUES ($1, $2)
+ON CONFLICT (user_id, session_id) DO NOTHING
+`
+
+type InsertUserSessionAccessParams struct {
+	UserID    pgtype.UUID
+	SessionID string
+}
+
+func (q *Queries) InsertUserSessionAccess(ctx context.Context, arg InsertUserSessionAccessParams) error {
+	_, err := q.db.Exec(ctx, insertUserSessionAccess, arg.UserID, arg.SessionID)
+	return err
+}
+
 const listAPIKeysByUser = `-- name: ListAPIKeysByUser :many
 SELECT id, user_id, key_hash, name, last_used_at, created_at, expires_at FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC
 `
@@ -388,6 +451,37 @@ func (q *Queries) ListAssignments(ctx context.Context, workerID string) ([]strin
 			return nil, err
 		}
 		items = append(items, session_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGlobalWebhooks = `-- name: ListGlobalWebhooks :many
+
+SELECT webhook_id, data FROM global_webhooks WHERE worker_id = $1 ORDER BY webhook_id
+`
+
+type ListGlobalWebhooksRow struct {
+	WebhookID string
+	Data      []byte
+}
+
+// Global webhooks -----------------------------------------------------------
+func (q *Queries) ListGlobalWebhooks(ctx context.Context, workerID string) ([]ListGlobalWebhooksRow, error) {
+	rows, err := q.db.Query(ctx, listGlobalWebhooks, workerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGlobalWebhooksRow{}
+	for rows.Next() {
+		var i ListGlobalWebhooksRow
+		if err := rows.Scan(&i.WebhookID, &i.Data); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -457,6 +551,63 @@ func (q *Queries) ListTemplates(ctx context.Context, workerID string) ([]ListTem
 	return items, nil
 }
 
+const listUserSessionAccess = `-- name: ListUserSessionAccess :many
+
+SELECT session_id FROM user_session_access WHERE user_id = $1 ORDER BY session_id
+`
+
+// Auth: user session access ---------------------------------------------------
+func (q *Queries) ListUserSessionAccess(ctx context.Context, userID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listUserSessionAccess, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var session_id string
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsers = `-- name: ListUsers :many
+SELECT id, email, password_hash, role, created_at, updated_at FROM users ORDER BY created_at DESC
+`
+
+func (q *Queries) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.PasswordHash,
+			&i.Role,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWebhooks = `-- name: ListWebhooks :many
 
 SELECT session_id, data FROM session_webhooks WHERE worker_id = $1
@@ -494,6 +645,83 @@ UPDATE api_keys SET last_used_at = now() WHERE id = $1
 
 func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, updateAPIKeyLastUsed, id)
+	return err
+}
+
+const updateUser = `-- name: UpdateUser :one
+UPDATE users
+SET email = $2, role = $3, updated_at = now()
+WHERE id = $1
+RETURNING id, email, password_hash, role, created_at, updated_at
+`
+
+type UpdateUserParams struct {
+	ID    pgtype.UUID
+	Email string
+	Role  string
+}
+
+func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUser, arg.ID, arg.Email, arg.Role)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateUserWithPassword = `-- name: UpdateUserWithPassword :one
+UPDATE users
+SET email = $2, role = $3, password_hash = $4, updated_at = now()
+WHERE id = $1
+RETURNING id, email, password_hash, role, created_at, updated_at
+`
+
+type UpdateUserWithPasswordParams struct {
+	ID           pgtype.UUID
+	Email        string
+	Role         string
+	PasswordHash string
+}
+
+func (q *Queries) UpdateUserWithPassword(ctx context.Context, arg UpdateUserWithPasswordParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserWithPassword,
+		arg.ID,
+		arg.Email,
+		arg.Role,
+		arg.PasswordHash,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertGlobalWebhook = `-- name: UpsertGlobalWebhook :exec
+INSERT INTO global_webhooks (worker_id, webhook_id, data)
+VALUES ($1, $2, $3)
+ON CONFLICT (worker_id, webhook_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
+`
+
+type UpsertGlobalWebhookParams struct {
+	WorkerID  string
+	WebhookID string
+	Data      []byte
+}
+
+func (q *Queries) UpsertGlobalWebhook(ctx context.Context, arg UpsertGlobalWebhookParams) error {
+	_, err := q.db.Exec(ctx, upsertGlobalWebhook, arg.WorkerID, arg.WebhookID, arg.Data)
 	return err
 }
 
@@ -593,4 +821,22 @@ type UpsertWebhooksParams struct {
 func (q *Queries) UpsertWebhooks(ctx context.Context, arg UpsertWebhooksParams) error {
 	_, err := q.db.Exec(ctx, upsertWebhooks, arg.WorkerID, arg.SessionID, arg.Data)
 	return err
+}
+
+const userCanAccessSession = `-- name: UserCanAccessSession :one
+SELECT EXISTS (
+    SELECT 1 FROM user_session_access WHERE user_id = $1 AND session_id = $2
+)
+`
+
+type UserCanAccessSessionParams struct {
+	UserID    pgtype.UUID
+	SessionID string
+}
+
+func (q *Queries) UserCanAccessSession(ctx context.Context, arg UserCanAccessSessionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, userCanAccessSession, arg.UserID, arg.SessionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

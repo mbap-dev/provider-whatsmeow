@@ -24,6 +24,7 @@ import (
 	"your.org/provider-whatsmeow/internal/dashboard"
 	ilog "your.org/provider-whatsmeow/internal/log"
 	"your.org/provider-whatsmeow/internal/provider"
+	"your.org/provider-whatsmeow/internal/store/pg/pgdb"
 )
 
 // Server encapsulates the HTTP API surface exposed by the
@@ -62,6 +63,7 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 			s.assets = assets
 			router.HandleFunc("/", s.handleDashboard).Methods(http.MethodGet)
 			router.PathPrefix("/assets/").Handler(http.StripPrefix("/assets/", s.assets))
+			s.registerDashboardRoutes(router)
 		}
 	}
 
@@ -105,8 +107,19 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	// Health and readiness probes
 	router.HandleFunc("/healthz", s.handleHealth).Methods(http.MethodGet)
 	router.HandleFunc("/readyz", s.handleReady).Methods(http.MethodGet)
+	if cfg.UIEnabled && s.assets != nil {
+		router.PathPrefix("/").HandlerFunc(s.handleDashboard).Methods(http.MethodGet)
+	}
 	s.httpSrv = &http.Server{Addr: cfg.HTTPAddr, Handler: router}
 	return s
+}
+
+func (s *Server) registerDashboardRoutes(router *mux.Router) {
+	router.HandleFunc("/instances", s.handleDashboard).Methods(http.MethodGet)
+	router.HandleFunc("/instances/{id}", s.handleDashboard).Methods(http.MethodGet)
+	router.HandleFunc("/instances/{id}/{tab}", s.handleDashboard).Methods(http.MethodGet)
+	router.HandleFunc("/settings", s.handleDashboard).Methods(http.MethodGet)
+	router.HandleFunc("/settings/{section}", s.handleDashboard).Methods(http.MethodGet)
 }
 
 func (s *Server) uiAuthMiddleware(next http.Handler) http.Handler {
@@ -234,6 +247,9 @@ func isUIProtectedPath(path string) bool {
 	if strings.HasPrefix(path, "/assets/") {
 		return true
 	}
+	if isDashboardRoute(path) {
+		return true
+	}
 	if strings.HasPrefix(path, "/api/") {
 		return true
 	}
@@ -255,6 +271,9 @@ func isAPITokenProtectedPath(path string) bool {
 	if strings.HasPrefix(path, "/assets/") {
 		return false
 	}
+	if isDashboardRoute(path) {
+		return false
+	}
 	// /auth/* routes manage their own auth (RequireAuth middleware).
 	if strings.HasPrefix(path, "/auth/") {
 		return false
@@ -271,8 +290,57 @@ func secureEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+func (s *Server) requestUser(r *http.Request) *pgdb.User {
+	if s == nil || s.authHandler == nil || r == nil {
+		return nil
+	}
+	return s.authHandler.UserFromRequest(r)
+}
+
+func (s *Server) requireSessionAccess(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	if s == nil || s.authHandler == nil {
+		return true
+	}
+	u := s.requestUser(r)
+	if u == nil {
+		// Legacy static token / Basic Auth path keeps previous all-session access.
+		return true
+	}
+	if s.authHandler.UserCanAccessSession(r.Context(), u, sessionID) {
+		return true
+	}
+	writeJSONError(w, http.StatusForbidden, "session access denied")
+	return false
+}
+
+func (s *Server) requireOwnerOrLegacy(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil || s.authHandler == nil {
+		return true
+	}
+	u := s.requestUser(r)
+	if u == nil {
+		return true
+	}
+	if u.Role == "owner" {
+		return true
+	}
+	writeJSONError(w, http.StatusForbidden, "owner role required")
+	return false
+}
+
+func stringSet(items []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out[item] = struct{}{}
+		}
+	}
+	return out
+}
+
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if !isDashboardRoute(r.URL.Path) {
 		http.NotFound(w, r)
 		return
 	}
@@ -283,6 +351,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(html)
+}
+
+func isDashboardRoute(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		return true
+	}
+	path = strings.TrimRight(path, "/")
+	return path == "/instances" ||
+		strings.HasPrefix(path, "/instances/") ||
+		path == "/settings" ||
+		strings.HasPrefix(path, "/settings/")
 }
 
 func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
@@ -304,6 +384,10 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleCreateSessionWebhook).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleUpdateSessionWebhook).Methods(http.MethodPut)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleDeleteSessionWebhook).Methods(http.MethodDelete)
+	router.HandleFunc(base+"/webhooks/global", s.handleListGlobalWebhooks).Methods(http.MethodGet)
+	router.HandleFunc(base+"/webhooks/global", s.handleCreateGlobalWebhook).Methods(http.MethodPost)
+	router.HandleFunc(base+"/webhooks/global/{webhook_id}", s.handleUpdateGlobalWebhook).Methods(http.MethodPut)
+	router.HandleFunc(base+"/webhooks/global/{webhook_id}", s.handleDeleteGlobalWebhook).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions/{id}/templates", s.handleListSessionTemplates).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions/{id}/templates", s.handleUpsertSessionTemplate).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/templates/{template_id}", s.handleDeleteSessionTemplate).Methods(http.MethodDelete)
@@ -317,6 +401,9 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	st, err := s.provider.Status(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -327,9 +414,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := s.provider.ListSessions()
+	if u := s.requestUser(r); u != nil && u.Role != "owner" {
+		allowed := stringSet(s.authHandler.ListUserSessionAccess(r.Context(), u))
+		filtered := make([]provider.SessionOverview, 0, len(sessions))
+		for _, session := range sessions {
+			if _, ok := allowed[session.SessionID]; ok {
+				filtered = append(filtered, session)
+			}
+		}
+		sessions = filtered
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"sessions": s.provider.ListSessions(),
+		"sessions": sessions,
 	})
 }
 
@@ -381,6 +479,9 @@ func (r *checkUserRequest) UnmarshalJSON(data []byte) error {
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwnerOrLegacy(w, r) {
+		return
+	}
 	var req createSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
@@ -462,6 +563,9 @@ func (s *Server) handleCheckUser(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 	if len(req.Number) == 0 {
 		writeJSONError(w, http.StatusBadRequest, "phone number is required")
 		return
@@ -492,6 +596,9 @@ func (s *Server) handleCheckUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwnerOrLegacy(w, r) {
+		return
+	}
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
@@ -525,6 +632,9 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 
@@ -567,6 +677,9 @@ type assignSessionRequest struct {
 }
 
 func (s *Server) handleAssignSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwnerOrLegacy(w, r) {
+		return
+	}
 	var req assignSessionRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
@@ -604,6 +717,9 @@ func (s *Server) handleAssignSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUnassignSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwnerOrLegacy(w, r) {
+		return
+	}
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
@@ -638,10 +754,14 @@ func (s *Server) handleWorker(w http.ResponseWriter, r *http.Request) {
 	if len(bindings) == 0 && s.cfg.AMQPBinding != "" {
 		bindings = []string{s.cfg.AMQPBinding}
 	}
+	assignedSessions := s.provider.AssignedSessions()
+	if u := s.requestUser(r); u != nil && u.Role != "owner" {
+		assignedSessions = s.authHandler.ListUserSessionAccess(r.Context(), u)
+	}
 	resp := workerResponse{
 		WorkerID:          s.provider.WorkerID(),
 		WorkerStrict:      s.provider.WorkerStrict(),
-		AssignedSessions:  s.provider.AssignedSessions(),
+		AssignedSessions:  assignedSessions,
 		AMQPEnabled:       s.cfg.AMQPConsumerEnabled,
 		AMQPExchange:      s.cfg.AMQPExchange,
 		AMQPQueue:         s.cfg.AMQPQueue,
@@ -656,6 +776,9 @@ func (s *Server) handleWorker(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	to := strings.TrimSpace(r.URL.Query().Get("to"))
 	if to == "" {
 		http.Error(w, "missing to query param", http.StatusBadRequest)
@@ -708,6 +831,9 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		msg.SessionID = sessionID
 	}
 	msg.SessionID = strings.TrimSpace(msg.SessionID)
+	if !s.requireSessionAccess(w, r, msg.SessionID) {
+		return
+	}
 	if strings.TrimSpace(msg.Type) == "" && msg.Text != nil && strings.TrimSpace(msg.Text.Body) != "" {
 		msg.Type = "text"
 	}
@@ -778,6 +904,9 @@ func (s *Server) handleUploadMedia(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" {
 		ilog.WithSession("").Error("evt=media_upload_api failed reason=missing_phone_number_id")
 		writeJSONError(w, http.StatusBadRequest, "missing phone number id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 
@@ -869,6 +998,9 @@ func (s *Server) handleGetMedia(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "missing media id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 
 	meta, ok := s.provider.GetMediaMetadata(sessionID, mediaID)
 	if !ok {
@@ -916,6 +1048,9 @@ func (s *Server) handleDownloadMedia(w http.ResponseWriter, r *http.Request) {
 	if sessionID == "" || filePath == "" {
 		ilog.WithSession(sessionID).Error("evt=media_download_api failed reason=missing_download_path file=%q", filePath)
 		writeJSONError(w, http.StatusBadRequest, "missing download path")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 
@@ -996,6 +1131,9 @@ func (s *Server) handleGetSessionConfig(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 	snapshot, err := s.provider.GetSessionConfig(sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -1008,6 +1146,9 @@ func (s *Server) handleUpdateSessionConfig(w http.ResponseWriter, r *http.Reques
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	var req updateSessionConfigRequest
@@ -1029,6 +1170,9 @@ func (s *Server) handleClearSessionConfig(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 	removed, snapshot, err := s.provider.ClearSessionConfig(sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1042,20 +1186,21 @@ func (s *Server) handleClearSessionConfig(w http.ResponseWriter, r *http.Request
 }
 
 type sessionWebhookRequest struct {
-	ID                     string `json:"id,omitempty"`
-	Name                   string `json:"name,omitempty"`
-	URL                    string `json:"url,omitempty"`
-	URLAbsolute            string `json:"url_absolute,omitempty"`
-	Header                 string `json:"header,omitempty"`
-	Token                  string `json:"token,omitempty"`
-	TimeoutMS              *int   `json:"timeout_ms,omitempty"`
-	Enabled                *bool  `json:"enabled,omitempty"`
-	AppendSession          *bool  `json:"append_session,omitempty"`
-	SendIncomingMessages   *bool  `json:"send_incoming_messages,omitempty"`
-	SendOutgoingMessages   *bool  `json:"send_outgoing_messages,omitempty"`
-	SendUpdateMessages     *bool  `json:"send_update_messages,omitempty"`
-	SendGroupMessages      *bool  `json:"send_group_messages,omitempty"`
-	SendNewsletterMessages *bool  `json:"send_newsletter_messages,omitempty"`
+	ID                      string `json:"id,omitempty"`
+	Name                    string `json:"name,omitempty"`
+	URL                     string `json:"url,omitempty"`
+	URLAbsolute             string `json:"url_absolute,omitempty"`
+	Header                  string `json:"header,omitempty"`
+	Token                   string `json:"token,omitempty"`
+	TimeoutMS               *int   `json:"timeout_ms,omitempty"`
+	Enabled                 *bool  `json:"enabled,omitempty"`
+	AppendSession           *bool  `json:"append_session,omitempty"`
+	SendIncomingMessages    *bool  `json:"send_incoming_messages,omitempty"`
+	SendOutgoingMessages    *bool  `json:"send_outgoing_messages,omitempty"`
+	SendUpdateMessages      *bool  `json:"send_update_messages,omitempty"`
+	SendGroupMessages       *bool  `json:"send_group_messages,omitempty"`
+	SendNewsletterMessages  *bool  `json:"send_newsletter_messages,omitempty"`
+	SendSessionDisconnected *bool  `json:"send_session_disconnected,omitempty"`
 }
 
 func (r sessionWebhookRequest) toProviderWebhook() provider.SessionWebhook {
@@ -1091,28 +1236,52 @@ func (r sessionWebhookRequest) toProviderWebhook() provider.SessionWebhook {
 	if r.SendNewsletterMessages != nil {
 		sendNewsletter = *r.SendNewsletterMessages
 	}
-	return provider.SessionWebhook{
-		ID:                     strings.TrimSpace(r.ID),
-		Name:                   strings.TrimSpace(r.Name),
-		URL:                    strings.TrimSpace(r.URL),
-		URLAbsolute:            strings.TrimSpace(r.URLAbsolute),
-		Header:                 strings.TrimSpace(r.Header),
-		Token:                  strings.TrimSpace(r.Token),
-		TimeoutMS:              timeout,
-		Enabled:                enabled,
-		AppendSession:          appendSession,
-		SendIncomingMessages:   sendIncoming,
-		SendOutgoingMessages:   sendOutgoing,
-		SendUpdateMessages:     sendUpdate,
-		SendGroupMessages:      sendGroup,
-		SendNewsletterMessages: sendNewsletter,
+	sendSessionDisconnected := false
+	if r.SendSessionDisconnected != nil {
+		sendSessionDisconnected = *r.SendSessionDisconnected
 	}
+	return provider.SessionWebhook{
+		ID:                      strings.TrimSpace(r.ID),
+		Name:                    strings.TrimSpace(r.Name),
+		URL:                     strings.TrimSpace(r.URL),
+		URLAbsolute:             strings.TrimSpace(r.URLAbsolute),
+		Header:                  strings.TrimSpace(r.Header),
+		Token:                   strings.TrimSpace(r.Token),
+		TimeoutMS:               timeout,
+		Enabled:                 enabled,
+		AppendSession:           appendSession,
+		SendIncomingMessages:    sendIncoming,
+		SendOutgoingMessages:    sendOutgoing,
+		SendUpdateMessages:      sendUpdate,
+		SendGroupMessages:       sendGroup,
+		SendNewsletterMessages:  sendNewsletter,
+		SendSessionDisconnected: sendSessionDisconnected,
+	}
+}
+
+func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request) bool {
+	if s.authHandler == nil {
+		return true
+	}
+	u := s.authHandler.UserFromRequest(r)
+	if u == nil {
+		writeJSONError(w, http.StatusUnauthorized, "authentication required")
+		return false
+	}
+	if u.Role != "owner" {
+		writeJSONError(w, http.StatusForbidden, "owner role required")
+		return false
+	}
+	return true
 }
 
 func (s *Server) handleListSessionWebhooks(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	webhooks := s.provider.ListSessionWebhooks(sessionID)
@@ -1126,6 +1295,9 @@ func (s *Server) handleCreateSessionWebhook(w http.ResponseWriter, r *http.Reque
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	var req sessionWebhookRequest
@@ -1153,6 +1325,9 @@ func (s *Server) handleUpdateSessionWebhook(w http.ResponseWriter, r *http.Reque
 	}
 	if webhookID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing webhook id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	var req sessionWebhookRequest
@@ -1187,6 +1362,9 @@ func (s *Server) handleDeleteSessionWebhook(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "missing webhook id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 	removed, err := s.provider.DeleteSessionWebhook(sessionID, webhookID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1199,10 +1377,90 @@ func (s *Server) handleDeleteSessionWebhook(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (s *Server) handleListGlobalWebhooks(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwner(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhooks": s.provider.ListGlobalWebhooks(),
+	})
+}
+
+func (s *Server) handleCreateGlobalWebhook(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwner(w, r) {
+		return
+	}
+	var req sessionWebhookRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	webhook, err := s.provider.UpsertGlobalWebhook(req.toProviderWebhook())
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook": webhook,
+	})
+}
+
+func (s *Server) handleUpdateGlobalWebhook(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwner(w, r) {
+		return
+	}
+	webhookID := strings.TrimSpace(mux.Vars(r)["webhook_id"])
+	if webhookID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing webhook id")
+		return
+	}
+	var req sessionWebhookRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	if req.ID != "" && strings.TrimSpace(req.ID) != webhookID {
+		writeJSONError(w, http.StatusBadRequest, "webhook id mismatch")
+		return
+	}
+	req.ID = webhookID
+	webhook, err := s.provider.UpsertGlobalWebhook(req.toProviderWebhook())
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook": webhook,
+	})
+}
+
+func (s *Server) handleDeleteGlobalWebhook(w http.ResponseWriter, r *http.Request) {
+	if !s.requireOwner(w, r) {
+		return
+	}
+	webhookID := strings.TrimSpace(mux.Vars(r)["webhook_id"])
+	if webhookID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing webhook id")
+		return
+	}
+	removed, err := s.provider.DeleteGlobalWebhook(webhookID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"webhook_id": webhookID,
+		"removed":    removed,
+	})
+}
+
 func (s *Server) handleListSessionTemplates(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1215,6 +1473,9 @@ func (s *Server) handleUpsertSessionTemplate(w http.ResponseWriter, r *http.Requ
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
 		return
 	}
 	var req provider.SessionTemplate
@@ -1240,6 +1501,9 @@ func (s *Server) handleDeleteSessionTemplate(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusBadRequest, "missing session id or template id")
 		return
 	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
 	removed, err := s.provider.DeleteSessionTemplate(sessionID, templateID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1262,6 +1526,9 @@ type fakeCallRequest struct {
 // Body: {"to": "<phone or jid>", "ring_ms": 15000, "device_mode": "direct"}
 func (s *Server) handleFakeCall(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	var req fakeCallRequest
 	if err := decodeJSON(r, &req); err != nil {
 		http.Error(w, "invalid json payload", http.StatusBadRequest)
@@ -1318,6 +1585,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	_, err := s.provider.Connect(id)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1332,6 +1602,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // returns HTTP 200.
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	_ = s.provider.Disconnect(id)
 	// Keep response empty
 	w.WriteHeader(http.StatusNoContent)
@@ -1341,6 +1614,9 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 // or 500 if reload is not implemented or fails.
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	if err := s.provider.Reload(id); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = io.WriteString(w, err.Error())
@@ -1357,6 +1633,9 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 // message is returned with status 404 or 500 respectively.
 func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	if !s.requireSessionAccess(w, r, id) {
+		return
+	}
 	qr, err := s.provider.GetQR(id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not connected") {

@@ -27,11 +27,11 @@ func newTestPGStore(t *testing.T) MetadataStore {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "TRUNCATE worker_assignments, session_overrides, session_webhooks, session_templates"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE worker_assignments, session_overrides, session_webhooks, global_webhooks, session_templates"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), "TRUNCATE worker_assignments, session_overrides, session_webhooks, session_templates")
+		_, _ = pool.Exec(context.Background(), "TRUNCATE worker_assignments, session_overrides, session_webhooks, global_webhooks, session_templates")
 		pool.Close()
 	})
 	return NewPostgresStore(pool)
@@ -107,6 +107,20 @@ func TestPGStoreWebhooksAndTemplatesRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(hooks, gotHooks) {
 		t.Fatalf("webhooks mismatch: %+v vs %+v", hooks, gotHooks)
+	}
+
+	globalHooks := []SessionWebhook{
+		{ID: "global-1", URLAbsolute: "https://x/global", Enabled: true, TimeoutMS: 5000, SendSessionDisconnected: true},
+	}
+	if err := s.SaveGlobalWebhooks(ctx, w, globalHooks); err != nil {
+		t.Fatalf("save global webhooks: %v", err)
+	}
+	gotGlobalHooks, err := s.LoadGlobalWebhooks(ctx, w)
+	if err != nil {
+		t.Fatalf("load global webhooks: %v", err)
+	}
+	if !reflect.DeepEqual(globalHooks, gotGlobalHooks) {
+		t.Fatalf("global webhooks mismatch: %+v vs %+v", globalHooks, gotGlobalHooks)
 	}
 
 	tpls := map[string][]SessionTemplate{

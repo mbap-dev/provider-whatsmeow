@@ -25,6 +25,14 @@ CREATE TABLE session_webhooks (
     PRIMARY KEY (worker_id, session_id)
 );
 
+CREATE TABLE global_webhooks (
+    worker_id  text NOT NULL,
+    webhook_id text NOT NULL,
+    data       jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (worker_id, webhook_id)
+);
+
 CREATE TABLE session_templates (
     worker_id  text NOT NULL,
     session_id text NOT NULL,
@@ -60,6 +68,13 @@ CREATE TABLE users (
                               CHECK (role IN ('owner', 'admin', 'user')),
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_session_access (
+    user_id    uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, session_id)
 );
 
 CREATE TABLE user_sessions (

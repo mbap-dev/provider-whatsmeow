@@ -148,6 +148,48 @@ func (s *pgStore) SaveWebhooks(ctx context.Context, workerID string, webhooks ma
 	})
 }
 
+func (s *pgStore) LoadGlobalWebhooks(ctx context.Context, workerID string) ([]SessionWebhook, error) {
+	rows, err := s.q.ListGlobalWebhooks(ctx, workerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SessionWebhook, 0, len(rows))
+	for _, row := range rows {
+		var hook SessionWebhook
+		if err := json.Unmarshal(row.Data, &hook); err != nil {
+			return nil, fmt.Errorf("decode global webhook %s: %w", row.WebhookID, err)
+		}
+		norm, err := normalizeGlobalWebhook(hook)
+		if err != nil {
+			continue
+		}
+		out = append(out, norm)
+	}
+	return out, nil
+}
+
+func (s *pgStore) SaveGlobalWebhooks(ctx context.Context, workerID string, webhooks []SessionWebhook) error {
+	return s.withTx(ctx, func(q *pgdb.Queries) error {
+		if err := q.DeleteGlobalWebhooksByWorker(ctx, workerID); err != nil {
+			return err
+		}
+		for _, hook := range webhooks {
+			norm, err := normalizeGlobalWebhook(hook)
+			if err != nil {
+				continue
+			}
+			data, err := json.Marshal(norm)
+			if err != nil {
+				return err
+			}
+			if err := q.UpsertGlobalWebhook(ctx, pgdb.UpsertGlobalWebhookParams{WorkerID: workerID, WebhookID: norm.ID, Data: data}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // --- Templates --------------------------------------------------------------
 
 func (s *pgStore) LoadTemplates(ctx context.Context, workerID string) (map[string][]SessionTemplate, error) {

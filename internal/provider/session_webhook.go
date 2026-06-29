@@ -24,20 +24,21 @@ const (
 // SessionWebhook follows the same core semantics used in UnoAPI:
 // multiple webhooks per session with event filters.
 type SessionWebhook struct {
-	ID                     string `json:"id"`
-	Name                   string `json:"name,omitempty"`
-	URL                    string `json:"url,omitempty"`
-	URLAbsolute            string `json:"url_absolute,omitempty"`
-	Header                 string `json:"header,omitempty"`
-	Token                  string `json:"token,omitempty"`
-	TimeoutMS              int    `json:"timeout_ms"`
-	Enabled                bool   `json:"enabled"`
-	AppendSession          bool   `json:"append_session"`
-	SendIncomingMessages   bool   `json:"send_incoming_messages"`
-	SendOutgoingMessages   bool   `json:"send_outgoing_messages"`
-	SendUpdateMessages     bool   `json:"send_update_messages"`
-	SendGroupMessages      bool   `json:"send_group_messages"`
-	SendNewsletterMessages bool   `json:"send_newsletter_messages"`
+	ID                      string `json:"id"`
+	Name                    string `json:"name,omitempty"`
+	URL                     string `json:"url,omitempty"`
+	URLAbsolute             string `json:"url_absolute,omitempty"`
+	Header                  string `json:"header,omitempty"`
+	Token                   string `json:"token,omitempty"`
+	TimeoutMS               int    `json:"timeout_ms"`
+	Enabled                 bool   `json:"enabled"`
+	AppendSession           bool   `json:"append_session"`
+	SendIncomingMessages    bool   `json:"send_incoming_messages"`
+	SendOutgoingMessages    bool   `json:"send_outgoing_messages"`
+	SendUpdateMessages      bool   `json:"send_update_messages"`
+	SendGroupMessages       bool   `json:"send_group_messages"`
+	SendNewsletterMessages  bool   `json:"send_newsletter_messages"`
+	SendSessionDisconnected bool   `json:"send_session_disconnected,omitempty"`
 }
 
 type sessionWebhookState struct {
@@ -45,12 +46,18 @@ type sessionWebhookState struct {
 	Sessions map[string][]SessionWebhook `json:"sessions"`
 }
 
+type globalWebhookState struct {
+	WorkerID string           `json:"worker_id"`
+	Webhooks []SessionWebhook `json:"webhooks"`
+}
+
 type webhookPayloadClass struct {
-	Incoming   bool
-	Outgoing   bool
-	Update     bool
-	Group      bool
-	Newsletter bool
+	Incoming            bool
+	Outgoing            bool
+	Update              bool
+	Group               bool
+	Newsletter          bool
+	SessionDisconnected bool
 }
 
 func (m *ClientManager) ListSessionWebhooks(sessionID string) []SessionWebhook {
@@ -62,6 +69,82 @@ func (m *ClientManager) ListSessionWebhooks(sessionID string) []SessionWebhook {
 		return hooks[i].ID < hooks[j].ID
 	})
 	return hooks
+}
+
+func (m *ClientManager) ListGlobalWebhooks() []SessionWebhook {
+	m.webhooksMu.RLock()
+	hooks := cloneSessionWebhookList(m.globalWebhooks)
+	m.webhooksMu.RUnlock()
+	sort.SliceStable(hooks, func(i, j int) bool {
+		return hooks[i].ID < hooks[j].ID
+	})
+	return hooks
+}
+
+func (m *ClientManager) UpsertGlobalWebhook(hook SessionWebhook) (SessionWebhook, error) {
+	norm, err := normalizeGlobalWebhook(hook)
+	if err != nil {
+		return SessionWebhook{}, err
+	}
+
+	m.webhooksMu.Lock()
+	prev := cloneSessionWebhookList(m.globalWebhooks)
+	list := m.globalWebhooks
+	replaced := false
+	for i := range list {
+		if list[i].ID == norm.ID {
+			list[i] = norm
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		list = append(list, norm)
+	}
+	m.globalWebhooks = list
+	m.webhooksMu.Unlock()
+
+	if err := m.persistGlobalWebhooks(); err != nil {
+		m.webhooksMu.Lock()
+		m.globalWebhooks = prev
+		m.webhooksMu.Unlock()
+		return SessionWebhook{}, err
+	}
+	return norm, nil
+}
+
+func (m *ClientManager) DeleteGlobalWebhook(webhookID string) (bool, error) {
+	id := sanitizeWebhookID(webhookID)
+	if id == "" {
+		return false, errors.New("missing webhook id")
+	}
+
+	m.webhooksMu.Lock()
+	prev := cloneSessionWebhookList(m.globalWebhooks)
+	next := make([]SessionWebhook, 0, len(m.globalWebhooks))
+	removed := false
+	for _, item := range m.globalWebhooks {
+		if item.ID == id {
+			removed = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if removed {
+		m.globalWebhooks = next
+	}
+	m.webhooksMu.Unlock()
+
+	if !removed {
+		return false, nil
+	}
+	if err := m.persistGlobalWebhooks(); err != nil {
+		m.webhooksMu.Lock()
+		m.globalWebhooks = prev
+		m.webhooksMu.Unlock()
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *ClientManager) UpsertSessionWebhook(sessionID string, hook SessionWebhook) (SessionWebhook, error) {
@@ -170,22 +253,46 @@ func (m *ClientManager) dispatchRegisteredWebhooks(sessionID string, payload any
 	return true
 }
 
+func (m *ClientManager) dispatchGlobalWebhooks(sessionID string, payload any) bool {
+	hooks := m.ListGlobalWebhooks()
+	if len(hooks) == 0 {
+		return false
+	}
+	class := classifyWebhookPayload(sessionID, payload)
+	posted := 0
+	for _, hook := range hooks {
+		if !shouldDeliverSessionWebhook(hook, class) {
+			continue
+		}
+		posted++
+		m.postSessionWebhookAsync(sessionID, hook, payload)
+	}
+	entry := log.WithSession(sessionID)
+	if posted == 0 {
+		entry.Info("global webhook http skipped: no registered webhook matched event filters")
+	} else {
+		entry.Info("global webhook http dispatch queued count=%d", posted)
+	}
+	return posted > 0
+}
+
 func normalizeSessionWebhook(sessionID string, hook SessionWebhook) (SessionWebhook, error) {
 	out := SessionWebhook{
-		ID:                     sanitizeWebhookID(hook.ID),
-		Name:                   strings.TrimSpace(hook.Name),
-		URL:                    strings.TrimSpace(hook.URL),
-		URLAbsolute:            strings.TrimSpace(hook.URLAbsolute),
-		Header:                 strings.TrimSpace(hook.Header),
-		Token:                  strings.TrimSpace(hook.Token),
-		TimeoutMS:              hook.TimeoutMS,
-		Enabled:                hook.Enabled,
-		AppendSession:          hook.AppendSession,
-		SendIncomingMessages:   hook.SendIncomingMessages,
-		SendOutgoingMessages:   hook.SendOutgoingMessages,
-		SendUpdateMessages:     hook.SendUpdateMessages,
-		SendGroupMessages:      hook.SendGroupMessages,
-		SendNewsletterMessages: hook.SendNewsletterMessages,
+		ID:                      sanitizeWebhookID(hook.ID),
+		Name:                    strings.TrimSpace(hook.Name),
+		URL:                     strings.TrimSpace(hook.URL),
+		URLAbsolute:             strings.TrimSpace(hook.URLAbsolute),
+		Header:                  strings.TrimSpace(hook.Header),
+		Token:                   strings.TrimSpace(hook.Token),
+		TimeoutMS:               hook.TimeoutMS,
+		Enabled:                 hook.Enabled,
+		AppendSession:           hook.AppendSession,
+		SendIncomingMessages:    hook.SendIncomingMessages,
+		SendOutgoingMessages:    hook.SendOutgoingMessages,
+		SendUpdateMessages:      hook.SendUpdateMessages,
+		SendGroupMessages:       hook.SendGroupMessages,
+		SendNewsletterMessages:  hook.SendNewsletterMessages,
+		SendSessionDisconnected: hook.SendSessionDisconnected,
 	}
 	if out.ID == "" {
 		out.ID = autoWebhookID(sessionID)
@@ -201,6 +308,22 @@ func normalizeSessionWebhook(sessionID string, hook SessionWebhook) (SessionWebh
 	}
 	if out.URL != "" && !isValidWebhookURL(out.URL) {
 		return SessionWebhook{}, errors.New("url must start with http:// or https://")
+	}
+	return out, nil
+}
+
+func normalizeGlobalWebhook(hook SessionWebhook) (SessionWebhook, error) {
+	out, err := normalizeSessionWebhook("global", hook)
+	if err != nil {
+		return SessionWebhook{}, err
+	}
+	if !out.SendIncomingMessages &&
+		!out.SendOutgoingMessages &&
+		!out.SendUpdateMessages &&
+		!out.SendGroupMessages &&
+		!out.SendNewsletterMessages &&
+		!out.SendSessionDisconnected {
+		out.SendSessionDisconnected = true
 	}
 	return out, nil
 }
@@ -330,6 +453,65 @@ func (m *ClientManager) persistSessionWebhooks() error {
 	return m.store.SaveWebhooks(context.Background(), m.workerID, snapshot)
 }
 
+func loadGlobalWebhookState(path, workerID string) ([]SessionWebhook, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	st := globalWebhookState{}
+	if err := jsonUnmarshal(b, &st); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(st.WorkerID) != "" && strings.TrimSpace(workerID) != "" && strings.TrimSpace(st.WorkerID) != strings.TrimSpace(workerID) {
+		return nil, nil
+	}
+	out := make([]SessionWebhook, 0, len(st.Webhooks))
+	for _, raw := range st.Webhooks {
+		norm, err := normalizeGlobalWebhook(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, norm)
+	}
+	return out, nil
+}
+
+func saveGlobalWebhookState(path, workerID string, webhooks []SessionWebhook) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	payload := globalWebhookState{
+		WorkerID: strings.TrimSpace(workerID),
+		Webhooks: cloneSessionWebhookList(webhooks),
+	}
+	if payload.Webhooks == nil {
+		payload.Webhooks = []SessionWebhook{}
+	}
+	b, err := jsonMarshalIndent(payload)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+func (m *ClientManager) persistGlobalWebhooks() error {
+	m.webhooksMu.RLock()
+	snapshot := cloneSessionWebhookList(m.globalWebhooks)
+	m.webhooksMu.RUnlock()
+	return m.store.SaveGlobalWebhooks(context.Background(), m.workerID, snapshot)
+}
+
 func (m *ClientManager) postSessionWebhookAsync(sessionID string, hook SessionWebhook, payload any) {
 	entry := log.WithSession(sessionID)
 	body, err := json.Marshal(payload)
@@ -446,11 +628,17 @@ func classifyWebhookPayload(sessionID string, payload any) webhookPayloadClass {
 			out.Newsletter = true
 		}
 	}
+	if eventType := strings.ToLower(anyString(value["event"])); eventType == "session.disconnected" {
+		out.SessionDisconnected = true
+	}
 	return out
 }
 
 func shouldDeliverSessionWebhook(hook SessionWebhook, class webhookPayloadClass) bool {
 	if !hook.Enabled {
+		return false
+	}
+	if class.SessionDisconnected && !hook.SendSessionDisconnected {
 		return false
 	}
 	if class.Update && !hook.SendUpdateMessages {

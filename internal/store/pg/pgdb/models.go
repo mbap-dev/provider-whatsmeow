@@ -18,6 +18,13 @@ type ApiKey struct {
 	ExpiresAt  pgtype.Timestamptz
 }
 
+type GlobalWebhook struct {
+	WorkerID  string
+	WebhookID string
+	Data      []byte
+	UpdatedAt pgtype.Timestamptz
+}
+
 type MediaRecord struct {
 	SessionID        string
 	MediaID          string
@@ -70,6 +77,12 @@ type UserSession struct {
 	CreatedAt pgtype.Timestamptz
 	Ip        pgtype.Text
 	UserAgent pgtype.Text
+}
+
+type UserSessionAccess struct {
+	UserID    pgtype.UUID
+	SessionID string
+	CreatedAt pgtype.Timestamptz
 }
 
 type WorkerAssignment struct {

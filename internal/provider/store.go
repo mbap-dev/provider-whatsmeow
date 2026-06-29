@@ -6,7 +6,8 @@ import (
 )
 
 // MetadataStore persists per-worker session metadata: worker assignments,
-// per-session config overrides, registered webhooks and message templates.
+// per-session config overrides, registered webhooks, global webhooks and
+// message templates.
 //
 // The default implementation (fileStore) keeps the historical JSON files under
 // SESSION_STORE, so behaviour is unchanged when no external store is wired. A
@@ -23,6 +24,8 @@ type MetadataStore interface {
 
 	LoadWebhooks(ctx context.Context, workerID string) (map[string][]SessionWebhook, error)
 	SaveWebhooks(ctx context.Context, workerID string, webhooks map[string][]SessionWebhook) error
+	LoadGlobalWebhooks(ctx context.Context, workerID string) ([]SessionWebhook, error)
+	SaveGlobalWebhooks(ctx context.Context, workerID string, webhooks []SessionWebhook) error
 
 	LoadTemplates(ctx context.Context, workerID string) (map[string][]SessionTemplate, error)
 	SaveTemplates(ctx context.Context, workerID string, templates map[string][]SessionTemplate) error
@@ -31,18 +34,20 @@ type MetadataStore interface {
 // fileStore is the default JSON-file-backed MetadataStore. It delegates to the
 // existing load*/save* helpers, preserving the on-disk format under SESSION_STORE.
 type fileStore struct {
-	assignmentFile string
-	overrideFile   string
-	webhookFile    string
-	templateFile   string
+	assignmentFile    string
+	overrideFile      string
+	webhookFile       string
+	globalWebhookFile string
+	templateFile      string
 }
 
-func newFileStore(assignmentFile, overrideFile, webhookFile, templateFile string) *fileStore {
+func newFileStore(assignmentFile, overrideFile, webhookFile, globalWebhookFile, templateFile string) *fileStore {
 	return &fileStore{
-		assignmentFile: assignmentFile,
-		overrideFile:   overrideFile,
-		webhookFile:    webhookFile,
-		templateFile:   templateFile,
+		assignmentFile:    assignmentFile,
+		overrideFile:      overrideFile,
+		webhookFile:       webhookFile,
+		globalWebhookFile: globalWebhookFile,
+		templateFile:      templateFile,
 	}
 }
 
@@ -53,6 +58,7 @@ func NewFileStore(sessionStore string) MetadataStore {
 		filepath.Join(sessionStore, "_worker_assignments.json"),
 		filepath.Join(sessionStore, "_session_overrides.json"),
 		filepath.Join(sessionStore, "_session_webhooks.json"),
+		filepath.Join(sessionStore, "_global_webhooks.json"),
 		filepath.Join(sessionStore, "_session_templates.json"),
 	)
 }
@@ -83,6 +89,14 @@ func ImportFileStateIfEmpty(ctx context.Context, src, dst MetadataStore, workerI
 	if cur, err := dst.LoadWebhooks(ctx, workerID); err == nil && len(cur) == 0 {
 		if from, err := src.LoadWebhooks(ctx, workerID); err == nil && len(from) > 0 {
 			if err := dst.SaveWebhooks(ctx, workerID, from); err != nil {
+				return imported, err
+			}
+			imported = true
+		}
+	}
+	if cur, err := dst.LoadGlobalWebhooks(ctx, workerID); err == nil && len(cur) == 0 {
+		if from, err := src.LoadGlobalWebhooks(ctx, workerID); err == nil && len(from) > 0 {
+			if err := dst.SaveGlobalWebhooks(ctx, workerID, from); err != nil {
 				return imported, err
 			}
 			imported = true
@@ -121,6 +135,14 @@ func (s *fileStore) LoadWebhooks(_ context.Context, workerID string) (map[string
 
 func (s *fileStore) SaveWebhooks(_ context.Context, workerID string, webhooks map[string][]SessionWebhook) error {
 	return saveSessionWebhookState(s.webhookFile, workerID, webhooks)
+}
+
+func (s *fileStore) LoadGlobalWebhooks(_ context.Context, workerID string) ([]SessionWebhook, error) {
+	return loadGlobalWebhookState(s.globalWebhookFile, workerID)
+}
+
+func (s *fileStore) SaveGlobalWebhooks(_ context.Context, workerID string, webhooks []SessionWebhook) error {
+	return saveGlobalWebhookState(s.globalWebhookFile, workerID, webhooks)
 }
 
 func (s *fileStore) LoadTemplates(_ context.Context, workerID string) (map[string][]SessionTemplate, error) {

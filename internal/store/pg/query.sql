@@ -63,6 +63,19 @@ INSERT INTO session_webhooks (worker_id, session_id, data)
 VALUES ($1, $2, $3)
 ON CONFLICT (worker_id, session_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now();
 
+-- Global webhooks -----------------------------------------------------------
+
+-- name: ListGlobalWebhooks :many
+SELECT webhook_id, data FROM global_webhooks WHERE worker_id = $1 ORDER BY webhook_id;
+
+-- name: DeleteGlobalWebhooksByWorker :exec
+DELETE FROM global_webhooks WHERE worker_id = $1;
+
+-- name: UpsertGlobalWebhook :exec
+INSERT INTO global_webhooks (worker_id, webhook_id, data)
+VALUES ($1, $2, $3)
+ON CONFLICT (worker_id, webhook_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now();
+
 -- Session templates ---------------------------------------------------------
 
 -- name: ListTemplates :many
@@ -91,6 +104,45 @@ SELECT * FROM users WHERE email = $1 LIMIT 1;
 
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 LIMIT 1;
+
+-- name: ListUsers :many
+SELECT * FROM users ORDER BY created_at DESC;
+
+-- name: CountOwners :one
+SELECT COUNT(*) FROM users WHERE role = 'owner';
+
+-- name: UpdateUser :one
+UPDATE users
+SET email = $2, role = $3, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateUserWithPassword :one
+UPDATE users
+SET email = $2, role = $3, password_hash = $4, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: DeleteUser :one
+DELETE FROM users WHERE id = $1 RETURNING *;
+
+-- Auth: user session access ---------------------------------------------------
+
+-- name: ListUserSessionAccess :many
+SELECT session_id FROM user_session_access WHERE user_id = $1 ORDER BY session_id;
+
+-- name: DeleteUserSessionAccess :exec
+DELETE FROM user_session_access WHERE user_id = $1;
+
+-- name: InsertUserSessionAccess :exec
+INSERT INTO user_session_access (user_id, session_id)
+VALUES ($1, $2)
+ON CONFLICT (user_id, session_id) DO NOTHING;
+
+-- name: UserCanAccessSession :one
+SELECT EXISTS (
+    SELECT 1 FROM user_session_access WHERE user_id = $1 AND session_id = $2
+);
 
 -- Auth: user_sessions ---------------------------------------------------------
 

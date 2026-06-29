@@ -151,12 +151,15 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		case *events.Disconnected:
 			status.Set(sessionID, "offline")
 			m.stopAlwaysOnline(sessionID)
+			m.emitSessionDisconnected(sessionID, "disconnected")
 		case *events.LoggedOut:
 			status.Set(sessionID, "disconnected")
 			m.stopAlwaysOnline(sessionID)
+			m.emitSessionDisconnected(sessionID, "logged_out")
 		case *events.StreamReplaced:
 			status.Set(sessionID, "restart_required")
 			m.stopAlwaysOnline(sessionID)
+			m.emitSessionDisconnected(sessionID, "stream_replaced")
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
 			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s", e.CallCreator.String(), e.CallID)
@@ -205,6 +208,37 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 			// Silencia outros eventos no webhook (Uno espera apenas messages/statuses)
 		}
 	})
+}
+
+func (m *ClientManager) emitSessionDisconnected(sessionID, reason string) {
+	phone := normalizePhone(sessionID)
+	now := time.Now().UTC()
+	payload := map[string]any{
+		"object": "whatsapp_business_account",
+		"entry": []any{
+			map[string]any{
+				"id": phone,
+				"changes": []any{
+					map[string]any{
+						"field": "session",
+						"value": map[string]any{
+							"messaging_product": "whatsapp",
+							"metadata": map[string]any{
+								"display_phone_number": phone,
+								"phone_number_id":      phone,
+							},
+							"event":      "session.disconnected",
+							"session_id": sessionID,
+							"status":     "disconnected",
+							"reason":     strings.TrimSpace(reason),
+							"timestamp":  now.Format(time.RFC3339),
+						},
+					},
+				},
+			},
+		},
+	}
+	m.dispatchGlobalWebhooks(sessionID, payload)
 }
 
 func (m *ClientManager) emitCloudHistorySync(sessionID string, client *whatsmeow.Client, e *events.HistorySync) {

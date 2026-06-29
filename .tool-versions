@@ -1,3 +1,4 @@
 nodejs 24.14.0
 pnpm 11.5.3
 golang 1.26.4
+sqlc 1.31.1

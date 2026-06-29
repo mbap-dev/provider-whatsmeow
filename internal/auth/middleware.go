@@ -47,10 +47,58 @@ func (h *Handler) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// RequireOwner wraps a handler and returns 403 unless the user owns auth settings.
+func (h *Handler) RequireOwner(next http.Handler) http.Handler {
+	return h.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFromContext(r.Context())
+		if u.Role != "owner" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "owner role required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
+// RequireAPIKeyManager allows users that can create machine-to-machine API keys.
+func (h *Handler) RequireAPIKeyManager(next http.Handler) http.Handler {
+	return h.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u, _ := UserFromContext(r.Context())
+		if u.Role != "owner" && u.Role != "admin" {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "owner or admin role required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 // UserFromRequest extracts an authenticated user from a request via cookie or Bearer wm_* key.
 // Returns nil when no valid credentials are found.
 func (h *Handler) UserFromRequest(r *http.Request) *pgdb.User {
 	return h.extractUser(r)
+}
+
+// UserCanAccessSession reports whether u may access sessionID.
+func (h *Handler) UserCanAccessSession(ctx context.Context, u *pgdb.User, sessionID string) bool {
+	if h == nil || h.store == nil || u == nil {
+		return true
+	}
+	if u.Role == "owner" {
+		return true
+	}
+	ok, err := h.store.UserCanAccessSession(ctx, u.ID, sessionID)
+	return err == nil && ok
+}
+
+// ListUserSessionAccess returns the sessions explicitly linked to u.
+func (h *Handler) ListUserSessionAccess(ctx context.Context, u *pgdb.User) []string {
+	if h == nil || h.store == nil || u == nil {
+		return nil
+	}
+	items, err := h.store.ListUserSessionAccess(ctx, u.ID)
+	if err != nil {
+		return nil
+	}
+	return items
 }
 
 func (h *Handler) extractUser(r *http.Request) *pgdb.User {

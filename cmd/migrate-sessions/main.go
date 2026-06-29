@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +29,8 @@ import (
 
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
+
+	"your.org/provider-whatsmeow/internal/provider"
 )
 
 // wmTables lists all whatsmeow tables in FK-safe order (parents before children).
@@ -52,9 +55,10 @@ var wmTables = []string{
 }
 
 func main() {
-	dirFlag := flag.String("dir", "", "directory containing per-session subdirectories (each with session.db)")
+	dirFlag := flag.String("dir", "", "directory containing per-session subdirectories (each with session.db) plus the _*.json metadata files")
 	sqliteFlag := flag.String("sqlite", "", "path to a single session.db file")
 	postgresFlag := flag.String("postgres", os.Getenv("POSTGRES_URL"), "PostgreSQL URL")
+	workerIDFlag := flag.String("worker-id", "", "target worker_id for metadata (webhooks/templates/overrides/assignments). Empty = keep the worker_id stored in the JSON files. Set a fixed value to consolidate several containers under one worker.")
 	dryRun := flag.Bool("dry-run", false, "print what would be migrated without writing to Postgres")
 	flag.Parse()
 
@@ -127,7 +131,213 @@ func main() {
 			totalDevices += n
 		}
 	}
+
+	// Import the per-worker JSON metadata (webhooks, templates, overrides,
+	// assignments, global webhooks) that lives alongside the session.db files.
+	// migrate-sessions only handled the whatsmeow_* tables before; these JSON
+	// files were never touched, which is why they appeared "missing" after a
+	// SQLite→Postgres switch. We only know where they are in --dir mode.
+	if metaDir := metadataDir(*dirFlag, *sqliteFlag); metaDir != "" {
+		if err := importMetadata(ctx, metaDir, pgPool, *workerIDFlag, *dryRun); err != nil {
+			log.Printf("ERROR metadata import (%s): %v", metaDir, err)
+		}
+	} else if *sqliteFlag != "" {
+		log.Printf("note: metadata (webhooks/templates/...) import skipped in --sqlite mode; use --dir pointing at the SESSION_STORE root to include it")
+	}
+
 	fmt.Printf("\ndone — total devices migrated: %d\n", totalDevices)
+}
+
+// metadataDir returns the directory that holds the _*.json metadata files.
+// In --dir mode that is the directory itself. In --sqlite mode the layout is
+// <root>/<number>/session.db, so the root is two levels up — but that is only a
+// best-effort guess, so we return "" and let the caller warn instead.
+func metadataDir(dirFlag, sqliteFlag string) string {
+	if strings.TrimSpace(dirFlag) != "" {
+		return dirFlag
+	}
+	return ""
+}
+
+// importMetadata merges the per-worker JSON metadata into Postgres. It loads the
+// file state ignoring the stored worker_id (so a mismatched WORKER_ID can never
+// silently drop data), then merges it with whatever already exists in Postgres
+// for the target worker and writes the union back. This makes it safe to run for
+// several containers in a row, consolidating them under a single --worker-id.
+func importMetadata(ctx context.Context, dir string, pool *pgxpool.Pool, targetWorkerID string, dryRun bool) error {
+	src := provider.NewFileStore(dir)
+	detected := detectWorkerID(dir)
+	if strings.TrimSpace(targetWorkerID) == "" {
+		targetWorkerID = detected
+	}
+
+	// Load file state with workerID="" to bypass the stored-worker_id filter.
+	fileAssign, err := src.LoadAssignments(ctx, "")
+	if err != nil {
+		return fmt.Errorf("load assignments: %w", err)
+	}
+	fileOverrides, err := src.LoadOverrides(ctx, "")
+	if err != nil {
+		return fmt.Errorf("load overrides: %w", err)
+	}
+	fileWebhooks, err := src.LoadWebhooks(ctx, "")
+	if err != nil {
+		return fmt.Errorf("load webhooks: %w", err)
+	}
+	fileGlobal, err := src.LoadGlobalWebhooks(ctx, "")
+	if err != nil {
+		return fmt.Errorf("load global webhooks: %w", err)
+	}
+	fileTemplates, err := src.LoadTemplates(ctx, "")
+	if err != nil {
+		return fmt.Errorf("load templates: %w", err)
+	}
+
+	fmt.Printf("\nmetadata @ %s (file worker_id=%q → postgres worker_id=%q)\n", dir, detected, targetWorkerID)
+	fmt.Printf("  assignments=%d overrides=%d webhooks=%d global_webhooks=%d templates=%d\n",
+		len(fileAssign), len(fileOverrides), len(fileWebhooks), len(fileGlobal), len(fileTemplates))
+
+	if dryRun {
+		fmt.Printf("  [dry-run] skipping metadata write\n")
+		return nil
+	}
+
+	dst := provider.NewPostgresStore(pool)
+
+	// Assignments: union of existing + file (dedup).
+	curAssign, err := dst.LoadAssignments(ctx, targetWorkerID)
+	if err != nil {
+		return fmt.Errorf("load pg assignments: %w", err)
+	}
+	mergedAssign := unionStrings(curAssign, fileAssign)
+	if len(mergedAssign) > 0 {
+		if err := dst.SaveAssignments(ctx, targetWorkerID, mergedAssign); err != nil {
+			return fmt.Errorf("save assignments: %w", err)
+		}
+	}
+
+	// Overrides: combine maps, file wins on per-session conflict.
+	curOverrides, err := dst.LoadOverrides(ctx, targetWorkerID)
+	if err != nil {
+		return fmt.Errorf("load pg overrides: %w", err)
+	}
+	for sid, v := range fileOverrides {
+		curOverrides[sid] = v
+	}
+	if len(curOverrides) > 0 {
+		if err := dst.SaveOverrides(ctx, targetWorkerID, curOverrides); err != nil {
+			return fmt.Errorf("save overrides: %w", err)
+		}
+	}
+
+	// Webhooks: combine maps, file wins on per-session conflict.
+	curWebhooks, err := dst.LoadWebhooks(ctx, targetWorkerID)
+	if err != nil {
+		return fmt.Errorf("load pg webhooks: %w", err)
+	}
+	for sid, v := range fileWebhooks {
+		curWebhooks[sid] = v
+	}
+	if len(curWebhooks) > 0 {
+		if err := dst.SaveWebhooks(ctx, targetWorkerID, curWebhooks); err != nil {
+			return fmt.Errorf("save webhooks: %w", err)
+		}
+	}
+
+	// Global webhooks: union by webhook ID.
+	curGlobal, err := dst.LoadGlobalWebhooks(ctx, targetWorkerID)
+	if err != nil {
+		return fmt.Errorf("load pg global webhooks: %w", err)
+	}
+	mergedGlobal := mergeGlobalWebhooks(curGlobal, fileGlobal)
+	if len(mergedGlobal) > 0 {
+		if err := dst.SaveGlobalWebhooks(ctx, targetWorkerID, mergedGlobal); err != nil {
+			return fmt.Errorf("save global webhooks: %w", err)
+		}
+	}
+
+	// Templates: combine maps, file wins on per-session conflict.
+	curTemplates, err := dst.LoadTemplates(ctx, targetWorkerID)
+	if err != nil {
+		return fmt.Errorf("load pg templates: %w", err)
+	}
+	for sid, v := range fileTemplates {
+		curTemplates[sid] = v
+	}
+	if len(curTemplates) > 0 {
+		if err := dst.SaveTemplates(ctx, targetWorkerID, curTemplates); err != nil {
+			return fmt.Errorf("save templates: %w", err)
+		}
+	}
+
+	fmt.Printf("  imported into worker_id=%q (assignments=%d overrides=%d webhooks=%d global_webhooks=%d templates=%d)\n",
+		targetWorkerID, len(mergedAssign), len(curOverrides), len(curWebhooks), len(mergedGlobal), len(curTemplates))
+	return nil
+}
+
+// detectWorkerID reads the worker_id stored at the top of the metadata JSON
+// files. All five share the same `worker_id` field; the first non-empty wins.
+func detectWorkerID(dir string) string {
+	files := []string{
+		"_worker_assignments.json",
+		"_session_webhooks.json",
+		"_session_overrides.json",
+		"_session_templates.json",
+		"_global_webhooks.json",
+	}
+	for _, name := range files {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var probe struct {
+			WorkerID string `json:"worker_id"`
+		}
+		if err := json.Unmarshal(b, &probe); err != nil {
+			continue
+		}
+		if strings.TrimSpace(probe.WorkerID) != "" {
+			return strings.TrimSpace(probe.WorkerID)
+		}
+	}
+	return ""
+}
+
+// unionStrings returns the deduplicated union of two string slices, preserving
+// order (existing first, then new entries).
+func unionStrings(existing, incoming []string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(existing)+len(incoming))
+	for _, list := range [][]string{existing, incoming} {
+		for _, s := range list {
+			s = strings.TrimSpace(s)
+			if s == "" || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// mergeGlobalWebhooks returns the union of two global-webhook slices, deduped by
+// webhook ID (existing entries win).
+func mergeGlobalWebhooks(existing, incoming []provider.SessionWebhook) []provider.SessionWebhook {
+	seen := make(map[string]bool)
+	out := make([]provider.SessionWebhook, 0, len(existing)+len(incoming))
+	for _, list := range [][]provider.SessionWebhook{existing, incoming} {
+		for _, w := range list {
+			if w.ID != "" {
+				if seen[w.ID] {
+					continue
+				}
+				seen[w.ID] = true
+			}
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func migrateFile(ctx context.Context, sqlitePath string, pg *pgxpool.Pool, dryRun bool) (int, error) {

@@ -259,7 +259,12 @@ export function Modal({ open, onClose, title, eyebrow, children, maxWidth = 'max
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
       onClick={(event) => event.target === event.currentTarget && onClose()}
     >
-      <div className={cx('w-full rounded-[var(--radius-card)] border border-border bg-surface shadow-2xl', maxWidth)}>
+      <div
+        className={cx(
+          'flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface shadow-2xl',
+          maxWidth,
+        )}
+      >
         <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
           <div>
             {eyebrow && <Eyebrow>{eyebrow}</Eyebrow>}
@@ -269,7 +274,7 @@ export function Modal({ open, onClose, title, eyebrow, children, maxWidth = 'max
             Fechar
           </Button>
         </header>
-        <div className="p-5">{children}</div>
+        <div className="overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   )

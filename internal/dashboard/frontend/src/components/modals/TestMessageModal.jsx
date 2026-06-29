@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Button, Field, Input, Textarea, Eyebrow } from './ui.jsx'
-import { sendText } from '../api/endpoints.js'
+import { Field, Input, Textarea } from '../ui.jsx'
+import { sendText } from '../../api/endpoints.js'
+import { FormModal } from './FormModal.jsx'
 
-export function SendMessage({ sessionId, notify }) {
+export function TestMessageModal({ open, onClose, sessionId, notify }) {
   const [to, setTo] = useState('')
   const [body, setBody] = useState('')
   const [sending, setSending] = useState(false)
@@ -20,6 +21,7 @@ export function SendMessage({ sessionId, notify }) {
       await sendText(sessionId, target, text)
       notify(`Mensagem enviada por ${sessionId}.`, 'success')
       setBody('')
+      onClose()
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -28,26 +30,30 @@ export function SendMessage({ sessionId, notify }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-      <Eyebrow>Enviar mensagem de teste</Eyebrow>
+    <FormModal
+      open={open}
+      onClose={onClose}
+      eyebrow="Mensagem"
+      title="Enviar mensagem de teste"
+      onSubmit={handleSubmit}
+      submitLabel="Enviar"
+      submitting={sending}
+    >
       <Field label="Destino" hint="Número com DDI ou JID completo.">
         <Input
           value={to}
           placeholder="5511999999999"
-          onChange={(e) => setTo(e.target.value)}
+          onChange={(event) => setTo(event.target.value)}
         />
       </Field>
       <Field label="Mensagem">
         <Textarea
-          rows={3}
+          rows={4}
           value={body}
-          placeholder="Escreva a mensagem…"
-          onChange={(e) => setBody(e.target.value)}
+          placeholder="Escreva a mensagem..."
+          onChange={(event) => setBody(event.target.value)}
         />
       </Field>
-      <Button type="submit" variant="primary" loading={sending}>
-        Enviar
-      </Button>
-    </form>
+    </FormModal>
   )
 }

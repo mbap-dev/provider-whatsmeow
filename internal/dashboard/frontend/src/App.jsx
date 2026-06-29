@@ -6,12 +6,21 @@ import { QRModal } from './components/QRModal.jsx'
 import { LoginPage } from './components/LoginPage.jsx'
 import { UserMenu } from './components/UserMenu.jsx'
 import { APIKeysModal } from './components/APIKeysModal.jsx'
+import { Settings } from './components/Settings.jsx'
 import { useTheme } from './hooks/useTheme.js'
 import { useToasts } from './hooks/useToasts.js'
 import { usePolling } from './hooks/usePolling.js'
 import { useAuth } from './hooks/useAuth.js'
 import * as api from './api/endpoints.js'
-import { formatTime, isOnline, sortSessions } from './lib/sessions.js'
+import {
+  navigate,
+  pathForHome,
+  pathForInstance,
+  pathForInstances,
+  pathForSettings,
+  useRoute,
+} from './lib/router.js'
+import { formatTime, isOnline } from './lib/sessions.js'
 
 const LOGO_LIGHT = 'https://publicfiles-envolve.s3.us-west-2.amazonaws.com/logo_black.svg'
 const LOGO_DARK = 'https://publicfiles-envolve.s3.us-west-2.amazonaws.com/logo_white.svg'
@@ -27,14 +36,12 @@ export function App() {
   const { theme, toggleTheme } = useTheme()
   const { toasts, notify, dismiss } = useToasts()
   const { user, authAvailable, login, logout } = useAuth()
+  const route = useRoute()
 
   const [worker, setWorker] = useState(null)
   const [sessions, setSessions] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
-  const [page, setPage] = useState('home')
-  const [selectedId, setSelectedId] = useState('')
-  const [detailTab, setDetailTab] = useState('overview')
   const [busy, setBusy] = useState({})
   const [qrSessionId, setQrSessionId] = useState('')
   const [apiKeysOpen, setApiKeysOpen] = useState(false)
@@ -69,15 +76,8 @@ export function App() {
     document.title = worker?.ui_title || 'WhatsMeow Control Center'
   }, [worker])
 
-  // Keep a valid selection as the session list changes.
-  useEffect(() => {
-    if (sessions.length === 0) {
-      setSelectedId('')
-      return
-    }
-    if (selectedId && sessions.some((s) => s.session_id === selectedId)) return
-    setSelectedId([...sessions].sort(sortSessions)[0]?.session_id || '')
-  }, [sessions, selectedId])
+  const selectedId = route.page === 'instances' ? route.sessionId || '' : ''
+  const detailTab = route.page === 'instances' ? route.tab || 'overview' : 'overview'
 
   const counts = useMemo(
     () => ({
@@ -126,16 +126,12 @@ export function App() {
   )
 
   const handleSelect = useCallback((id) => {
-    setSelectedId(id)
-    setDetailTab('overview')
-    setPage('instances')
+    navigate(pathForInstance(id))
   }, [])
 
   const handleCreated = useCallback(
     async (id) => {
-      setSelectedId(id)
-      setDetailTab('overview')
-      setPage('instances')
+      navigate(pathForInstance(id))
       await refresh({ silent: true })
     },
     [refresh],
@@ -148,9 +144,13 @@ export function App() {
   }
 
   const navItems = [
-    { id: 'home', label: 'Home' },
-    { id: 'instances', label: 'Instâncias' },
+    { id: 'home', label: 'Home', path: pathForHome() },
+    { id: 'instances', label: 'Instâncias', path: pathForInstances() },
+    ...(authAvailable && user?.role === 'owner'
+      ? [{ id: 'settings', label: 'Configurações', path: pathForSettings() }]
+      : []),
   ]
+  const page = route.page === 'not-found' ? 'home' : route.page
 
   return (
     <div className="min-h-screen">
@@ -171,7 +171,7 @@ export function App() {
             {navItems.map((item) => (
               <button
                 key={item.id}
-                onClick={() => setPage(item.id)}
+                onClick={() => navigate(item.path)}
                 className={cx(
                   'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
                   page === item.id ? 'bg-surface-2 text-fg' : 'text-muted hover:text-fg',
@@ -219,7 +219,14 @@ export function App() {
             counts={counts}
             notify={notify}
             onCreated={handleCreated}
-            onGoToInstances={() => setPage('instances')}
+            onGoToInstances={() => navigate(pathForInstances())}
+          />
+        ) : page === 'settings' ? (
+          <Settings
+            currentUser={user}
+            notify={notify}
+            activeSection={route.section || 'users'}
+            onSectionChange={(section) => navigate(pathForSettings(section))}
           />
         ) : (
           <Instances
@@ -232,6 +239,7 @@ export function App() {
             onAction={handleAction}
             onShowQR={setQrSessionId}
             notify={notify}
+            onTabChange={(tab) => navigate(pathForInstance(selectedId, tab))}
           />
         )}
       </main>

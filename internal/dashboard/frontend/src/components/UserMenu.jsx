@@ -10,6 +10,7 @@ const ROLE_STYLE = {
 export function UserMenu({ user, onLogout, onOpenAPIKeys }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
+  const canManageAPIKeys = user?.role === 'owner' || user?.role === 'admin'
 
   useEffect(() => {
     if (!open) return undefined
@@ -42,15 +43,17 @@ export function UserMenu({ user, onLogout, onOpenAPIKeys }) {
             </p>
           </div>
           <div className="flex flex-col gap-0.5 p-1.5">
-            <button
-              onClick={() => {
-                setOpen(false)
-                onOpenAPIKeys()
-              }}
-              className="w-full rounded-md px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-surface-2"
-            >
-              API Keys
-            </button>
+            {canManageAPIKeys && (
+              <button
+                onClick={() => {
+                  setOpen(false)
+                  onOpenAPIKeys()
+                }}
+                className="w-full rounded-md px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-surface-2"
+              >
+                API Keys
+              </button>
+            )}
             <button
               onClick={() => {
                 setOpen(false)

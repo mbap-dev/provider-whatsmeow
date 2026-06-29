@@ -14,7 +14,9 @@ import {
 import { ConfigForm } from './ConfigForm.jsx'
 import { WebhookPanel } from './WebhookPanel.jsx'
 import { TemplatePanel } from './TemplatePanel.jsx'
-import { SendMessage } from './SendMessage.jsx'
+import { TestMessageModal } from './modals/TestMessageModal.jsx'
+import { SessionWebhookModal } from './modals/SessionWebhookModal.jsx'
+import { TemplateModal } from './modals/TemplateModal.jsx'
 import * as api from '../api/endpoints.js'
 import {
   configFormFromSnapshot,
@@ -50,7 +52,15 @@ function DetailRow({ label, children }) {
   )
 }
 
-export function SessionDetail({ session, worker, initialTab, notify, onAction, onShowQR }) {
+export function SessionDetail({
+  session,
+  worker,
+  initialTab,
+  notify,
+  onAction,
+  onShowQR,
+  onTabChange,
+}) {
   const sessionId = session.session_id
   const status = sessionStatus(session)
   const tone = statusTone(status)
@@ -76,6 +86,9 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
     form: defaultTemplateForm(),
   })
   const [pairing, setPairing] = useState({ phone: '', code: '', loading: false })
+  const [messageModalOpen, setMessageModalOpen] = useState(false)
+  const [webhookModalOpen, setWebhookModalOpen] = useState(false)
+  const [templateModalOpen, setTemplateModalOpen] = useState(false)
 
   useEffect(() => {
     if (initialTab) setTab(initialTab)
@@ -88,6 +101,9 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
     setWebhooks((w) => ({ ...w, loading: true }))
     setTemplates((t) => ({ ...t, loading: true }))
     setPairing({ phone: digitsOnly(sessionId), code: '', loading: false })
+    setMessageModalOpen(false)
+    setWebhookModalOpen(false)
+    setTemplateModalOpen(false)
 
     Promise.all([
       api.getConfig(sessionId),
@@ -185,6 +201,7 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
       await api.saveWebhook(sessionId, webhookFormToPayload(webhooks.form))
       notify('Webhook salvo.', 'success')
       await reloadWebhooks()
+      setWebhookModalOpen(false)
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -214,6 +231,7 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
       await api.saveTemplate(sessionId, templateFormToPayload(templates.form))
       notify('Template salvo.', 'success')
       await reloadTemplates()
+      setTemplateModalOpen(false)
     } catch (error) {
       notify(error.message, 'error')
     } finally {
@@ -252,6 +270,26 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
     }
   }
 
+  function openCreateWebhookModal() {
+    setWebhooks((w) => ({ ...w, form: defaultWebhookForm() }))
+    setWebhookModalOpen(true)
+  }
+
+  function openEditWebhookModal(item) {
+    setWebhooks((w) => ({ ...w, form: webhookFormFromItem(item) }))
+    setWebhookModalOpen(true)
+  }
+
+  function openCreateTemplateModal() {
+    setTemplates((t) => ({ ...t, form: defaultTemplateForm() }))
+    setTemplateModalOpen(true)
+  }
+
+  function openEditTemplateModal(item) {
+    setTemplates((t) => ({ ...t, form: templateFormFromItem(item) }))
+    setTemplateModalOpen(true)
+  }
+
   return (
     <Card className="flex flex-col">
       <CardHeader
@@ -273,7 +311,14 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
       />
 
       <div className="px-5 pt-4">
-        <Tabs tabs={TABS} active={tab} onChange={setTab} />
+        <Tabs
+          tabs={TABS}
+          active={tab}
+          onChange={(nextTab) => {
+            setTab(nextTab)
+            onTabChange?.(nextTab)
+          }}
+        />
       </div>
 
       <div className="p-5">
@@ -341,7 +386,19 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
             </div>
 
             <div className="border-t border-border pt-5 lg:border-0 lg:border-l lg:pl-6 lg:pt-0">
-              <SendMessage sessionId={sessionId} notify={notify} />
+              <Eyebrow>Teste</Eyebrow>
+              <div className="mt-2 rounded-lg border border-border bg-surface-2 p-4">
+                <p className="text-sm text-muted">
+                  Envie uma mensagem rápida por esta instância para validar conexão e entrega.
+                </p>
+                <Button
+                  className="mt-3"
+                  variant="primary"
+                  onClick={() => setMessageModalOpen(true)}
+                >
+                  Enviar mensagem de teste
+                </Button>
+              </div>
             </div>
           </div>
         )}
@@ -364,13 +421,9 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
           <WebhookPanel
             items={webhooks.items}
             loading={webhooks.loading}
-            saving={webhooks.saving}
-            form={webhooks.form}
-            onChange={(form) => setWebhooks((w) => ({ ...w, form }))}
-            onSave={handleSaveWebhook}
             onDelete={handleDeleteWebhook}
-            onEdit={(item) => setWebhooks((w) => ({ ...w, form: webhookFormFromItem(item) }))}
-            onResetForm={() => setWebhooks((w) => ({ ...w, form: defaultWebhookForm() }))}
+            onEdit={openEditWebhookModal}
+            onCreate={openCreateWebhookModal}
           />
         )}
 
@@ -378,16 +431,35 @@ export function SessionDetail({ session, worker, initialTab, notify, onAction, o
           <TemplatePanel
             items={templates.items}
             loading={templates.loading}
-            saving={templates.saving}
-            form={templates.form}
-            onChange={(form) => setTemplates((t) => ({ ...t, form }))}
-            onSave={handleSaveTemplate}
             onDelete={handleDeleteTemplate}
-            onEdit={(item) => setTemplates((t) => ({ ...t, form: templateFormFromItem(item) }))}
-            onResetForm={() => setTemplates((t) => ({ ...t, form: defaultTemplateForm() }))}
+            onEdit={openEditTemplateModal}
+            onCreate={openCreateTemplateModal}
           />
         )}
       </div>
+
+      <TestMessageModal
+        open={messageModalOpen}
+        onClose={() => setMessageModalOpen(false)}
+        sessionId={sessionId}
+        notify={notify}
+      />
+      <SessionWebhookModal
+        open={webhookModalOpen}
+        onClose={() => setWebhookModalOpen(false)}
+        form={webhooks.form}
+        saving={webhooks.saving}
+        onChange={(form) => setWebhooks((w) => ({ ...w, form }))}
+        onSave={handleSaveWebhook}
+      />
+      <TemplateModal
+        open={templateModalOpen}
+        onClose={() => setTemplateModalOpen(false)}
+        form={templates.form}
+        saving={templates.saving}
+        onChange={(form) => setTemplates((t) => ({ ...t, form }))}
+        onSave={handleSaveTemplate}
+      />
     </Card>
   )
 }

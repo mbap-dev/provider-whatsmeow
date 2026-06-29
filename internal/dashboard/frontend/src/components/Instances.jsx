@@ -32,6 +32,7 @@ export function Instances({
   onAction,
   onShowQR,
   notify,
+  onTabChange,
 }) {
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -110,6 +111,7 @@ export function Instances({
             notify={notify}
             onAction={onAction}
             onShowQR={onShowQR}
+            onTabChange={onTabChange}
           />
         ) : (
           <EmptyState

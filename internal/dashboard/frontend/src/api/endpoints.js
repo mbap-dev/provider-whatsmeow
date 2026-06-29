@@ -31,6 +31,9 @@ export const listWebhooks = (id) => get(`${V1}/sessions/${enc(id)}/webhooks`)
 export const saveWebhook = (id, body) => post(`${V1}/sessions/${enc(id)}/webhooks`, body)
 export const deleteWebhook = (id, webhookId) =>
   del(`${V1}/sessions/${enc(id)}/webhooks/${enc(webhookId)}`)
+export const listGlobalWebhooks = () => get(`${V1}/webhooks/global`)
+export const saveGlobalWebhook = (body) => post(`${V1}/webhooks/global`, body)
+export const deleteGlobalWebhook = (id) => del(`${V1}/webhooks/global/${enc(id)}`)
 
 // --- Templates --------------------------------------------------------------
 export const listTemplates = (id) => get(`${V1}/sessions/${enc(id)}/templates`)
@@ -52,3 +55,7 @@ export const logout = () => post('/auth/logout')
 export const listAPIKeys = () => get('/auth/api-keys')
 export const createAPIKey = (body) => post('/auth/api-keys', body)
 export const deleteAPIKey = (id) => del(`/auth/api-keys/${enc(id)}`)
+export const listUsers = () => get('/auth/users')
+export const createUser = (body) => post('/auth/users', body)
+export const updateUser = (id, body) => put(`/auth/users/${enc(id)}`, body)
+export const deleteUser = (id) => del(`/auth/users/${enc(id)}`)

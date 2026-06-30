@@ -16,6 +16,9 @@ export const sessionAction = (id, action) => post(`/sessions/${enc(id)}/${action
 export const qrSrc = (id, ts) => `/sessions/${enc(id)}/qr?ts=${ts}`
 export const requestPairingCode = (id, phone) =>
   post(`${V1}/sessions/${enc(id)}/pairing-code`, { phone })
+export const getPairingLink = (id) => get(`${V1}/sessions/${enc(id)}/pairing-link`)
+export const createPairingLink = (id) => post(`${V1}/sessions/${enc(id)}/pairing-link`)
+export const revokePairingLink = (id) => del(`${V1}/sessions/${enc(id)}/pairing-link`)
 
 // --- Worker assignments -----------------------------------------------------
 export const assignSession = (id) => post(`${V1}/worker/assignments`, { session_id: id })

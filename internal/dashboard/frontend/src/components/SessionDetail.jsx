@@ -86,6 +86,14 @@ export function SessionDetail({
     form: defaultTemplateForm(),
   })
   const [pairing, setPairing] = useState({ phone: '', code: '', loading: false })
+  const [pairingLink, setPairingLink] = useState({
+    loading: true,
+    active: false,
+    created_at: '',
+    url: '',
+    creating: false,
+    revoking: false,
+  })
   const [messageModalOpen, setMessageModalOpen] = useState(false)
   const [webhookModalOpen, setWebhookModalOpen] = useState(false)
   const [templateModalOpen, setTemplateModalOpen] = useState(false)
@@ -100,6 +108,7 @@ export function SessionDetail({
     setConfig((c) => ({ ...c, loading: true }))
     setWebhooks((w) => ({ ...w, loading: true }))
     setTemplates((t) => ({ ...t, loading: true }))
+    setPairingLink((p) => ({ ...p, loading: true, url: '' }))
     setPairing({ phone: digitsOnly(sessionId), code: '', loading: false })
     setMessageModalOpen(false)
     setWebhookModalOpen(false)
@@ -109,8 +118,9 @@ export function SessionDetail({
       api.getConfig(sessionId),
       api.listWebhooks(sessionId),
       api.listTemplates(sessionId),
+      api.getPairingLink(sessionId),
     ])
-      .then(([snapshot, webhookPayload, templatePayload]) => {
+      .then(([snapshot, webhookPayload, templatePayload, pairingLinkPayload]) => {
         if (!active) return
         setConfig({
           loading: false,
@@ -130,12 +140,21 @@ export function SessionDetail({
           items: templatePayload?.templates || [],
           form: defaultTemplateForm(),
         })
+        setPairingLink({
+          loading: false,
+          active: Boolean(pairingLinkPayload?.active),
+          created_at: pairingLinkPayload?.created_at || '',
+          url: '',
+          creating: false,
+          revoking: false,
+        })
       })
       .catch((error) => {
         if (!active) return
         setConfig((c) => ({ ...c, loading: false }))
         setWebhooks((w) => ({ ...w, loading: false }))
         setTemplates((t) => ({ ...t, loading: false }))
+        setPairingLink((p) => ({ ...p, loading: false }))
         notify(error.message, 'error')
       })
 
@@ -270,6 +289,55 @@ export function SessionDetail({
     }
   }
 
+  async function handleCreatePairingLink() {
+    setPairingLink((p) => ({ ...p, creating: true }))
+    try {
+      const payload = await api.createPairingLink(sessionId)
+      setPairingLink({
+        loading: false,
+        active: true,
+        created_at: payload?.created_at || '',
+        url: payload?.pairing_url || '',
+        creating: false,
+        revoking: false,
+      })
+      notify('Link seguro gerado.', 'success')
+    } catch (error) {
+      notify(error.message, 'error')
+      setPairingLink((p) => ({ ...p, creating: false }))
+    }
+  }
+
+  async function handleRevokePairingLink() {
+    if (!window.confirm(`Expirar o link seguro de "${sessionId}"?`)) return
+    setPairingLink((p) => ({ ...p, revoking: true }))
+    try {
+      await api.revokePairingLink(sessionId)
+      setPairingLink({
+        loading: false,
+        active: false,
+        created_at: '',
+        url: '',
+        creating: false,
+        revoking: false,
+      })
+      notify('Link seguro expirado.', 'success')
+    } catch (error) {
+      notify(error.message, 'error')
+      setPairingLink((p) => ({ ...p, revoking: false }))
+    }
+  }
+
+  async function handleCopyPairingLink() {
+    if (!pairingLink.url) return
+    try {
+      await navigator.clipboard.writeText(pairingLink.url)
+      notify('Link copiado.', 'success')
+    } catch {
+      notify('Não foi possível copiar automaticamente.', 'error')
+    }
+  }
+
   function openCreateWebhookModal() {
     setWebhooks((w) => ({ ...w, form: defaultWebhookForm() }))
     setWebhookModalOpen(true)
@@ -383,6 +451,72 @@ export function SessionDetail({
                   </div>
                 )}
               </form>
+
+              <div className="flex flex-col gap-3 border-t border-border pt-5">
+                <Eyebrow>Link seguro de conexão</Eyebrow>
+                <div className="rounded-lg border border-border bg-surface-2 p-3">
+                  {pairingLink.loading ? (
+                    <p className="text-sm text-muted">Carregando link...</p>
+                  ) : pairingLink.active ? (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-sm text-muted">
+                        Link ativo
+                        {pairingLink.created_at
+                          ? ` desde ${new Date(pairingLink.created_at).toLocaleString('pt-BR')}`
+                          : ''}
+                        . Ele expira automaticamente quando a conexão for concluída.
+                      </p>
+                      {pairingLink.url ? (
+                        <Field label="URL gerada">
+                          <Input value={pairingLink.url} readOnly />
+                        </Field>
+                      ) : (
+                        <p className="text-sm text-muted">
+                          Há um link ativo. Gere um novo para visualizar a URL novamente.
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant={pairingLink.url ? 'secondary' : 'primary'}
+                          loading={pairingLink.creating}
+                          onClick={handleCreatePairingLink}
+                        >
+                          Gerar novo link
+                        </Button>
+                        {pairingLink.url && (
+                          <Button size="sm" onClick={handleCopyPairingLink}>
+                            Copiar link
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          loading={pairingLink.revoking}
+                          onClick={handleRevokePairingLink}
+                        >
+                          Expirar link
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      <p className="text-sm text-muted">
+                        Gere um link público para outra pessoa abrir no computador e conectar esta
+                        instância por QR Code ou código de pareamento, sem login no painel.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={pairingLink.creating}
+                        onClick={handleCreatePairingLink}
+                      >
+                        Gerar link seguro
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div className="border-t border-border pt-5 lg:border-0 lg:border-l lg:pl-6 lg:pt-0">

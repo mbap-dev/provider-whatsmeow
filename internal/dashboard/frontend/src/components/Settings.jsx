@@ -453,6 +453,7 @@ export function Settings({ currentUser, notify, activeSection = 'users', onSecti
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         <Tag>{webhook.enabled ? 'Ativo' : 'Desligado'}</Tag>
                         {webhook.send_session_disconnected && <Tag muted>Sessão desconectada</Tag>}
+                        {webhook.send_session_offline && <Tag muted>Instância offline</Tag>}
                       </div>
                     </article>
                   ))}
@@ -612,9 +613,15 @@ export function Settings({ currentUser, notify, activeSection = 'users', onSecti
             />
             <Switch
               label="Sessão desconectada"
-              description="Dispara quando o WhatsMeow encerra, fecha ou substitui o stream de uma sessão."
+              description="Dispara em logout real, remoção do dispositivo, restrição ou banimento."
               checked={webhookForm.send_session_disconnected}
               onChange={(value) => setWebhookForm((current) => ({ ...current, send_session_disconnected: value }))}
+            />
+            <Switch
+              label="Instância offline"
+              description="Dispara quando a instância permanece offline por 1 minuto."
+              checked={webhookForm.send_session_offline}
+              onChange={(value) => setWebhookForm((current) => ({ ...current, send_session_offline: value }))}
             />
           </div>
           <div className="flex justify-end gap-2 border-t border-border pt-4">

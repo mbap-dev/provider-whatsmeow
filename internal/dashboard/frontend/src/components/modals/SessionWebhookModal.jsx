@@ -93,6 +93,12 @@ export function SessionWebhookModal({
           checked={form.send_session_disconnected}
           onChange={(value) => set({ send_session_disconnected: value })}
         />
+        <Switch
+          label="Instância offline"
+          description="Dispara quando a instância permanece offline por 1 minuto."
+          checked={form.send_session_offline}
+          onChange={(value) => set({ send_session_offline: value })}
+        />
       </div>
     </FormModal>
   )

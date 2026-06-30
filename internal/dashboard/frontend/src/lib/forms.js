@@ -90,6 +90,7 @@ export function defaultWebhookForm() {
     send_group_messages: true,
     send_newsletter_messages: false,
     send_session_disconnected: false,
+    send_session_offline: false,
   }
 }
 
@@ -112,6 +113,7 @@ export function webhookFormFromItem(item) {
     send_group_messages: Boolean(item?.send_group_messages),
     send_newsletter_messages: Boolean(item?.send_newsletter_messages),
     send_session_disconnected: Boolean(item?.send_session_disconnected),
+    send_session_offline: Boolean(item?.send_session_offline),
   }
 }
 
@@ -133,6 +135,7 @@ export function webhookFormToPayload(form) {
     send_group_messages: form.send_group_messages,
     send_newsletter_messages: form.send_newsletter_messages,
     send_session_disconnected: form.send_session_disconnected,
+    send_session_offline: form.send_session_offline,
   }
 }
 
@@ -146,6 +149,7 @@ export function defaultGlobalWebhookForm() {
     send_group_messages: false,
     send_newsletter_messages: false,
     send_session_disconnected: true,
+    send_session_offline: false,
   }
 }
 

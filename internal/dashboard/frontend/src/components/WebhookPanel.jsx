@@ -28,6 +28,7 @@ function WebhookItem({ item, onEdit, onDelete }) {
         {item.send_group_messages && <Tag muted>Grupos</Tag>}
         {item.send_newsletter_messages && <Tag muted>Newsletters</Tag>}
         {item.send_session_disconnected && <Tag muted>Sessão desconectada</Tag>}
+        {item.send_session_offline && <Tag muted>Instância offline</Tag>}
       </div>
     </article>
   )

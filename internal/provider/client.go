@@ -58,6 +58,9 @@ type ClientManager struct {
 	alwaysOnline      bool
 	alwaysOnlineEvery time.Duration
 
+	offlineMu       sync.Mutex
+	offlineMonitors map[string]*offlineMonitor
+
 	// inbound filters
 	ignoreStatusBroadcast bool
 	ignoreNewsletters     bool
@@ -78,6 +81,10 @@ type ClientManager struct {
 	webhooksMu      sync.RWMutex
 	sessionWebhooks map[string][]SessionWebhook
 	globalWebhooks  []SessionWebhook
+
+	// public, unauthenticated links used to pair a session by QR/code.
+	pairingLinksMu sync.RWMutex
+	pairingLinks   []PairingLink
 
 	// registered Cloud API-compatible message templates by session
 	templatesMu      sync.RWMutex
@@ -118,6 +125,13 @@ type sessionOverrides struct {
 	alwaysOnlineEvery     *time.Duration
 	historySyncEnabled    *bool
 	historySyncDays       *int
+}
+
+type offlineMonitor struct {
+	cancel     context.CancelFunc
+	generation int64
+	reason     string
+	lastSuccess time.Time
 }
 
 type ManagerOptions struct {
@@ -191,13 +205,14 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		sessionHookFile = filepath.Join(opts.SessionStore, "_session_webhooks.json")
 	}
 	globalHookFile := filepath.Join(opts.SessionStore, "_global_webhooks.json")
+	pairingLinkFile := filepath.Join(opts.SessionStore, "_pairing_links.json")
 	sessionTplFile := strings.TrimSpace(opts.SessionTemplateFile)
 	if sessionTplFile == "" {
 		sessionTplFile = filepath.Join(opts.SessionStore, "_session_templates.json")
 	}
 	var store MetadataStore = opts.MetadataStore
 	if store == nil {
-		store = newFileStore(assignmentFile, sessionCfgFile, sessionHookFile, globalHookFile, sessionTplFile)
+		store = newFileStore(assignmentFile, sessionCfgFile, sessionHookFile, globalHookFile, sessionTplFile, pairingLinkFile)
 	}
 	loadCtx := context.Background()
 	assigned := map[string]struct{}{}
@@ -230,6 +245,10 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 	sessionTemplates := map[string][]SessionTemplate{}
 	if persisted, err := store.LoadTemplates(loadCtx, opts.WorkerID); err == nil && persisted != nil {
 		sessionTemplates = persisted
+	}
+	pairingLinks := []PairingLink{}
+	if persisted, err := store.LoadPairingLinks(loadCtx, opts.WorkerID); err == nil && persisted != nil {
+		pairingLinks = persisted
 	}
 	mediaDir := strings.TrimSpace(opts.MediaStoreDir)
 	if mediaDir == "" {
@@ -273,6 +292,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		}),
 		pnCache:               make(map[string]pnCacheItem),
 		alwaysOnlineEvery:     time.Minute,
+		offlineMonitors:       make(map[string]*offlineMonitor),
 		ignoreStatusBroadcast: opts.IgnoreStatusBroadcast,
 		ignoreNewsletters:     opts.IgnoreNewsletters,
 		outgoingMessagesCoex:  opts.OutgoingMessagesCoex,
@@ -281,6 +301,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		overrides:             overrides,
 		sessionWebhooks:       sessionWebhooks,
 		globalWebhooks:        globalWebhooks,
+		pairingLinks:          pairingLinks,
 		sessionTemplates:      sessionTemplates,
 		checkUserExists:       opts.CheckUserExists,
 		workerID:              strings.TrimSpace(opts.WorkerID),

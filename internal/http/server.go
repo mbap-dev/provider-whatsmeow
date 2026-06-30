@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"net/http"
 	"os"
@@ -66,6 +67,11 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 			s.registerDashboardRoutes(router)
 		}
 	}
+
+	router.HandleFunc("/pair/{token}", s.handlePublicPairingPage).Methods(http.MethodGet)
+	router.HandleFunc("/pair/{token}/status", s.handlePublicPairingStatus).Methods(http.MethodGet)
+	router.HandleFunc("/pair/{token}/qr", s.handlePublicPairingQR).Methods(http.MethodGet)
+	router.HandleFunc("/pair/{token}/code", s.handlePublicPairingCode).Methods(http.MethodPost)
 
 	// Session management endpoints
 	router.HandleFunc("/sessions/{id}/connect", s.handleConnect).Methods(http.MethodPost)
@@ -271,6 +277,9 @@ func isAPITokenProtectedPath(path string) bool {
 	if strings.HasPrefix(path, "/assets/") {
 		return false
 	}
+	if strings.HasPrefix(path, "/pair/") {
+		return false
+	}
 	if isDashboardRoute(path) {
 		return false
 	}
@@ -380,6 +389,9 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleUpdateSessionConfig).Methods(http.MethodPut)
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleClearSessionConfig).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions/{id}/pairing-code", s.handlePairingCode).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleGetPairingLink).Methods(http.MethodGet)
+	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleCreatePairingLink).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleRevokePairingLink).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleListSessionWebhooks).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions/{id}/webhooks", s.handleCreateSessionWebhook).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/webhooks/{webhook_id}", s.handleUpdateSessionWebhook).Methods(http.MethodPut)
@@ -668,6 +680,78 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 		"session_id":   sessionID,
 		"phone":        strings.TrimSpace(req.Phone),
 		"pairing_code": code,
+	})
+}
+
+func (s *Server) handleGetPairingLink(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
+	link, ok := s.provider.ActivePairingLink(sessionID)
+	resp := map[string]any{
+		"session_id": sessionID,
+		"active":     ok,
+	}
+	if ok {
+		resp["created_at"] = link.CreatedAt
+		resp["status"] = link.Status()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleCreatePairingLink(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
+	link, token, err := s.provider.CreatePairingLink(r.Context(), sessionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	baseURL := strings.TrimRight(requestBaseURL(r), "/")
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"session_id":  link.SessionID,
+		"created_at":  link.CreatedAt,
+		"status":      link.Status(),
+		"pairing_url": baseURL + "/pair/" + token,
+	})
+}
+
+func (s *Server) handleRevokePairingLink(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
+	revoked, err := s.provider.RevokePairingLinks(r.Context(), sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"revoked":    revoked,
+		"active":     false,
 	})
 }
 
@@ -1201,6 +1285,7 @@ type sessionWebhookRequest struct {
 	SendGroupMessages       *bool  `json:"send_group_messages,omitempty"`
 	SendNewsletterMessages  *bool  `json:"send_newsletter_messages,omitempty"`
 	SendSessionDisconnected *bool  `json:"send_session_disconnected,omitempty"`
+	SendSessionOffline      *bool  `json:"send_session_offline,omitempty"`
 }
 
 func (r sessionWebhookRequest) toProviderWebhook() provider.SessionWebhook {
@@ -1240,6 +1325,10 @@ func (r sessionWebhookRequest) toProviderWebhook() provider.SessionWebhook {
 	if r.SendSessionDisconnected != nil {
 		sendSessionDisconnected = *r.SendSessionDisconnected
 	}
+	sendSessionOffline := false
+	if r.SendSessionOffline != nil {
+		sendSessionOffline = *r.SendSessionOffline
+	}
 	return provider.SessionWebhook{
 		ID:                      strings.TrimSpace(r.ID),
 		Name:                    strings.TrimSpace(r.Name),
@@ -1256,6 +1345,7 @@ func (r sessionWebhookRequest) toProviderWebhook() provider.SessionWebhook {
 		SendGroupMessages:       sendGroup,
 		SendNewsletterMessages:  sendNewsletter,
 		SendSessionDisconnected: sendSessionDisconnected,
+		SendSessionOffline:      sendSessionOffline,
 	}
 }
 
@@ -1656,6 +1746,206 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/png")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf)
+}
+
+func (s *Server) handlePublicPairingPage(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, ok := s.provider.LookupPairingLink(token)
+	tokenJSON, _ := json.Marshal(token)
+	statusText := "Link inválido ou expirado"
+	sessionID := ""
+	if ok {
+		sessionID = link.SessionID
+		if link.Active() {
+			statusText = "Aguardando conexão"
+		} else if link.UsedAt != nil {
+			statusText = "Conexão concluída"
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w, `<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Conectar WhatsApp</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #101418; color: #eef2f4; }
+    main { width: min(34rem, calc(100vw - 2rem)); border: 1px solid rgba(255,255,255,.14); border-radius: 14px; background: #151b20; box-shadow: 0 24px 80px rgba(0,0,0,.32); overflow: hidden; }
+    header, section { padding: 1.25rem; }
+    header { border-bottom: 1px solid rgba(255,255,255,.12); }
+    h1 { margin: 0; font-size: 1.2rem; }
+    p { margin: .35rem 0 0; color: #aebbc4; line-height: 1.45; }
+    .qr { display: grid; place-items: center; min-height: 19rem; border: 1px dashed rgba(255,255,255,.18); border-radius: 12px; background: #0d1115; }
+    img { width: min(16rem, 78vw); height: min(16rem, 78vw); image-rendering: pixelated; border-radius: 8px; background: white; padding: .75rem; }
+    button { width: 100%%; height: 2.75rem; border: 0; border-radius: 10px; background: #23d18b; color: #07120d; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .code { margin-top: .75rem; padding: .85rem; border-radius: 10px; background: rgba(255,255,255,.06); text-align: center; font: 700 1.6rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .22em; }
+    .muted { font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Conectar WhatsApp</h1>
+      <p>Instância <strong>%s</strong></p>
+      <p id="status">%s</p>
+    </header>
+    <section>
+      <div class="qr">
+        <img id="qr" alt="QR Code para conexão" hidden />
+        <p id="waiting">Preparando QR Code...</p>
+      </div>
+      <p class="muted">Abra o WhatsApp no celular e leia o QR Code. Se preferir, use o código de pareamento abaixo.</p>
+      <div style="margin-top:1rem">
+        <button id="codeButton" type="button">Gerar código de pareamento</button>
+        <div id="code" class="code" hidden></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const token = %s;
+    const qr = document.getElementById('qr');
+    const waiting = document.getElementById('waiting');
+    const statusEl = document.getElementById('status');
+    const codeButton = document.getElementById('codeButton');
+    const codeEl = document.getElementById('code');
+
+    async function refreshStatus() {
+      const res = await fetch('/pair/' + encodeURIComponent(token) + '/status', { cache: 'no-store' });
+      if (!res.ok) {
+        statusEl.textContent = 'Link inválido ou expirado.';
+        codeButton.disabled = true;
+        qr.hidden = true;
+        waiting.hidden = false;
+        waiting.textContent = 'Solicite um novo link.';
+        return;
+      }
+      const payload = await res.json();
+      if (payload.link_status === 'used' || payload.logged_in) {
+        statusEl.textContent = 'Conexão concluída.';
+        codeButton.disabled = true;
+        qr.hidden = true;
+        waiting.hidden = false;
+        waiting.textContent = 'Você já pode fechar esta página.';
+        return;
+      }
+      if (payload.link_status !== 'active') {
+        statusEl.textContent = 'Link expirado.';
+        codeButton.disabled = true;
+        return;
+      }
+      statusEl.textContent = 'Aguardando leitura do QR Code.';
+      qr.src = '/pair/' + encodeURIComponent(token) + '/qr?ts=' + Date.now();
+      qr.hidden = false;
+      waiting.hidden = true;
+    }
+
+    codeButton.addEventListener('click', async () => {
+      codeButton.disabled = true;
+      codeButton.textContent = 'Gerando...';
+      try {
+        const res = await fetch('/pair/' + encodeURIComponent(token) + '/code', { method: 'POST' });
+        const payload = await res.json();
+        if (!res.ok) throw new Error(payload.error || 'Falha ao gerar código.');
+        codeEl.textContent = payload.pairing_code;
+        codeEl.hidden = false;
+      } catch (error) {
+        statusEl.textContent = error.message;
+      } finally {
+        codeButton.disabled = false;
+        codeButton.textContent = 'Gerar código de pareamento';
+      }
+    });
+
+    refreshStatus();
+    setInterval(refreshStatus, 3000);
+  </script>
+</body>
+</html>`, template.HTMLEscapeString(sessionID), template.HTMLEscapeString(statusText), string(tokenJSON))
+}
+
+func (s *Server) handlePublicPairingStatus(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, ok := s.provider.LookupPairingLink(token)
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "pairing link not found")
+		return
+	}
+	connected := false
+	loggedIn := false
+	if st, err := s.provider.Status(link.SessionID); err == nil {
+		connected = st.Connected
+		loggedIn = st.LoggedIn
+		if loggedIn {
+			s.provider.MarkPairingLinksUsed(r.Context(), link.SessionID)
+			link, _ = s.provider.LookupPairingLink(token)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":  link.SessionID,
+		"link_status": link.Status(),
+		"connected":   connected,
+		"logged_in":   loggedIn,
+	})
+}
+
+func (s *Server) handlePublicPairingQR(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if _, err := s.provider.Connect(link.SessionID); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	qr, err := s.provider.GetQR(link.SessionID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, err.Error())
+		return
+	}
+	buf, decErr := base64.StdEncoding.DecodeString(qr)
+	if decErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, decErr.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf)
+}
+
+func (s *Server) handlePublicPairingCode(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	code, err := s.provider.PairPhone(link.SessionID, link.SessionID)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID),
+			errors.Is(err, provider.ErrMissingPhone),
+			errors.Is(err, provider.ErrAlreadyPaired),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":   link.SessionID,
+		"phone":        link.SessionID,
+		"pairing_code": code,
+	})
 }
 
 // handleHealth always returns HTTP 200 OK.  It can be used by

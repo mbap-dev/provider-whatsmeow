@@ -89,6 +89,26 @@ INSERT INTO session_templates (worker_id, session_id, data)
 VALUES ($1, $2, $3)
 ON CONFLICT (worker_id, session_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now();
 
+-- Session pairing links -----------------------------------------------------
+
+-- name: ListPairingLinks :many
+SELECT token_hash, session_id, created_at, used_at, revoked_at
+FROM session_pairing_links
+WHERE worker_id = $1
+ORDER BY created_at DESC;
+
+-- name: DeletePairingLinksByWorker :exec
+DELETE FROM session_pairing_links WHERE worker_id = $1;
+
+-- name: UpsertPairingLink :exec
+INSERT INTO session_pairing_links (worker_id, token_hash, session_id, created_at, used_at, revoked_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (worker_id, token_hash) DO UPDATE SET
+    session_id = EXCLUDED.session_id,
+    created_at = EXCLUDED.created_at,
+    used_at = EXCLUDED.used_at,
+    revoked_at = EXCLUDED.revoked_at;
+
 -- Auth: users -----------------------------------------------------------------
 
 -- name: CountUsers :one

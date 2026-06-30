@@ -46,6 +46,15 @@ type SessionOverride struct {
 	UpdatedAt pgtype.Timestamptz
 }
 
+type SessionPairingLink struct {
+	WorkerID  string
+	TokenHash string
+	SessionID string
+	CreatedAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
+	RevokedAt pgtype.Timestamptz
+}
+
 type SessionTemplate struct {
 	WorkerID  string
 	SessionID string

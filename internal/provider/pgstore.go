@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"your.org/provider-whatsmeow/internal/store/pg/pgdb"
@@ -234,5 +236,68 @@ func (s *pgStore) SaveTemplates(ctx context.Context, workerID string, templates 
 	})
 }
 
+// --- Pairing links ----------------------------------------------------------
+
+func (s *pgStore) LoadPairingLinks(ctx context.Context, workerID string) ([]PairingLink, error) {
+	rows, err := s.q.ListPairingLinks(ctx, workerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PairingLink, 0, len(rows))
+	for _, row := range rows {
+		link := PairingLink{
+			SessionID: row.SessionID,
+			TokenHash: row.TokenHash,
+			CreatedAt: row.CreatedAt.Time,
+		}
+		if row.UsedAt.Valid {
+			t := row.UsedAt.Time
+			link.UsedAt = &t
+		}
+		if row.RevokedAt.Valid {
+			t := row.RevokedAt.Time
+			link.RevokedAt = &t
+		}
+		out = append(out, link)
+	}
+	return out, nil
+}
+
+func (s *pgStore) SavePairingLinks(ctx context.Context, workerID string, links []PairingLink) error {
+	return s.withTx(ctx, func(q *pgdb.Queries) error {
+		if err := q.DeletePairingLinksByWorker(ctx, workerID); err != nil {
+			return err
+		}
+		for _, link := range links {
+			sid := normalizeSessionID(link.SessionID)
+			if sid == "" || link.TokenHash == "" {
+				continue
+			}
+			if err := q.UpsertPairingLink(ctx, pgdb.UpsertPairingLinkParams{
+				WorkerID:  workerID,
+				TokenHash: link.TokenHash,
+				SessionID: sid,
+				CreatedAt: timestamptz(link.CreatedAt),
+				UsedAt:    timestamptzPtr(link.UsedAt),
+				RevokedAt: timestamptzPtr(link.RevokedAt),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // Ensure pgStore satisfies the interface at compile time.
 var _ MetadataStore = (*pgStore)(nil)
+
+func timestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()}
+}
+
+func timestamptzPtr(t *time.Time) pgtype.Timestamptz {
+	if t == nil || t.IsZero() {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}

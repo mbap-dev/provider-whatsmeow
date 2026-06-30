@@ -39,6 +39,7 @@ type SessionWebhook struct {
 	SendGroupMessages       bool   `json:"send_group_messages"`
 	SendNewsletterMessages  bool   `json:"send_newsletter_messages"`
 	SendSessionDisconnected bool   `json:"send_session_disconnected,omitempty"`
+	SendSessionOffline      bool   `json:"send_session_offline,omitempty"`
 }
 
 type sessionWebhookState struct {
@@ -58,6 +59,7 @@ type webhookPayloadClass struct {
 	Group               bool
 	Newsletter          bool
 	SessionDisconnected bool
+	SessionOffline      bool
 }
 
 func (m *ClientManager) ListSessionWebhooks(sessionID string) []SessionWebhook {
@@ -293,6 +295,7 @@ func normalizeSessionWebhook(sessionID string, hook SessionWebhook) (SessionWebh
 		SendGroupMessages:       hook.SendGroupMessages,
 		SendNewsletterMessages:  hook.SendNewsletterMessages,
 		SendSessionDisconnected: hook.SendSessionDisconnected,
+		SendSessionOffline:      hook.SendSessionOffline,
 	}
 	if out.ID == "" {
 		out.ID = autoWebhookID(sessionID)
@@ -322,7 +325,8 @@ func normalizeGlobalWebhook(hook SessionWebhook) (SessionWebhook, error) {
 		!out.SendUpdateMessages &&
 		!out.SendGroupMessages &&
 		!out.SendNewsletterMessages &&
-		!out.SendSessionDisconnected {
+		!out.SendSessionDisconnected &&
+		!out.SendSessionOffline {
 		out.SendSessionDisconnected = true
 	}
 	return out, nil
@@ -630,6 +634,8 @@ func classifyWebhookPayload(sessionID string, payload any) webhookPayloadClass {
 	}
 	if eventType := strings.ToLower(anyString(value["event"])); eventType == "session.disconnected" {
 		out.SessionDisconnected = true
+	} else if eventType == "session.offline" {
+		out.SessionOffline = true
 	}
 	return out
 }
@@ -639,6 +645,9 @@ func shouldDeliverSessionWebhook(hook SessionWebhook, class webhookPayloadClass)
 		return false
 	}
 	if class.SessionDisconnected && !hook.SendSessionDisconnected {
+		return false
+	}
+	if class.SessionOffline && !hook.SendSessionOffline {
 		return false
 	}
 	if class.Update && !hook.SendUpdateMessages {

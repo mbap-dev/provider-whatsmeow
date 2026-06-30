@@ -27,6 +27,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const sessionOfflineConfirmAfter = time.Minute
+
 // Defaults used for LID->AD resolution when no manager-specific tuning is available.
 var (
 	defaultLIDResolveAttempts = 3
@@ -146,20 +148,37 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		// Connection lifecycle → Redis status
 		case *events.Connected:
 			status.Set(sessionID, "online")
+			m.cancelSessionOfflineMonitor(sessionID)
 			// Start always-online presence refresher if enabled
 			m.maybeStartAlwaysOnline(sessionID, client)
+		case *events.PairSuccess:
+			m.MarkPairingLinksUsed(context.Background(), sessionID)
 		case *events.Disconnected:
 			status.Set(sessionID, "offline")
 			m.stopAlwaysOnline(sessionID)
-			m.emitSessionDisconnected(sessionID, "disconnected")
+			m.scheduleSessionOfflineMonitor(sessionID, "socket_disconnected", time.Time{})
+		case *events.KeepAliveTimeout:
+			m.scheduleSessionOfflineMonitor(sessionID, "keepalive_timeout", e.LastSuccess)
+		case *events.KeepAliveRestored:
+			m.cancelSessionOfflineMonitor(sessionID)
 		case *events.LoggedOut:
 			status.Set(sessionID, "disconnected")
 			m.stopAlwaysOnline(sessionID)
-			m.emitSessionDisconnected(sessionID, "logged_out")
+			m.cancelSessionOfflineMonitor(sessionID)
 		case *events.StreamReplaced:
 			status.Set(sessionID, "restart_required")
 			m.stopAlwaysOnline(sessionID)
-			m.emitSessionDisconnected(sessionID, "stream_replaced")
+			m.cancelSessionOfflineMonitor(sessionID)
+		case *events.TemporaryBan:
+			status.Set(sessionID, "restricted")
+			m.stopAlwaysOnline(sessionID)
+			m.cancelSessionOfflineMonitor(sessionID)
+		case *events.ConnectFailure:
+			if e.Reason.IsLoggedOut() {
+				status.Set(sessionID, "disconnected")
+				m.stopAlwaysOnline(sessionID)
+				m.cancelSessionOfflineMonitor(sessionID)
+			}
 		case *events.CallOffer:
 			// Auto-reject incoming calls and optionally send a reply text
 			log.WithSession(sessionID).Info("evt=call_offer from=%s call_id=%s", e.CallCreator.String(), e.CallID)
@@ -207,7 +226,107 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		default:
 			// Silencia outros eventos no webhook (Uno espera apenas messages/statuses)
 		}
+		if reason, ok := sessionDisconnectedReasonForEvent(evt); ok {
+			m.emitSessionDisconnected(sessionID, reason)
+		}
 	})
+}
+
+func (m *ClientManager) scheduleSessionOfflineMonitor(sessionID, reason string, lastSuccess time.Time) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return
+	}
+	m.offlineMu.Lock()
+	prev := m.offlineMonitors[sessionID]
+	if prev != nil {
+		m.offlineMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	generation := int64(1)
+	m.offlineMonitors[sessionID] = &offlineMonitor{
+		cancel:      cancel,
+		generation:  generation,
+		reason:      strings.TrimSpace(reason),
+		lastSuccess: lastSuccess,
+	}
+	m.offlineMu.Unlock()
+
+	go func() {
+		timer := time.NewTimer(sessionOfflineConfirmAfter)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if m.shouldEmitSessionOffline(sessionID, generation, lastSuccess) {
+				m.emitSessionOffline(sessionID, reason, sessionOfflineConfirmAfter, lastSuccess)
+			}
+		}
+	}()
+}
+
+func (m *ClientManager) cancelSessionOfflineMonitor(sessionID string) {
+	sessionID = normalizeSessionID(sessionID)
+	if sessionID == "" {
+		return
+	}
+	m.offlineMu.Lock()
+	if monitor := m.offlineMonitors[sessionID]; monitor != nil {
+		monitor.cancel()
+		delete(m.offlineMonitors, sessionID)
+	}
+	m.offlineMu.Unlock()
+}
+
+func (m *ClientManager) shouldEmitSessionOffline(sessionID string, generation int64, lastSuccess time.Time) bool {
+	m.offlineMu.Lock()
+	monitor := m.offlineMonitors[sessionID]
+	if monitor == nil || monitor.generation != generation {
+		m.offlineMu.Unlock()
+		return false
+	}
+	delete(m.offlineMonitors, sessionID)
+	m.offlineMu.Unlock()
+
+	m.mu.RLock()
+	ent := m.clients[sessionID]
+	m.mu.RUnlock()
+	if ent == nil || ent.Client == nil {
+		return true
+	}
+	if !ent.Client.IsConnected() {
+		return true
+	}
+	if !lastSuccess.IsZero() && time.Since(lastSuccess) >= sessionOfflineConfirmAfter {
+		return true
+	}
+	return false
+}
+
+func sessionDisconnectedReasonForEvent(evt interface{}) (string, bool) {
+	switch e := evt.(type) {
+	case *events.LoggedOut:
+		reason := "logged_out"
+		if e.OnConnect {
+			reason = "logged_out_on_connect"
+		}
+		if e.Reason != 0 {
+			reason = reason + ": " + e.Reason.String()
+		}
+		return reason, true
+	case *events.TemporaryBan:
+		if e == nil {
+			return "temporary_ban", true
+		}
+		return "temporary_ban: " + e.String(), true
+	case *events.ConnectFailure:
+		if e != nil && e.Reason.IsLoggedOut() {
+			return "connect_failure: " + e.Reason.String(), true
+		}
+	}
+	return "", false
 }
 
 func (m *ClientManager) emitSessionDisconnected(sessionID, reason string) {
@@ -233,6 +352,42 @@ func (m *ClientManager) emitSessionDisconnected(sessionID, reason string) {
 							"reason":     strings.TrimSpace(reason),
 							"timestamp":  now.Format(time.RFC3339),
 						},
+					},
+				},
+			},
+		},
+	}
+	m.dispatchGlobalWebhooks(sessionID, payload)
+}
+
+func (m *ClientManager) emitSessionOffline(sessionID, reason string, confirmedAfter time.Duration, lastSuccess time.Time) {
+	phone := normalizePhone(sessionID)
+	now := time.Now().UTC()
+	value := map[string]any{
+		"messaging_product": "whatsapp",
+		"metadata": map[string]any{
+			"display_phone_number": phone,
+			"phone_number_id":      phone,
+		},
+		"event":                   "session.offline",
+		"session_id":              sessionID,
+		"status":                  "offline",
+		"reason":                  strings.TrimSpace(reason),
+		"confirmed_after_seconds": int(confirmedAfter.Seconds()),
+		"timestamp":               now.Format(time.RFC3339),
+	}
+	if !lastSuccess.IsZero() {
+		value["last_keepalive_success"] = lastSuccess.UTC().Format(time.RFC3339)
+	}
+	payload := map[string]any{
+		"object": "whatsapp_business_account",
+		"entry": []any{
+			map[string]any{
+				"id": phone,
+				"changes": []any{
+					map[string]any{
+						"field": "session",
+						"value": value,
 					},
 				},
 			},

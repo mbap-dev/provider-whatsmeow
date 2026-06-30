@@ -29,6 +29,9 @@ type MetadataStore interface {
 
 	LoadTemplates(ctx context.Context, workerID string) (map[string][]SessionTemplate, error)
 	SaveTemplates(ctx context.Context, workerID string, templates map[string][]SessionTemplate) error
+
+	LoadPairingLinks(ctx context.Context, workerID string) ([]PairingLink, error)
+	SavePairingLinks(ctx context.Context, workerID string, links []PairingLink) error
 }
 
 // fileStore is the default JSON-file-backed MetadataStore. It delegates to the
@@ -39,15 +42,17 @@ type fileStore struct {
 	webhookFile       string
 	globalWebhookFile string
 	templateFile      string
+	pairingLinkFile   string
 }
 
-func newFileStore(assignmentFile, overrideFile, webhookFile, globalWebhookFile, templateFile string) *fileStore {
+func newFileStore(assignmentFile, overrideFile, webhookFile, globalWebhookFile, templateFile, pairingLinkFile string) *fileStore {
 	return &fileStore{
 		assignmentFile:    assignmentFile,
 		overrideFile:      overrideFile,
 		webhookFile:       webhookFile,
 		globalWebhookFile: globalWebhookFile,
 		templateFile:      templateFile,
+		pairingLinkFile:   pairingLinkFile,
 	}
 }
 
@@ -60,6 +65,7 @@ func NewFileStore(sessionStore string) MetadataStore {
 		filepath.Join(sessionStore, "_session_webhooks.json"),
 		filepath.Join(sessionStore, "_global_webhooks.json"),
 		filepath.Join(sessionStore, "_session_templates.json"),
+		filepath.Join(sessionStore, "_pairing_links.json"),
 	)
 }
 
@@ -110,6 +116,14 @@ func ImportFileStateIfEmpty(ctx context.Context, src, dst MetadataStore, workerI
 			imported = true
 		}
 	}
+	if cur, err := dst.LoadPairingLinks(ctx, workerID); err == nil && len(cur) == 0 {
+		if from, err := src.LoadPairingLinks(ctx, workerID); err == nil && len(from) > 0 {
+			if err := dst.SavePairingLinks(ctx, workerID, from); err != nil {
+				return imported, err
+			}
+			imported = true
+		}
+	}
 	return imported, nil
 }
 
@@ -151,4 +165,12 @@ func (s *fileStore) LoadTemplates(_ context.Context, workerID string) (map[strin
 
 func (s *fileStore) SaveTemplates(_ context.Context, workerID string, templates map[string][]SessionTemplate) error {
 	return saveSessionTemplateState(s.templateFile, workerID, templates)
+}
+
+func (s *fileStore) LoadPairingLinks(_ context.Context, workerID string) ([]PairingLink, error) {
+	return loadPairingLinkState(s.pairingLinkFile, workerID)
+}
+
+func (s *fileStore) SavePairingLinks(_ context.Context, workerID string, links []PairingLink) error {
+	return savePairingLinkState(s.pairingLinkFile, workerID, links)
 }

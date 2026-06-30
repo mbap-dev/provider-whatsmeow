@@ -196,6 +196,15 @@ func (q *Queries) DeleteOverridesByWorker(ctx context.Context, workerID string) 
 	return err
 }
 
+const deletePairingLinksByWorker = `-- name: DeletePairingLinksByWorker :exec
+DELETE FROM session_pairing_links WHERE worker_id = $1
+`
+
+func (q *Queries) DeletePairingLinksByWorker(ctx context.Context, workerID string) error {
+	_, err := q.db.Exec(ctx, deletePairingLinksByWorker, workerID)
+	return err
+}
+
 const deleteSession = `-- name: DeleteSession :exec
 DELETE FROM user_sessions WHERE token_hash = $1
 `
@@ -520,6 +529,49 @@ func (q *Queries) ListOverrides(ctx context.Context, workerID string) ([]ListOve
 	return items, nil
 }
 
+const listPairingLinks = `-- name: ListPairingLinks :many
+
+SELECT token_hash, session_id, created_at, used_at, revoked_at
+FROM session_pairing_links
+WHERE worker_id = $1
+ORDER BY created_at DESC
+`
+
+type ListPairingLinksRow struct {
+	TokenHash string
+	SessionID string
+	CreatedAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
+	RevokedAt pgtype.Timestamptz
+}
+
+// Session pairing links -----------------------------------------------------
+func (q *Queries) ListPairingLinks(ctx context.Context, workerID string) ([]ListPairingLinksRow, error) {
+	rows, err := q.db.Query(ctx, listPairingLinks, workerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPairingLinksRow{}
+	for rows.Next() {
+		var i ListPairingLinksRow
+		if err := rows.Scan(
+			&i.TokenHash,
+			&i.SessionID,
+			&i.CreatedAt,
+			&i.UsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTemplates = `-- name: ListTemplates :many
 
 SELECT session_id, data FROM session_templates WHERE worker_id = $1
@@ -786,6 +838,37 @@ type UpsertOverrideParams struct {
 
 func (q *Queries) UpsertOverride(ctx context.Context, arg UpsertOverrideParams) error {
 	_, err := q.db.Exec(ctx, upsertOverride, arg.WorkerID, arg.SessionID, arg.Data)
+	return err
+}
+
+const upsertPairingLink = `-- name: UpsertPairingLink :exec
+INSERT INTO session_pairing_links (worker_id, token_hash, session_id, created_at, used_at, revoked_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (worker_id, token_hash) DO UPDATE SET
+    session_id = EXCLUDED.session_id,
+    created_at = EXCLUDED.created_at,
+    used_at = EXCLUDED.used_at,
+    revoked_at = EXCLUDED.revoked_at
+`
+
+type UpsertPairingLinkParams struct {
+	WorkerID  string
+	TokenHash string
+	SessionID string
+	CreatedAt pgtype.Timestamptz
+	UsedAt    pgtype.Timestamptz
+	RevokedAt pgtype.Timestamptz
+}
+
+func (q *Queries) UpsertPairingLink(ctx context.Context, arg UpsertPairingLinkParams) error {
+	_, err := q.db.Exec(ctx, upsertPairingLink,
+		arg.WorkerID,
+		arg.TokenHash,
+		arg.SessionID,
+		arg.CreatedAt,
+		arg.UsedAt,
+		arg.RevokedAt,
+	)
 	return err
 }
 

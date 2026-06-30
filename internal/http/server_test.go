@@ -86,6 +86,14 @@ func TestAPIRoutesStayTokenProtected(t *testing.T) {
 	}
 }
 
+func TestPairingPublicRoutesAreNotAPITokenProtected(t *testing.T) {
+	for _, path := range []string{"/pair/token", "/pair/token/status", "/pair/token/qr"} {
+		if isAPITokenProtectedPath(path) {
+			t.Fatalf("isAPITokenProtectedPath(%q) = true, want false", path)
+		}
+	}
+}
+
 func TestDashboardRoutesWinOverMetaCompatibilityRoutes(t *testing.T) {
 	manager := provider.NewClientManager(provider.ManagerOptions{
 		SessionStore: t.TempDir(),
@@ -105,6 +113,26 @@ func TestDashboardRoutesWinOverMetaCompatibilityRoutes(t *testing.T) {
 		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
 			t.Fatalf("GET %s content-type = %q, want text/html", path, got)
 		}
+	}
+}
+
+func TestPublicPairingPageDoesNotRequireAuth(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+	srv := NewServer(&config.Config{APIAuthEnabled: true, APIAuthToken: "secret"}, manager, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/pair/invalid-token", nil)
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "text/html") {
+		t.Fatalf("content-type = %q, want text/html", got)
 	}
 }
 

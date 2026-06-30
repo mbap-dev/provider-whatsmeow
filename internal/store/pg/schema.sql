@@ -41,6 +41,16 @@ CREATE TABLE session_templates (
     PRIMARY KEY (worker_id, session_id)
 );
 
+CREATE TABLE session_pairing_links (
+    worker_id  text        NOT NULL,
+    token_hash text        NOT NULL,
+    session_id text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    used_at    timestamptz,
+    revoked_at timestamptz,
+    PRIMARY KEY (worker_id, token_hash)
+);
+
 -- Media registry (migration 0003) --
 
 CREATE TABLE media_records (

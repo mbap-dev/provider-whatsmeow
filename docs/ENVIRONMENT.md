@@ -87,6 +87,7 @@ Quando `API_AUTH_ENABLED=true`, todos os endpoints (exceto `/`, `/assets/*`, `/h
 
 - chamadas autenticadas por Basic Auth da UI (quando `UI_AUTH_*` estiver ativo) são aceitas sem Bearer extra para o frontend continuar funcional;
 - quando `API_AUTH_ALLOW_QUERY=true`, é aceito `?access_token=...`.
+- rotas públicas `/pair/{token}` e subrotas não exigem autenticação. O acesso é protegido pelo token aleatório do link seguro, armazenado somente como hash.
 
 ### Armazenamento de mídia (endpoints Cloud/UnoAPI)
 
@@ -154,7 +155,8 @@ Observações:
 - Esses overrides são persistidos em `SESSION_STORE/_session_overrides.json`.
 - O dashboard/API permite cadastro de múltiplos webhooks por sessão (com filtros de eventos), persistidos em `SESSION_STORE/_session_webhooks.json`.
 - Quando `POSTGRES_URL` está definido, todos esses metadados (atribuições, overrides, webhooks e templates) são persistidos no Postgres em vez dos arquivos JSON. No primeiro boot com banco vazio, o estado JSON existente é importado automaticamente (sem sobrescrever dados já presentes). As migrações de schema rodam embutidas no startup. O store de sessão do whatsmeow continua em SQLite por sessão.
-- Webhooks globais são persistidos junto com os demais metadados (`global_webhooks` no Postgres ou `_global_webhooks.json` em arquivo). O primeiro evento suportado é `session.disconnected`, enviado quando o WhatsMeow fecha, encerra ou substitui o stream de uma sessão. As rotas `/api/{version}/webhooks/global` exigem usuário `owner` quando o auth Postgres está ativo.
+- Webhooks globais são persistidos junto com os demais metadados (`global_webhooks` no Postgres ou `_global_webhooks.json` em arquivo). Eventos suportados: `session.disconnected`, enviado apenas em logout real, remoção do dispositivo, falha de login permanente ou restrição/banimento; e `session.offline`, enviado quando a instância permanece offline por 1 minuto após queda de socket ou falha persistente de keepalive. Quedas temporárias de socket e `stream_replaced` não disparam `session.disconnected`. As rotas `/api/{version}/webhooks/global` exigem usuário `owner` quando o auth Postgres está ativo.
+- Links públicos de conexão são persistidos como metadados (`session_pairing_links` no Postgres ou `_pairing_links.json` em arquivo). O link é gerado por `/api/{version}/sessions/{id}/pairing-link`, abre a página pública `/pair/{token}` sem autenticação e expira quando a conexão é concluída ou quando for revogado no painel.
 - Mensagens próprias da sessão (`fromMe`) dependem de `send_outgoing_messages` no webhook da sessão e podem sair em `messages[]` (padrão) ou `message_echoes` (`OUTGOING_MESSAGES_COEX=true`).
 
 ### Webhook de saída

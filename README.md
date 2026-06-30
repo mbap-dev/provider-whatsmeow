@@ -69,6 +69,7 @@ Rotas da SPA:
 - `/instances/{id}` — detalhe da instância
 - `/instances/{id}/config`, `/instances/{id}/webhooks`, `/instances/{id}/templates` — abas da instância
 - `/settings/users` e `/settings/webhooks` — configurações do owner
+- `/pair/{token}` — página pública para conexão por QR Code ou código de pareamento, sem autenticação
 
 Funcionalidades:
 
@@ -77,6 +78,7 @@ Funcionalidades:
 - listagem de sessões com filtros, busca e atualização automática
 - ações rápidas: `connect`, `reload`, `disconnect`, `delete`, `QR`
 - autenticação por `QR code` e geração de `código de pareamento` direto no inspetor da sessão
+- geração de link seguro público por instância para outra pessoa conectar por QR Code ou código de pareamento sem acessar o painel
 - envio rápido de mensagem de texto por sessão
 - atribuição e desatribuição de sessões ao worker atual
 - configuração por sessão via frontend/API, carregada automaticamente ao selecionar a sessão:
@@ -106,7 +108,9 @@ Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenti
 - Usuários `owner` podem usar a aba **Configurações** para cadastrar, editar e apagar usuários do dashboard e webhooks globais.
 - `owner` tem acesso a todas as instâncias. `admin` e `user` acessam apenas instâncias vinculadas pelo owner no cadastro/edição do usuário.
 - `admin` pode criar API Keys próprias. Essas chaves herdam o mesmo escopo de instâncias do usuário admin. `user` não cria API Keys.
-- Webhooks globais recebem eventos administrativos de todas as sessões do worker. O primeiro evento suportado é `session.disconnected`, emitido quando o WhatsMeow fecha, encerra ou substitui o stream de uma sessão.
+- Webhooks globais recebem eventos administrativos de todas as sessões do worker. Eventos suportados:
+  - `session.disconnected`: emitido somente quando há logout real, remoção do dispositivo, falha de login permanente ou restrição/banimento. Quedas temporárias de socket não disparam esse evento.
+  - `session.offline`: emitido quando a instância permanece offline por 1 minuto após queda de socket ou falha persistente de keepalive.
 - **API Keys** com prefixo `wm_` são geradas no dashboard e aceitas como `Authorization: Bearer wm_...` para uso machine-to-machine. O valor bruto é exibido apenas uma vez na criação.
 - `AUTH_SECURE_COOKIE=true` é obrigatório em produção (TLS). Em dev local, use `false`.
 - Quando `POSTGRES_URL` não está definido, o dashboard funciona normalmente sem login (retrocompatível).
@@ -131,6 +135,9 @@ Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenti
 - `POST /api/{version}/sessions`
 - `DELETE /api/{version}/sessions/{id}`
 - `POST /api/{version}/sessions/{id}/pairing-code`
+- `GET /api/{version}/sessions/{id}/pairing-link` — status do link seguro ativo
+- `POST /api/{version}/sessions/{id}/pairing-link` — gera novo link seguro público, revogando link ativo anterior
+- `DELETE /api/{version}/sessions/{id}/pairing-link` — expira links seguros ativos da instância
 - `POST /api/{version}/sessions/{id}/messages`
 - `POST /api/{version}/sessions/{id}/media`
 - `GET /api/{version}/sessions/{id}/media/{media_id}`
@@ -161,6 +168,15 @@ Compatibilidade:
   - `GET /{version}/{phone_number_id}/{media_id}` (metadados + URL)
   - `GET /{version}/{media_id}?phone_number_id={phone_number_id}` (compatível com o fluxo usado pelo Chatwoot/UnoAPI)
   - `GET /{version}/download/{phone_number_id}/{file}` (download/stream)
+
+### Link público de conexão
+
+- `GET /pair/{token}` — página pública para conectar a instância por QR Code ou código de pareamento.
+- `GET /pair/{token}/status` — status do link e da conexão.
+- `GET /pair/{token}/qr` — PNG do QR Code atual.
+- `POST /pair/{token}/code` — gera código de pareamento usando o próprio ID da instância como número.
+
+O token bruto é exibido apenas na URL retornada ao gerar o link; o storage mantém somente hash. O link deixa de funcionar quando a conexão é concluída ou quando for expirado no painel autenticado.
 
 ### Auth (requer `POSTGRES_URL`)
 

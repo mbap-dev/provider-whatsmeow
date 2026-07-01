@@ -60,6 +60,8 @@ type ClientManager struct {
 
 	offlineMu       sync.Mutex
 	offlineMonitors map[string]*offlineMonitor
+	passkeyMu       sync.RWMutex
+	passkeyRequests map[string]PasskeyRequest
 
 	// inbound filters
 	ignoreStatusBroadcast bool
@@ -128,10 +130,19 @@ type sessionOverrides struct {
 }
 
 type offlineMonitor struct {
-	cancel     context.CancelFunc
-	generation int64
-	reason     string
+	cancel      context.CancelFunc
+	generation  int64
+	reason      string
 	lastSuccess time.Time
+}
+
+type PasskeyRequest struct {
+	Required             bool      `json:"required"`
+	RequestOptionsJSON   string    `json:"request_options_json,omitempty"`
+	ConfirmationRequired bool      `json:"confirmation_required,omitempty"`
+	ConfirmationCode     string    `json:"confirmation_code,omitempty"`
+	SkipHandoffUX        bool      `json:"skip_handoff_ux,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
 }
 
 type ManagerOptions struct {
@@ -189,6 +200,7 @@ var (
 	ErrMissingPhone      = errors.New("missing phone")
 	ErrAlreadyPaired     = errors.New("session already paired")
 	ErrPairingNotReady   = errors.New("pairing setup not ready yet")
+	ErrMissingPasskey    = errors.New("missing passkey assertion")
 )
 
 func NewClientManager(opts ManagerOptions) *ClientManager {
@@ -293,6 +305,7 @@ func NewClientManager(opts ManagerOptions) *ClientManager {
 		pnCache:               make(map[string]pnCacheItem),
 		alwaysOnlineEvery:     time.Minute,
 		offlineMonitors:       make(map[string]*offlineMonitor),
+		passkeyRequests:       make(map[string]PasskeyRequest),
 		ignoreStatusBroadcast: opts.IgnoreStatusBroadcast,
 		ignoreNewsletters:     opts.IgnoreNewsletters,
 		outgoingMessagesCoex:  opts.OutgoingMessagesCoex,
@@ -923,6 +936,7 @@ func (m *ClientManager) Connect(sessionID string) (*whatsmeow.Client, error) {
 	}
 
 	// Mark status as connecting
+	m.clearPasskeyRequest(sessionID)
 	status.Set(sessionID, "connecting")
 
 	ctx := context.Background()
@@ -1198,10 +1212,11 @@ func (m *ClientManager) Reload(sessionID string) error {
 
 // SessionStatus expõe estado básico da sessão
 type SessionStatus struct {
-	SessionID string `json:"session_id"`
-	Connected bool   `json:"connected"`
-	LoggedIn  bool   `json:"logged_in"`
-	DeviceJID string `json:"device_jid,omitempty"`
+	SessionID string         `json:"session_id"`
+	Connected bool           `json:"connected"`
+	LoggedIn  bool           `json:"logged_in"`
+	DeviceJID string         `json:"device_jid,omitempty"`
+	Passkey   PasskeyRequest `json:"passkey,omitempty"`
 }
 
 type SessionOverview struct {
@@ -1212,6 +1227,7 @@ type SessionOverview struct {
 	LoggedIn           bool   `json:"logged_in"`
 	DeviceJID          string `json:"device_jid,omitempty"`
 	HasQR              bool   `json:"has_qr"`
+	PasskeyRequired    bool   `json:"passkey_required,omitempty"`
 	WhatsAppWebVersion string `json:"whatsapp_web_version,omitempty"`
 }
 
@@ -1231,6 +1247,7 @@ func (m *ClientManager) Status(sessionID string) (SessionStatus, error) {
 		SessionID: sessionID,
 		Connected: cli.IsConnected(),
 		LoggedIn:  cli.IsLoggedIn(),
+		Passkey:   m.PasskeyRequest(sessionID),
 	}
 	if cli.Store != nil && cli.Store.ID != nil {
 		st.DeviceJID = cli.Store.ID.String()
@@ -1284,10 +1301,11 @@ func (m *ClientManager) ListSessions() []SessionOverview {
 	out := make([]SessionOverview, 0, len(ids))
 	for _, sid := range ids {
 		ov := SessionOverview{
-			SessionID: sid,
-			Assigned:  m.IsAssignedSession(sid),
-			Status:    status.Get(sid),
-			HasQR:     hasQR(sid),
+			SessionID:       sid,
+			Assigned:        m.IsAssignedSession(sid),
+			Status:          status.Get(sid),
+			HasQR:           hasQR(sid),
+			PasskeyRequired: m.PasskeyRequest(sid).Required,
 		}
 		if ent := active[sid]; ent != nil && ent.Client != nil {
 			ov.Connected = ent.Client.IsConnected()

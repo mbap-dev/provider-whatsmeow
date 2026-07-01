@@ -71,6 +71,9 @@ type Client struct {
 
 	isLoggedIn            atomic.Bool
 	paired                atomic.Bool
+	passkeyLinkingCache   atomic.Pointer[passkeyLinkingCache]
+	passkeyHandoffKey     atomic.Pointer[passkeyHandoffKey]
+	passkeySkipHandoffUX  atomic.Bool
 	expectedDisconnect    *exsync.Event
 	forceAutoReconnect    atomic.Bool
 	EnableAutoReconnect   bool

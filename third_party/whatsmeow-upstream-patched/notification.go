@@ -498,6 +498,10 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 		cli.handlePrivacyTokenNotification(ctx, node)
 	case "link_code_companion_reg":
 		go cli.tryHandleCodePairNotification(ctx, node)
+	case "passkey_prologue_request":
+		cli.handlePasskeyNotification(ctx, node)
+	case "crsc_continuation":
+		go cli.tryHandlePasskeyContinuationNotification(ctx, node)
 	case "newsletter":
 		cli.handleNewsletterNotification(ctx, node)
 	case "mex":

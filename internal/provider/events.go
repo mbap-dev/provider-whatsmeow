@@ -146,13 +146,38 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 	client.AddEventHandler(func(evt interface{}) {
 		switch e := evt.(type) {
 		// Connection lifecycle → Redis status
+		case *events.QR:
+			m.clearPasskeyRequest(sessionID)
 		case *events.Connected:
+			m.clearPasskeyRequest(sessionID)
 			status.Set(sessionID, "online")
 			m.cancelSessionOfflineMonitor(sessionID)
 			// Start always-online presence refresher if enabled
 			m.maybeStartAlwaysOnline(sessionID, client)
 		case *events.PairSuccess:
+			m.clearPasskeyRequest(sessionID)
 			m.MarkPairingLinksUsed(context.Background(), sessionID)
+			log.WithSession(sessionID).Info("evt=pair_success jid=%s lid=%s platform=%s business_name=%q", e.ID.String(), e.LID.String(), e.Platform, e.BusinessName)
+		case *events.PairError:
+			log.WithSession(sessionID).Error("evt=pair_error jid=%s lid=%s platform=%s business_name=%q err=%v", e.ID.String(), e.LID.String(), e.Platform, e.BusinessName, e.Error)
+		case *events.PairPasskeyRequest:
+			m.setPasskeyRequest(sessionID, e.PublicKey)
+			status.Set(sessionID, "passkey_required")
+			log.WithSession(sessionID).Info("evt=passkey_request")
+		case *events.PairPasskeyConfirmation:
+			m.setPasskeyConfirmation(sessionID, e.Code, e.SkipHandoffUX)
+			log.WithSession(sessionID).Info("evt=passkey_confirmation code=%s skip_handoff_ux=%t", e.Code, e.SkipHandoffUX)
+			if e.SkipHandoffUX {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if err := m.ConfirmPasskey(ctx, sessionID); err != nil {
+						log.WithSession(sessionID).Error("evt=passkey_confirmation_auto_failed err=%v", err)
+					}
+				}()
+			}
+		case *events.PairPasskeyError:
+			log.WithSession(sessionID).Error("evt=passkey_error continuation=%t err=%v", e.Continuation, e.Error)
 		case *events.Disconnected:
 			status.Set(sessionID, "offline")
 			m.stopAlwaysOnline(sessionID)
@@ -162,14 +187,17 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		case *events.KeepAliveRestored:
 			m.cancelSessionOfflineMonitor(sessionID)
 		case *events.LoggedOut:
+			m.clearPasskeyRequest(sessionID)
 			status.Set(sessionID, "disconnected")
 			m.stopAlwaysOnline(sessionID)
 			m.cancelSessionOfflineMonitor(sessionID)
 		case *events.StreamReplaced:
+			m.clearPasskeyRequest(sessionID)
 			status.Set(sessionID, "restart_required")
 			m.stopAlwaysOnline(sessionID)
 			m.cancelSessionOfflineMonitor(sessionID)
 		case *events.TemporaryBan:
+			m.clearPasskeyRequest(sessionID)
 			status.Set(sessionID, "restricted")
 			m.stopAlwaysOnline(sessionID)
 			m.cancelSessionOfflineMonitor(sessionID)

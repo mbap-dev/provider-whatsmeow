@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store"
 	"google.golang.org/protobuf/proto"
 )
@@ -22,6 +25,13 @@ var (
 	whatsAppWebVersionCached   *store.WAVersionContainer
 	whatsAppWebVersionCachedAt time.Time
 	whatsAppWebVersionCacheTTL = time.Hour
+	// 2.3000.1042462245 is currently advertised by web.whatsapp.com, but is
+	// rejected by the websocket with "client outdated (405)" with this schema.
+	// Fall back to the known version bundled with the patched tulir/webauthn
+	// branch so the WA version matches the protocol payload being sent.
+	whatsAppWebVersionRejectedFallbacks = map[uint32]store.WAVersionContainer{
+		1042462245: {2, 3000, 1042386815},
+	}
 	whatsAppWebVersionPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`"client_revision":\s*(\d+)`),
 		regexp.MustCompile(`\\"client_revision\\":\s*(\d+)`),
@@ -81,6 +91,10 @@ func fetchLatestWhatsAppWebVersion(ctx context.Context, httpClient *http.Client)
 }
 
 func fetchLatestWhatsAppWebVersionCached(ctx context.Context, httpClient *http.Client, useCache bool) (store.WAVersionContainer, error) {
+	if override, ok, err := whatsAppWebVersionOverride(); ok || err != nil {
+		return override, err
+	}
+
 	whatsAppWebVersionCacheMu.Lock()
 	if useCache && whatsAppWebVersionCached != nil && time.Since(whatsAppWebVersionCachedAt) < whatsAppWebVersionCacheTTL {
 		cached := *whatsAppWebVersionCached
@@ -89,11 +103,74 @@ func fetchLatestWhatsAppWebVersionCached(ctx context.Context, httpClient *http.C
 	}
 	whatsAppWebVersionCacheMu.Unlock()
 
+	version, err := fetchLatestWhatsAppWebVersionFromHTML(ctx, httpClient)
+	if err == nil {
+		version = normalizeWhatsAppWebVersion(version)
+		whatsAppWebVersionCacheMu.Lock()
+		whatsAppWebVersionCached = &version
+		whatsAppWebVersionCachedAt = time.Now()
+		whatsAppWebVersionCacheMu.Unlock()
+		return version, nil
+	}
+
+	version, fallbackErr := fetchLatestWhatsAppWebVersionFromServiceWorker(ctx, httpClient)
+	if fallbackErr != nil {
+		return store.WAVersionContainer{}, fmt.Errorf("fetch WhatsApp Web version from HTML: %w; service worker fallback: %w", err, fallbackErr)
+	}
+	version = normalizeWhatsAppWebVersion(version)
+
+	whatsAppWebVersionCacheMu.Lock()
+	whatsAppWebVersionCached = &version
+	whatsAppWebVersionCachedAt = time.Now()
+	whatsAppWebVersionCacheMu.Unlock()
+
+	return version, nil
+}
+
+func whatsAppWebVersionOverride() (store.WAVersionContainer, bool, error) {
+	raw := strings.TrimSpace(os.Getenv("WHATSAPP_WEB_VERSION"))
+	if raw == "" {
+		raw = strings.TrimSpace(os.Getenv("WA_WEB_VERSION"))
+	}
+	if raw == "" {
+		return store.WAVersionContainer{}, false, nil
+	}
+	version, err := store.ParseVersion(raw)
+	if err != nil {
+		return store.WAVersionContainer{}, true, fmt.Errorf("invalid WHATSAPP_WEB_VERSION %q: %w", raw, err)
+	}
+	return version, true, nil
+}
+
+func normalizeWhatsAppWebVersion(version store.WAVersionContainer) store.WAVersionContainer {
+	if fallback, rejected := whatsAppWebVersionRejectedFallbacks[version[2]]; rejected {
+		return fallback
+	}
+	return version
+}
+
+func fetchLatestWhatsAppWebVersionFromHTML(ctx context.Context, httpClient *http.Client) (store.WAVersionContainer, error) {
+	if httpClient == nil {
+		httpClient = &http.Client{
+			Transport: &http.Transport{Proxy: proxyFuncFromConfigOrEnvironment},
+		}
+	}
+	latest, err := whatsmeow.GetLatestVersion(ctx, httpClient)
+	if err != nil {
+		return store.WAVersionContainer{}, err
+	}
+	if latest == nil || latest.IsZero() {
+		return store.WAVersionContainer{}, fmt.Errorf("empty WhatsApp Web version from HTML")
+	}
+	return *latest, nil
+}
+
+func fetchLatestWhatsAppWebVersionFromServiceWorker(ctx context.Context, httpClient *http.Client) (store.WAVersionContainer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, whatsAppWebServiceWorkerURL, nil)
 	if err != nil {
 		return store.WAVersionContainer{}, fmt.Errorf("prepare WhatsApp Web version request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
 
 	if httpClient == nil {
 		httpClient = &http.Client{
@@ -118,12 +195,6 @@ func fetchLatestWhatsAppWebVersionCached(ctx context.Context, httpClient *http.C
 	if err != nil {
 		return store.WAVersionContainer{}, err
 	}
-
-	whatsAppWebVersionCacheMu.Lock()
-	whatsAppWebVersionCached = &version
-	whatsAppWebVersionCachedAt = time.Now()
-	whatsAppWebVersionCacheMu.Unlock()
-
 	return version, nil
 }
 

@@ -1,9 +1,11 @@
 package http
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -27,6 +29,9 @@ import (
 	"your.org/provider-whatsmeow/internal/provider"
 	"your.org/provider-whatsmeow/internal/store/pg/pgdb"
 )
+
+//go:embed passkey_extension/*
+var passkeyExtensionFS embed.FS
 
 // Server encapsulates the HTTP API surface exposed by the
 // adapter.  It holds references to the configuration, the
@@ -72,6 +77,10 @@ func NewServer(cfg *config.Config, provider *provider.ClientManager, consumer *a
 	router.HandleFunc("/pair/{token}/status", s.handlePublicPairingStatus).Methods(http.MethodGet)
 	router.HandleFunc("/pair/{token}/qr", s.handlePublicPairingQR).Methods(http.MethodGet)
 	router.HandleFunc("/pair/{token}/code", s.handlePublicPairingCode).Methods(http.MethodPost)
+	router.HandleFunc("/pair/{token}/extension.zip", s.handlePublicPairingExtension).Methods(http.MethodGet)
+	router.HandleFunc("/pair/{token}/passkey-prologue", s.handlePublicPairingPasskeyPrologue).Methods(http.MethodPost)
+	router.HandleFunc("/pair/{token}/passkey-test", s.handlePublicPairingPasskeyTest).Methods(http.MethodPost)
+	router.HandleFunc("/pair/{token}/passkey-confirmation", s.handlePublicPairingPasskeyConfirmation).Methods(http.MethodPost)
 
 	// Session management endpoints
 	router.HandleFunc("/sessions/{id}/connect", s.handleConnect).Methods(http.MethodPost)
@@ -389,6 +398,8 @@ func (s *Server) registerVersionedAPIRoutes(router *mux.Router, base string) {
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleUpdateSessionConfig).Methods(http.MethodPut)
 	router.HandleFunc(base+"/sessions/{id}/config", s.handleClearSessionConfig).Methods(http.MethodDelete)
 	router.HandleFunc(base+"/sessions/{id}/pairing-code", s.handlePairingCode).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/passkey-prologue", s.handlePasskeyPrologue).Methods(http.MethodPost)
+	router.HandleFunc(base+"/sessions/{id}/passkey-confirmation", s.handlePasskeyConfirmation).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleGetPairingLink).Methods(http.MethodGet)
 	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleCreatePairingLink).Methods(http.MethodPost)
 	router.HandleFunc(base+"/sessions/{id}/pairing-link", s.handleRevokePairingLink).Methods(http.MethodDelete)
@@ -640,6 +651,12 @@ type pairingCodeRequest struct {
 	Phone string `json:"phone"`
 }
 
+type passkeyPrologueRequest struct {
+	CredentialID        string          `json:"credential_id"`
+	WebAuthnAssertion   json.RawMessage `json:"webauthn_assertion"`
+	PairingHandoffProof []byte          `json:"pairing_handoff_proof,omitempty"`
+}
+
 func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
 	if sessionID == "" {
@@ -680,6 +697,82 @@ func (s *Server) handlePairingCode(w http.ResponseWriter, r *http.Request) {
 		"session_id":   sessionID,
 		"phone":        strings.TrimSpace(req.Phone),
 		"pairing_code": code,
+	})
+}
+
+func (s *Server) handlePasskeyPrologue(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
+	var req passkeyPrologueRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	if strings.TrimSpace(req.CredentialID) == "" && len(req.WebAuthnAssertion) > 0 {
+		var assertion struct {
+			ID string `json:"id"`
+		}
+		_ = json.Unmarshal(req.WebAuthnAssertion, &assertion)
+		req.CredentialID = assertion.ID
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	err := s.provider.SubmitPasskeyPrologue(ctx, sessionID, provider.SubmitPasskeyPrologueRequest{
+		CredentialID:        req.CredentialID,
+		WebAuthnAssertion:   req.WebAuthnAssertion,
+		PairingHandoffProof: req.PairingHandoffProof,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID),
+			errors.Is(err, provider.ErrMissingPasskey),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"submitted":  true,
+	})
+}
+
+func (s *Server) handlePasskeyConfirmation(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(mux.Vars(r)["id"])
+	if sessionID == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing session id")
+		return
+	}
+	if !s.requireSessionAccess(w, r, sessionID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.provider.ConfirmPasskey(ctx, sessionID); err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"confirmed":  true,
 	})
 }
 
@@ -1780,9 +1873,11 @@ func (s *Server) handlePublicPairingPage(w http.ResponseWriter, r *http.Request)
     .qr { display: grid; place-items: center; min-height: 19rem; border: 1px dashed rgba(255,255,255,.18); border-radius: 12px; background: #0d1115; }
     img { width: min(16rem, 78vw); height: min(16rem, 78vw); image-rendering: pixelated; border-radius: 8px; background: white; padding: .75rem; }
     button { width: 100%%; height: 2.75rem; border: 0; border-radius: 10px; background: #23d18b; color: #07120d; font-weight: 700; cursor: pointer; }
+    a.button { display: grid; place-items: center; width: 100%%; height: 2.75rem; border-radius: 10px; background: #d6e8ff; color: #07121f; font-weight: 700; text-decoration: none; margin-top: .7rem; }
     button:disabled { opacity: .55; cursor: not-allowed; }
     .code { margin-top: .75rem; padding: .85rem; border-radius: 10px; background: rgba(255,255,255,.06); text-align: center; font: 700 1.6rem ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .22em; }
     .muted { font-size: .85rem; }
+    .steps { margin: .65rem 0 0; padding-left: 1.1rem; color: #aebbc4; line-height: 1.45; font-size: .85rem; }
   </style>
 </head>
 <body>
@@ -1801,6 +1896,17 @@ func (s *Server) handlePublicPairingPage(w http.ResponseWriter, r *http.Request)
       <div style="margin-top:1rem">
         <button id="codeButton" type="button">Gerar código de pareamento</button>
         <div id="code" class="code" hidden></div>
+      </div>
+      <div style="margin-top:1rem">
+        <a class="button" href="/pair/%s/extension.zip">Baixar extensão para passkey</a>
+        <ol class="steps">
+          <li>Descompacte o ZIP.</li>
+          <li>No Chrome, abra <strong>chrome://extensions</strong> e ative o modo do desenvolvedor.</li>
+          <li>Clique em <strong>Carregar sem compactação</strong> e selecione a pasta descompactada.</li>
+          <li>Recarregue este link para a extensão salvar o token atual.</li>
+          <li>Abra <strong>web.whatsapp.com</strong> e use o widget Whatsmeow Passkey.</li>
+        </ol>
+        <p class="muted">Depois de instalada, a mesma extensão serve para novos links deste provider; basta abrir o novo link de conexão.</p>
       </div>
     </section>
   </main>
@@ -1836,6 +1942,33 @@ func (s *Server) handlePublicPairingPage(w http.ResponseWriter, r *http.Request)
         codeButton.disabled = true;
         return;
       }
+      if (payload.passkey && payload.passkey.confirmation_required) {
+        statusEl.textContent = 'Confirme o código no celular.';
+        qr.hidden = true;
+        waiting.hidden = false;
+        waiting.innerHTML = 'Código de confirmação: <strong>' + payload.passkey.confirmation_code + '</strong><br><button id="passkeyConfirm" type="button">Confirmar código</button>';
+        const passkeyConfirm = document.getElementById('passkeyConfirm');
+        passkeyConfirm.addEventListener('click', async () => {
+          passkeyConfirm.disabled = true;
+          try {
+            const res = await fetch('/pair/' + encodeURIComponent(token) + '/passkey-confirmation', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Falha ao confirmar passkey.');
+            waiting.textContent = 'Confirmação enviada. Finalizando conexão...';
+          } catch (error) {
+            statusEl.textContent = error.message;
+            passkeyConfirm.disabled = false;
+          }
+        }, { once: true });
+        return;
+      }
+      if (payload.passkey_required) {
+        statusEl.textContent = 'Aguardando chave de acesso.';
+        qr.hidden = true;
+        waiting.hidden = false;
+        waiting.textContent = 'Continue a etapa de chave de acesso no navegador compatível. Esta página já detectou que o WhatsApp solicitou passkey.';
+        return;
+      }
       statusEl.textContent = 'Aguardando leitura do QR Code.';
       qr.src = '/pair/' + encodeURIComponent(token) + '/qr?ts=' + Date.now();
       qr.hidden = false;
@@ -1863,7 +1996,7 @@ func (s *Server) handlePublicPairingPage(w http.ResponseWriter, r *http.Request)
     setInterval(refreshStatus, 3000);
   </script>
 </body>
-</html>`, template.HTMLEscapeString(sessionID), template.HTMLEscapeString(statusText), string(tokenJSON))
+</html>`, template.HTMLEscapeString(sessionID), template.HTMLEscapeString(statusText), template.URLQueryEscaper(token), string(tokenJSON))
 }
 
 func (s *Server) handlePublicPairingStatus(w http.ResponseWriter, r *http.Request) {
@@ -1875,19 +2008,23 @@ func (s *Server) handlePublicPairingStatus(w http.ResponseWriter, r *http.Reques
 	}
 	connected := false
 	loggedIn := false
+	passkey := provider.PasskeyRequest{}
 	if st, err := s.provider.Status(link.SessionID); err == nil {
 		connected = st.Connected
 		loggedIn = st.LoggedIn
+		passkey = st.Passkey
 		if loggedIn {
 			s.provider.MarkPairingLinksUsed(r.Context(), link.SessionID)
 			link, _ = s.provider.LookupPairingLink(token)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"session_id":  link.SessionID,
-		"link_status": link.Status(),
-		"connected":   connected,
-		"logged_in":   loggedIn,
+		"session_id":       link.SessionID,
+		"link_status":      link.Status(),
+		"connected":        connected,
+		"logged_in":        loggedIn,
+		"passkey_required": passkey.Required,
+		"passkey":          passkey,
 	})
 }
 
@@ -1945,6 +2082,209 @@ func (s *Server) handlePublicPairingCode(w http.ResponseWriter, r *http.Request)
 		"session_id":   link.SessionID,
 		"phone":        link.SessionID,
 		"pairing_code": code,
+	})
+}
+
+func (s *Server) handlePublicPairingExtension(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	providerURL := strings.TrimRight(requestBaseURL(r), "/")
+	hostPermission := providerURL + "/*"
+	configJSON, _ := json.MarshalIndent(map[string]any{
+		"provider_url": providerURL,
+		"session_id":   link.SessionID,
+	}, "", "  ")
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	files := []string{"manifest.json", "background.js", "content.js", "inject.js", "pair-page.js"}
+	for _, name := range files {
+		data, err := passkeyExtensionFS.ReadFile("passkey_extension/" + name)
+		if err != nil {
+			_ = zw.Close()
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if name == "manifest.json" {
+			data = bytes.ReplaceAll(data, []byte("__PROVIDER_MATCH__"), []byte(hostPermission))
+		}
+		fw, err := zw.Create("whatsmeow-passkey-extension/" + name)
+		if err != nil {
+			_ = zw.Close()
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := fw.Write(data); err != nil {
+			_ = zw.Close()
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	fw, err := zw.Create("whatsmeow-passkey-extension/config.json")
+	if err != nil {
+		_ = zw.Close()
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := fw.Write(configJSON); err != nil {
+		_ = zw.Close()
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	readme := fmt.Sprintf(`Whatsmeow Passkey Bridge
+
+Esta extensão já está configurada para este provider:
+- Provider: %s
+- Instância atual: %s
+
+Instalação:
+1. Descompacte este ZIP.
+2. Abra chrome://extensions no Chrome.
+3. Ative "Modo do desenvolvedor".
+4. Clique em "Carregar sem compactação".
+5. Selecione a pasta "whatsmeow-passkey-extension".
+6. Abra ou recarregue este link de pareamento para salvar o token atual.
+7. Abra https://web.whatsapp.com/.
+
+Uso:
+- A extensão detecta automaticamente o token quando você abre qualquer /pair/{token} deste provider.
+- Você também pode colar o link/token no widget do WhatsApp Web.
+- "Testar envio com minha passkey" usa uma passkey real da sua carteira e envia para /pair/{token}/passkey-test.
+- "Assinar desafio da conexão" só habilita quando o provider estiver aguardando passkey real.
+
+Observação:
+O Chrome não permite instalação silenciosa de extensões fora da Chrome Web Store.
+`, providerURL, link.SessionID)
+	fw, err = zw.Create("whatsmeow-passkey-extension/README.txt")
+	if err != nil {
+		_ = zw.Close()
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := fw.Write([]byte(readme)); err != nil {
+		_ = zw.Close()
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := zw.Close(); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="whatsmeow-passkey-extension.zip"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) handlePublicPairingPasskeyPrologue(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var req passkeyPrologueRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.provider.SubmitPasskeyPrologue(ctx, link.SessionID, provider.SubmitPasskeyPrologueRequest{
+		CredentialID:      req.CredentialID,
+		WebAuthnAssertion: req.WebAuthnAssertion,
+	}); err != nil {
+		switch {
+		case errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrMissingPasskey),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": link.SessionID,
+		"submitted":  true,
+	})
+}
+
+func (s *Server) handlePublicPairingPasskeyTest(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	var req passkeyPrologueRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid json payload")
+		return
+	}
+	if len(req.WebAuthnAssertion) == 0 || !json.Valid(req.WebAuthnAssertion) {
+		writeJSONError(w, http.StatusBadRequest, "missing passkey assertion")
+		return
+	}
+	var assertion struct {
+		ID       string `json:"id"`
+		RawID    string `json:"rawId"`
+		Type     string `json:"type"`
+		Response struct {
+			ClientDataJSON    string  `json:"clientDataJSON"`
+			AuthenticatorData string  `json:"authenticatorData"`
+			Signature         string  `json:"signature"`
+			UserHandle        *string `json:"userHandle"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(req.WebAuthnAssertion, &assertion); err != nil ||
+		strings.TrimSpace(assertion.ID) == "" ||
+		strings.TrimSpace(assertion.RawID) == "" ||
+		strings.TrimSpace(assertion.Response.ClientDataJSON) == "" ||
+		strings.TrimSpace(assertion.Response.AuthenticatorData) == "" ||
+		strings.TrimSpace(assertion.Response.Signature) == "" {
+		writeJSONError(w, http.StatusBadRequest, "invalid passkey assertion")
+		return
+	}
+	ilog.WithSession(link.SessionID).Info("evt=passkey_extension_test assertion_len=%d raw_id_len=%d credential_id_len=%d", len(req.WebAuthnAssertion), len(assertion.RawID), len(assertion.ID))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id":     link.SessionID,
+		"received":       true,
+		"assertion_len":  len(req.WebAuthnAssertion),
+		"credential_len": len(assertion.ID),
+		"raw_id_len":     len(assertion.RawID),
+		"type":           assertion.Type,
+	})
+}
+
+func (s *Server) handlePublicPairingPasskeyConfirmation(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(mux.Vars(r)["token"])
+	link, err := s.provider.ResolvePairingLink(token)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := s.provider.ConfirmPasskey(ctx, link.SessionID); err != nil {
+		switch {
+		case errors.Is(err, provider.ErrMissingSessionID),
+			errors.Is(err, provider.ErrInvalidSessionID),
+			errors.Is(err, provider.ErrReservedSessionID),
+			errors.Is(err, provider.ErrPairingNotReady):
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": link.SessionID,
+		"confirmed":  true,
 	})
 }
 

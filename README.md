@@ -128,6 +128,9 @@ Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenti
 - `GET /sessions/{id}/status`
 - `GET /sessions/{id}/resolve?to=VALUE`
 
+`GET /sessions/{id}/status` retorna também `passkey.required` quando o WhatsApp solicita a etapa extra de chave de acesso após a leitura do QR Code. Se o WhatsApp exigir confirmação visual, o status também traz `passkey.confirmation_required=true` e `passkey.confirmation_code`.
+O status público do link (`GET /pair/{token}/status`) expõe `passkey_required` e `passkey` para a página mostrar que a conexão está aguardando a etapa de passkey ou a confirmação do código.
+
 ### API standalone
 
 - `GET /api/{version}/worker`
@@ -135,6 +138,8 @@ Quando `POSTGRES_URL` está configurado, o dashboard ativa um sistema de autenti
 - `POST /api/{version}/sessions`
 - `DELETE /api/{version}/sessions/{id}`
 - `POST /api/{version}/sessions/{id}/pairing-code`
+- `POST /api/{version}/sessions/{id}/passkey-prologue` — endpoint autenticado experimental para enviar a assertion WebAuthn quando o WhatsApp exigir passkey após o QR
+- `POST /api/{version}/sessions/{id}/passkey-confirmation` — confirma a etapa visual da passkey quando `passkey.confirmation_required=true`
 - `GET /api/{version}/sessions/{id}/pairing-link` — status do link seguro ativo
 - `POST /api/{version}/sessions/{id}/pairing-link` — gera novo link seguro público, revogando link ativo anterior
 - `DELETE /api/{version}/sessions/{id}/pairing-link` — expira links seguros ativos da instância
@@ -175,8 +180,45 @@ Compatibilidade:
 - `GET /pair/{token}/status` — status do link e da conexão.
 - `GET /pair/{token}/qr` — PNG do QR Code atual.
 - `POST /pair/{token}/code` — gera código de pareamento usando o próprio ID da instância como número.
+- `POST /pair/{token}/passkey-confirmation` — confirma, sem autenticação adicional, o código exibido no link seguro quando a passkey exigir confirmação visual.
 
 O token bruto é exibido apenas na URL retornada ao gerar o link; o storage mantém somente hash. O link deixa de funcionar quando a conexão é concluída ou quando for expirado no painel autenticado.
+
+Quando o WhatsApp exigir passkey após o QR, `GET /sessions/{id}/status` e `GET /pair/{token}/status` indicam `passkey.required=true`. O provider usa o fluxo oficial do `whatsmeow` (`PairPasskeyRequest`, `SendPasskeyResponse`, `PairPasskeyConfirmation` e `SendPasskeyConfirmation`). O endpoint experimental `POST /api/{version}/sessions/{id}/passkey-prologue` aceita:
+
+```json
+{
+  "credential_id": "PublicKeyCredential.id",
+  "webauthn_assertion": {
+    "id": "PublicKeyCredential.id",
+    "rawId": "base64url",
+    "type": "public-key",
+    "response": {
+      "clientDataJSON": "base64url",
+      "authenticatorData": "base64url",
+      "signature": "base64url",
+      "userHandle": null
+    }
+  }
+}
+```
+
+Esse endpoint é autenticado e existe para depuração/integração controlada. Uma página pública hospedada fora de `whatsapp.com` normalmente não consegue gerar essa assertion porque o WebAuthn recebido usa `rpId: "whatsapp.com"`.
+Quando `PairPasskeyConfirmation.SkipHandoffUX=true`, o provider confirma automaticamente. Quando for `false`, a página pública do link seguro exibe `passkey.confirmation_code` e chama `/pair/{token}/passkey-confirmation` após a pessoa confirmar que o código bate com o celular.
+
+Plano da extensão Chrome:
+
+- Rodar em `https://web.whatsapp.com/*`, pois a passkey usa `rpId: "whatsapp.com"`.
+- Receber do provider o `passkey.request_options_json` da instância em pareamento.
+- Chamar `navigator.credentials.get({ publicKey })` dentro do contexto do WhatsApp Web.
+- Enviar a assertion para `/api/{version}/sessions/{id}/passkey-prologue`.
+- Se o status retornar `passkey.confirmation_required=true`, orientar a pessoa a confirmar o código no link seguro ou chamar o endpoint de confirmação após validação explícita.
+
+A página pública `/pair/{token}` também oferece `Baixar extensão para passkey`, que gera `/pair/{token}/extension.zip` com `config.json` apontando para o provider atual. A extensão deve ser descompactada e carregada manualmente em `chrome://extensions` com modo desenvolvedor ativo. Instalação silenciosa fora da Chrome Web Store não é permitida pelo Chrome.
+
+Depois de instalada, a extensão é reutilizável para novos links do mesmo provider: ao abrir qualquer `/pair/{token}`, um content script salva o token atual em `chrome.storage.local`; no `web.whatsapp.com`, o widget lê esse token salvo. Se o token não for detectado automaticamente, o widget permite colar o link ou token manualmente.
+
+Para testar o transporte sem uma conexão WhatsApp válida, a extensão tem o botão `Testar envio com minha passkey`. Ele chama WebAuthn em `web.whatsapp.com` e envia a assertion para `/pair/{token}/passkey-test` usando o token salvo; o provider apenas valida o formato e registra `evt=passkey_extension_test`, sem tentar concluir pareamento.
 
 ### Auth (requer `POSTGRES_URL`)
 

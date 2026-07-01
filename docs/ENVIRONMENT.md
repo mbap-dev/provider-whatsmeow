@@ -26,6 +26,7 @@ Este documento detalha todas as variáveis suportadas pelo `provider-whatsmeow`,
 | `POSTGRES_URL` | string | `""` | Postgres opcional para metadados (atribuições, overrides, webhooks, templates). Vazio = arquivos JSON em `SESSION_STORE`. Aceita `DATABASE_URL` como alias. |
 | `LOG_LEVEL` | string | `error` | Nível de log (`error`, `info`, `debug`). |
 | `WHATSMEOW_LOG_LEVEL` | string | `INFO` | Nível do logger interno do whatsmeow (`ERROR`, `WARN`, `INFO`, `DEBUG`), separado de `LOG_LEVEL`. |
+| `WHATSAPP_WEB_VERSION` | string | auto | Versão WhatsApp Web forçada, no formato `2.3000.x`. Use apenas quando a versão anunciada pelo WhatsApp for rejeitada pelo websocket. Alias: `WA_WEB_VERSION`. |
 | `UI_ENABLED` | bool | `true` | Habilita dashboard web em `/`. |
 | `UI_TITLE` | string | `WhatsMeow Control Center` | Título exibido no dashboard. |
 | `UI_AUTH_ENABLED` | bool | `false` (ou `true` se `UI_AUTH_USER` e `UI_AUTH_PASS` definidos) | Liga autenticação HTTP Basic para rotas da UI. |
@@ -156,7 +157,7 @@ Observações:
 - O dashboard/API permite cadastro de múltiplos webhooks por sessão (com filtros de eventos), persistidos em `SESSION_STORE/_session_webhooks.json`.
 - Quando `POSTGRES_URL` está definido, todos esses metadados (atribuições, overrides, webhooks e templates) são persistidos no Postgres em vez dos arquivos JSON. No primeiro boot com banco vazio, o estado JSON existente é importado automaticamente (sem sobrescrever dados já presentes). As migrações de schema rodam embutidas no startup. O store de sessão do whatsmeow continua em SQLite por sessão.
 - Webhooks globais são persistidos junto com os demais metadados (`global_webhooks` no Postgres ou `_global_webhooks.json` em arquivo). Eventos suportados: `session.disconnected`, enviado apenas em logout real, remoção do dispositivo, falha de login permanente ou restrição/banimento; e `session.offline`, enviado quando a instância permanece offline por 1 minuto após queda de socket ou falha persistente de keepalive. Quedas temporárias de socket e `stream_replaced` não disparam `session.disconnected`. As rotas `/api/{version}/webhooks/global` exigem usuário `owner` quando o auth Postgres está ativo.
-- Links públicos de conexão são persistidos como metadados (`session_pairing_links` no Postgres ou `_pairing_links.json` em arquivo). O link é gerado por `/api/{version}/sessions/{id}/pairing-link`, abre a página pública `/pair/{token}` sem autenticação e expira quando a conexão é concluída ou quando for revogado no painel.
+- Links públicos de conexão são persistidos como metadados (`session_pairing_links` no Postgres ou `_pairing_links.json` em arquivo). O link é gerado por `/api/{version}/sessions/{id}/pairing-link`, abre a página pública `/pair/{token}` sem autenticação e expira quando a conexão é concluída ou quando for revogado no painel. Quando o WhatsApp exige passkey após o QR, o status público retorna `passkey_required=true`; se houver confirmação visual, retorna `passkey.confirmation_required=true` e a página permite confirmar o código pelo link seguro.
 - Mensagens próprias da sessão (`fromMe`) dependem de `send_outgoing_messages` no webhook da sessão e podem sair em `messages[]` (padrão) ou `message_echoes` (`OUTGOING_MESSAGES_COEX=true`).
 
 ### Webhook de saída

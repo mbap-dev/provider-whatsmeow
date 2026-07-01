@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Whatsmeow Passkey Bridge",
+  "version": "0.1.0",
+  "description": "Assina a passkey do WhatsApp Web e envia para o link seguro do provider whatsmeow.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://web.whatsapp.com/*",
+    "__PROVIDER_MATCH__"
+  ],
+  "action": {
+    "default_title": "Whatsmeow Passkey Bridge"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["__PROVIDER_MATCH__"],
+      "js": ["pair-page.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js", "config.json"],
+      "matches": ["https://web.whatsapp.com/*", "__PROVIDER_MATCH__"]
+    }
+  ]
+}

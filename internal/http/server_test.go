@@ -86,6 +86,22 @@ func TestAPIRoutesStayTokenProtected(t *testing.T) {
 	}
 }
 
+func TestFakeCallRouteIsNotRegistered(t *testing.T) {
+	manager := provider.NewClientManager(provider.ManagerOptions{
+		SessionStore: t.TempDir(),
+		WorkerID:     "worker-test",
+	})
+	srv := NewServer(&config.Config{}, manager, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/553121159080/fakecall", strings.NewReader(`{"to":"556299999999"}`))
+	rec := httptest.NewRecorder()
+
+	srv.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusMethodNotAllowed, rec.Body.String())
+	}
+}
+
 func TestPairingPublicRoutesAreNotAPITokenProtected(t *testing.T) {
 	for _, path := range []string{"/pair/token", "/pair/token/status", "/pair/token/qr"} {
 		if isAPITokenProtectedPath(path) {

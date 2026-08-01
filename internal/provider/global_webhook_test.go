@@ -54,6 +54,39 @@ func TestShouldDeliverSessionOfflineWebhook(t *testing.T) {
 	}
 }
 
+func TestClassifyWebhookPayloadTreatsEditedGroupMessageAsUpdate(t *testing.T) {
+	payload := cloudEnvelope("553121159080")
+	value := extractCloudPayloadValue(payload)
+	value["messages"] = []any{
+		map[string]any{
+			"from":   "5562933000233",
+			"id":     "5562933000233~3B6F8B989F3D465157DF",
+			"type":   "text",
+			"edited": true,
+			"text": map[string]any{
+				"body": "texto novo\n`Mensagem Editada`",
+			},
+		},
+	}
+	value["contacts"] = []any{
+		map[string]any{
+			"wa_id":    "5562933000233",
+			"group_id": "120363404017899025@g.us",
+		},
+	}
+
+	class := classifyWebhookPayload("553121159080", payload)
+	if !class.Update {
+		t.Fatal("expected edited message to be classified as update")
+	}
+	if !class.Incoming {
+		t.Fatal("expected edited group member message to be classified as incoming")
+	}
+	if !class.Group {
+		t.Fatal("expected edited group member message to be classified as group")
+	}
+}
+
 func TestSessionDisconnectedReasonIgnoresTransientSocketEvents(t *testing.T) {
 	for _, evt := range []interface{}{
 		&events.Disconnected{},

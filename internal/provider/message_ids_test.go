@@ -438,6 +438,39 @@ func TestDeletedMessagePublicIDResolvesGroupLIDParticipant(t *testing.T) {
 	}
 }
 
+func TestEditedMessageContextIDAddsParticipantForGroupEdit(t *testing.T) {
+	got := editedMessageContextID(
+		"553121159080",
+		nil,
+		"3B6F8B989F3D465157DF",
+		types.NewJID("120363404017899025", types.GroupServer),
+		types.NewJID("5562933000233", types.DefaultUserServer),
+		&waCommon.MessageKey{
+			ID:          proto.String("3B6F8B989F3D465157DF"),
+			Participant: proto.String("5562933000233:13@s.whatsapp.net"),
+		},
+	)
+
+	if got != "5562933000233~3B6F8B989F3D465157DF" {
+		t.Fatalf("edited group context id = %q", got)
+	}
+}
+
+func TestEditedMessageContextIDKeepsPrivateEditPlain(t *testing.T) {
+	got := editedMessageContextID(
+		"553121159080",
+		nil,
+		"3B6F8B989F3D465157DF",
+		types.NewJID("5562933000233", types.DefaultUserServer),
+		types.JID{},
+		&waCommon.MessageKey{ID: proto.String("3B6F8B989F3D465157DF")},
+	)
+
+	if got != "3B6F8B989F3D465157DF" {
+		t.Fatalf("edited private context id = %q", got)
+	}
+}
+
 func TestCompatibleMediaIDPrefersRawMediaID(t *testing.T) {
 	meta := MediaMetadata{
 		SessionID: "553121159080",

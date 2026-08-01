@@ -231,6 +231,20 @@ func (m *ClientManager) registerEventHandlers(client *whatsmeow.Client, sessionI
 		case *events.PushNameSetting:
 			_ = client.SendPresence(context.Background(), types.PresenceAvailable)
 		case *events.Message:
+			protocolType := ""
+			if e.Message != nil && e.Message.GetProtocolMessage() != nil {
+				protocolType = e.Message.GetProtocolMessage().GetType().String()
+			}
+			rawEdited := e.RawMessage != nil && e.RawMessage.GetEditedMessage().GetMessage() != nil
+			rawProtocolType := ""
+			if e.RawMessage != nil && e.RawMessage.GetProtocolMessage() != nil {
+				rawProtocolType = e.RawMessage.GetProtocolMessage().GetType().String()
+			}
+			log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
+				"evt=message_received chat=%s sender=%s from_me=%t is_edit=%t edit_attr=%q protocol=%s raw_edited=%t raw_protocol=%s",
+				e.Info.Chat.String(), e.Info.Sender.String(), e.Info.IsFromMe, e.IsEdit, e.Info.Edit,
+				protocolType, rawEdited, rawProtocolType,
+			)
 			if err := m.emitCloudMessage(sessionID, client, e); err != nil {
 				log.WithSession(sessionID).WithMessageID(e.Info.ID).Error("webhook cloud message error: %v", err)
 			}
@@ -478,6 +492,22 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	if msg == nil {
 		return nil
 	}
+	var secretEditKey *waCommon.MessageKey
+	secretEdit := msg.GetSecretEncryptedMessage()
+	if secretEdit != nil && secretEdit.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+		if client == nil {
+			return fmt.Errorf("cannot decrypt secret-encrypted message edit without whatsmeow client")
+		}
+		decrypted, err := client.DecryptSecretEncryptedMessage(context.Background(), e)
+		if err != nil {
+			return fmt.Errorf("decrypt secret-encrypted message edit: %w", err)
+		}
+		msg = decrypted
+		secretEditKey = secretEdit.GetTargetMessageKey()
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info(
+			"evt=message_edit secret_decrypted=true target_id=%s", secretEditKey.GetID(),
+		)
+	}
 	if cacheConsumeSyntheticOutgoing(sessionID, e.Info.ID) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Info("evt=message skip: synthetic_outgoing_already_emitted")
 		return nil
@@ -486,6 +516,7 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	fromMe := e.Info.IsFromMe
 	chatJID := e.Info.Chat
 	senderJID := e.Info.Sender
+	unwrappedEdit := msg.GetProtocolMessage() == nil && (e.IsEdit || e.Info.Edit == types.EditAttributeMessageEdit || secretEditKey != nil)
 	ownMessage := fromMe || e.Info.DeviceSentMeta != nil
 	if !ownMessage {
 		ownMessage = isOwnJID(sessionID, client, senderJID) || isOwnJID(sessionID, client, e.Info.SenderAlt)
@@ -580,20 +611,22 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			body = decorateMentionText(sessionID, client, body, edited)
 			body = body + "\n`Mensagem Editada`"
 			wireMsg["type"] = "text"
+			wireMsg["edited"] = true
 			wireMsg["text"] = map[string]any{"body": body}
 			if pm.GetKey() != nil {
 				rid := strings.TrimSpace(pm.GetKey().GetID())
 				if rid != "" {
+					contextID := editedMessageContextID(sessionID, client, rid, chatJID, senderJID, pm.GetKey())
 					// Log edit detection with snippet
 					snippet := body
 					if len(snippet) > 120 {
 						snippet = snippet[:120]
 					}
 					log.WithSession(sessionID).WithMessageID(e.Info.ID).
-						Info("evt=message_edit reply_to=%s body_snippet=%q", rid, snippet)
+						Info("evt=message_edit reply_to=%s body_snippet=%q", contextID, snippet)
 					wireMsg["context"] = map[string]any{
-						"message_id": rid,
-						"id":         rid,
+						"message_id": contextID,
+						"id":         contextID,
 					}
 				}
 			}
@@ -945,6 +978,31 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 			return nil
 		}
 	}
+	if unwrappedEdit {
+		wireMsg["edited"] = true
+		if text, ok := wireMsg["text"].(map[string]any); ok {
+			body := strings.TrimSpace(anyString(text["body"]))
+			if body == "" {
+				return nil
+			}
+			if !strings.HasSuffix(body, "`Mensagem Editada`") {
+				text["body"] = body + "\n`Mensagem Editada`"
+			}
+		}
+		contextMessageID := string(e.Info.ID)
+		if secretEditKey != nil && strings.TrimSpace(secretEditKey.GetID()) != "" {
+			contextMessageID = secretEditKey.GetID()
+		}
+		contextID := editedMessageContextID(sessionID, client, contextMessageID, chatJID, senderJID, secretEditKey)
+		if contextID != "" {
+			wireMsg["context"] = map[string]any{
+				"message_id": contextID,
+				"id":         contextID,
+			}
+		}
+		log.WithSession(sessionID).WithMessageID(e.Info.ID).
+			Info("evt=message_edit unwrapped=true reply_to=%s type=%s", contextID, wireMsg["type"])
+	}
 	// Mantém o shape do webhook compatível com Chatwoot:
 	// - profile.* representa o contato/remetente
 	// - group_* representa o grupo quando a mensagem vem de um grupo
@@ -1290,6 +1348,34 @@ func deletedMessagePublicID(sessionID string, cli *whatsmeow.Client, messageID s
 	}
 
 	return withGroupParticipantMessageID(participantID, revokedID)
+}
+
+func editedMessageContextID(sessionID string, cli *whatsmeow.Client, messageID string, chat, sender types.JID, key *waCommon.MessageKey) string {
+	contextID := strings.TrimSpace(messageID)
+	if contextID == "" {
+		return ""
+	}
+	if !isGroupJID(chat) {
+		return contextID
+	}
+
+	participant := ""
+	if key != nil {
+		participant = strings.TrimSpace(key.GetParticipant())
+		if participant == "" && key.GetFromMe() {
+			participant = sender.String()
+		}
+	}
+	if participant == "" {
+		participant = sender.String()
+	}
+
+	participantID := contextParticipantMessageIDUser(sessionID, cli, participant)
+	if participantID == "" {
+		participantID = participant
+	}
+
+	return withGroupParticipantMessageID(participantID, contextID)
 }
 
 // emitCloudOutgoingText publishes an outgoing text message event in the same

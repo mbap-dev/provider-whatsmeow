@@ -604,6 +604,9 @@ func classifyWebhookPayload(sessionID string, payload any) webhookPayloadClass {
 	}
 	if messages, ok := value["messages"].([]any); ok && len(messages) > 0 {
 		msg, _ := messages[0].(map[string]any)
+		if edited, _ := msg["edited"].(bool); edited {
+			out.Update = true
+		}
 		from := anyString(msg["from"])
 		if digitsOnly(from) != "" && digitsOnly(from) == digitsOnly(sessionID) {
 			out.Outgoing = true

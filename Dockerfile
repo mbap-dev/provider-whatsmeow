@@ -9,7 +9,6 @@ ENV GOTOOLCHAIN=local
 RUN apk add --no-cache build-base pkgconfig opus-dev
 
 COPY go.mod go.sum ./
-COPY third_party ./third_party
 RUN go mod download
 
 COPY . .

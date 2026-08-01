@@ -4,7 +4,7 @@
 
 Meta is gradually adding an extra security step after the normal WhatsApp Web QR scan. Some accounts may require a passkey/access-key confirmation before the websocket pairing is completed.
 
-The whatsmeow pairing flow considers the device paired only after the socket receives `pair-success`, verifies the device identity, saves the device store, and sends `pair-device-sign` back to WhatsApp. Accounts that require passkeys now use the upstream `whatsmeow` WebAuthn flow added in `go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b`.
+The whatsmeow pairing flow considers the device paired only after the socket receives `pair-success`, verifies the device identity, saves the device store, and sends `pair-device-sign` back to WhatsApp. Accounts that require passkeys now use the upstream `whatsmeow` WebAuthn flow from `go.mau.fi/whatsmeow v0.0.0-20260722203353-e9a033b24933`.
 
 ## Goal
 
@@ -155,7 +155,7 @@ Field sources from the browser flow:
 
 ## Phase 5: Backend Prologue Submission
 
-The provider uses the official upstream flow from [tulir/whatsmeow@b572e5b](https://github.com/tulir/whatsmeow/commit/b572e5bcb92bbc285b68cb6d6540da3093330e04), which is also consumed by [mautrix/whatsapp@be4adcbd](https://github.com/mautrix/whatsapp/commit/be4adcbd1712b6f51eba87411780079cb1c0ae52).
+The provider uses the official upstream flow from [tulir/whatsmeow@e9a033b](https://github.com/tulir/whatsmeow/commit/e9a033b2493356741a604a09e50c34b371882338), pinned directly as the `go.mau.fi/whatsmeow` module in `go.mod`.
 
 The server-side sequence is now:
 

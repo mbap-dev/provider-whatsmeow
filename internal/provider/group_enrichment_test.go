@@ -270,3 +270,46 @@ func TestEmitCloudMessageBuildsIncrementalGroupContact(t *testing.T) {
 		t.Fatalf("picture JIDs = %#v, want %#v", pictureJIDs, wantPictures)
 	}
 }
+
+func TestEmitCloudGroupInfoIgnoresAdministrativeEvents(t *testing.T) {
+	resetGroupEnrichmentCaches()
+	oldConnected := isWhatsAppConnected
+	oldGroup := fetchGroupInfo
+	oldPicture := fetchProfilePictureInfo
+	t.Cleanup(func() {
+		isWhatsAppConnected = oldConnected
+		fetchGroupInfo = oldGroup
+		fetchProfilePictureInfo = oldPicture
+		resetGroupEnrichmentCaches()
+	})
+
+	isWhatsAppConnected = func(*whatsmeow.Client) bool { return true }
+	lookups := 0
+	fetchGroupInfo = func(context.Context, *whatsmeow.Client, types.JID) (*types.GroupInfo, error) {
+		lookups++
+		return &types.GroupInfo{GroupName: types.GroupName{Name: "Grupo"}}, nil
+	}
+	fetchProfilePictureInfo = func(context.Context, *whatsmeow.Client, types.JID, *whatsmeow.GetProfilePictureParams) (*types.ProfilePictureInfo, error) {
+		lookups++
+		return &types.ProfilePictureInfo{URL: "https://example.test/avatar.jpg"}, nil
+	}
+
+	manager := NewClientManager(ManagerOptions{SessionStore: t.TempDir(), WorkerID: "test-worker"})
+	client := whatsmeow.NewClient(&store.Device{}, nil)
+	err := manager.emitCloudGroupInfo("553121159080", client, &events.GroupInfo{
+		JID:   types.NewJID("120363000000000000", types.GroupServer),
+		Leave: []types.JID{types.NewJID("5562999999999", types.DefaultUserServer)},
+	})
+	if err != nil {
+		t.Fatalf("emitCloudGroupInfo: %v", err)
+	}
+	err = manager.emitCloudJoinedGroup("553121159080", client, &events.JoinedGroup{
+		GroupInfo: types.GroupInfo{JID: types.NewJID("120363000000000000", types.GroupServer)},
+	})
+	if err != nil {
+		t.Fatalf("emitCloudJoinedGroup: %v", err)
+	}
+	if lookups != 0 {
+		t.Fatalf("administrative event lookups = %d, want 0", lookups)
+	}
+}

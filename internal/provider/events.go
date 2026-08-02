@@ -1089,90 +1089,12 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	return m.deliverWebhook(sessionID, payload)
 }
 
-func (m *ClientManager) emitCloudJoinedGroup(sessionID string, client *whatsmeow.Client, e *events.JoinedGroup) error {
-	if e == nil {
-		return nil
-	}
-	evt := &events.GroupInfo{
-		JID:       e.JID,
-		Notify:    e.Notify,
-		Sender:    e.Sender,
-		SenderPN:  e.SenderPN,
-		Timestamp: time.Now(),
-		Join:      []types.JID{},
-	}
-	if e.JID.User == "" || e.JID.Server == "" {
-		return nil
-	}
-	return m.emitCloudGroupInfo(sessionID, client, evt)
+func (m *ClientManager) emitCloudJoinedGroup(string, *whatsmeow.Client, *events.JoinedGroup) error {
+	return nil
 }
 
-func (m *ClientManager) emitCloudGroupInfo(sessionID string, client *whatsmeow.Client, e *events.GroupInfo) error {
-	if e == nil || !isGroupJID(e.JID) {
-		return nil
-	}
-
-	action, affected := groupParticipantChange(e)
-	if action == "" && len(affected) == 0 {
-		return nil
-	}
-
-	phone := normalizePhone(sessionID)
-	groupSubject := strings.TrimSpace(e.JID.User)
-	if groupName, ok := safeGetGroupName(client, e.JID); ok && strings.TrimSpace(groupName) != "" {
-		groupSubject = groupName
-	}
-	groupPicture := ""
-	if pic, ok := getAvatarURL(sessionID, client, e.JID); ok && strings.TrimSpace(pic) != "" {
-		groupPicture = pic
-	}
-
-	actorJID := groupEventActorJID(e)
-	actorID := jidDisplayMaybeResolve(sessionID, client, actorJID)
-	if actorID == "" {
-		actorID = phone
-	}
-	actorName := actorID
-	if name, ok := safeGetContactName(sessionID, client, actorJID); ok && strings.TrimSpace(name) != "" {
-		actorName = name
-	}
-	profile := buildCloudProfile(sessionID, client, actorJID, actorName, "")
-	contactObj := buildCloudContactObject(profile, actorID, e.JID, groupSubject, groupPicture)
-
-	participants := m.groupParticipantsPayload(sessionID, client, e.JID)
-	if len(participants) > 0 {
-		contactObj["group_participants"] = participants
-	}
-	contactObj["group_event"] = map[string]any{
-		"action":       action,
-		"actor":        groupEventParticipantPayload(sessionID, client, actorJID),
-		"participants": groupEventParticipantsPayload(sessionID, client, affected),
-		"timestamp":    groupEventTimestamp(e).Unix(),
-	}
-
-	msgID := fmt.Sprintf("group-event-%s-%s-%d", e.JID.User, action, groupEventTimestamp(e).UnixNano())
-	wireMsg := map[string]any{
-		"from":      normalizeFromField(actorID),
-		"id":        msgID,
-		"timestamp": strconv.FormatInt(groupEventTimestamp(e).Unix(), 10),
-		"type":      "group_event",
-		"text":      map[string]any{"body": action},
-	}
-
-	payload := cloudEnvelope(phone)
-	change := payload["entry"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
-	val := change["value"].(map[string]any)
-	val["contacts"] = []any{contactObj}
-	val["messages"] = []any{wireMsg}
-
-	log.WithSession(sessionID).Info(
-		"evt=group_info cloud payload ready group=%s action=%s affected=%d participants=%d",
-		e.JID.String(),
-		action,
-		len(affected),
-		len(participants),
-	)
-	return m.deliverWebhook(sessionID, payload)
+func (m *ClientManager) emitCloudGroupInfo(string, *whatsmeow.Client, *events.GroupInfo) error {
+	return nil
 }
 
 // =========== Emissão de recibos no formato Cloud (statuses) ===========

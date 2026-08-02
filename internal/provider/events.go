@@ -24,6 +24,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,6 +34,19 @@ const sessionOfflineConfirmAfter = time.Minute
 var (
 	defaultLIDResolveAttempts = 3
 	defaultLIDResolveDelay    = 300 * time.Millisecond
+
+	avatarLookupGroup    singleflight.Group
+	groupNameLookupGroup singleflight.Group
+
+	isWhatsAppConnected = func(cli *whatsmeow.Client) bool {
+		return cli != nil && cli.IsConnected()
+	}
+	fetchProfilePictureInfo = func(ctx context.Context, cli *whatsmeow.Client, jid types.JID, params *whatsmeow.GetProfilePictureParams) (*types.ProfilePictureInfo, error) {
+		return cli.GetProfilePictureInfo(ctx, jid, params)
+	}
+	fetchGroupInfo = func(ctx context.Context, cli *whatsmeow.Client, jid types.JID) (*types.GroupInfo, error) {
+		return cli.GetGroupInfo(ctx, jid)
+	}
 )
 
 // Shared HTTP client for webhook delivery with tuned connection pooling.
@@ -2517,30 +2531,32 @@ func mapReceiptStatus(t events.ReceiptType) string {
 	}
 }
 
-// safeGetGroupName obtém o nome do grupo com um pequeno cache.
+// safeGetGroupName obtains the group name with a bounded cache-first lookup.
 func safeGetGroupName(cli *whatsmeow.Client, gid types.JID) (string, bool) {
-	if cli == nil {
+	key := gid.String()
+	if name, ok := cacheGetGroupName(key); ok {
+		return name, true
+	}
+	if !isWhatsAppConnected(cli) {
 		return "", false
 	}
-	// Cache first
-	if n, ok := cacheGetGroupName(gid.String()); ok {
-		return n, true
-	}
-	// Try a couple of times with a small delay to allow metadata to load
-	for i := 0; i < 2; i++ {
+
+	value, err, _ := groupNameLookupGroup.Do(key, func() (any, error) {
+		if name, ok := cacheGetGroupName(key); ok {
+			return name, nil
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		info, err := cli.GetGroupInfo(ctx, gid)
-		cancel()
-		if err == nil && info != nil && strings.TrimSpace(info.Name) != "" {
-			name := strings.TrimSpace(info.Name)
-			cachePutGroupName(gid.String(), name)
-			return name, true
+		defer cancel()
+		info, err := fetchGroupInfo(ctx, cli, gid)
+		if err != nil || info == nil || strings.TrimSpace(info.Name) == "" {
+			return "", err
 		}
-		if i == 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
-	return "", false
+		name := strings.TrimSpace(info.Name)
+		cachePutGroupName(key, name)
+		return name, nil
+	})
+	name, ok := value.(string)
+	return name, err == nil && ok && name != ""
 }
 
 func contactInfoDisplayName(info types.ContactInfo) string {
@@ -2618,64 +2634,40 @@ func safeGetContactName(sessionID string, cli *whatsmeow.Client, candidates ...t
 	return "", false
 }
 
-// getAvatarURL tenta obter a URL da foto de perfil (contato ou grupo).
-// Usa a API pública do whatsmeow; se não disponível/erro, retorna false.
+// getAvatarURL obtains one preview URL per cache miss and caches absence too.
 func getAvatarURL(sessionID string, cli *whatsmeow.Client, jid types.JID) (string, bool) {
 	jid = normalizedAvatarLookupJID(sessionID, cli, jid)
 	if cli == nil || jid == (types.JID{}) {
 		return "", false
 	}
-	// Cache first
-	if u, ok := cacheGetAvatar(jid.String()); ok {
-		if u == avatarMissingSentinel {
-			log.WithSession(sessionID).Debug("avatar_cache_miss_hit jid=%s", jid.String())
-			return "", false
-		}
-		log.WithSession(sessionID).Debug("avatar_cache_hit jid=%s url=%s", jid.String(), u)
-		return u, true
+
+	key := sessionID + "|" + jid.String()
+	if cached, ok := cacheGetAvatar(key); ok {
+		return cached, cached != avatarMissingSentinel
 	}
-	// Try a few combinations (prefer preview for speed)
-	try := func(label string, p *whatsmeow.GetProfilePictureParams) (string, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		info, err := cli.GetProfilePictureInfo(ctx, jid, p)
-		cancel()
-		if err != nil {
-			log.WithSession(sessionID).Debug("avatar_try label=%s jid=%s err=%v", label, jid.String(), err)
-			return "", false
-		}
-		if info != nil && strings.TrimSpace(info.URL) != "" {
-			url := strings.TrimSpace(info.URL)
-			cachePutAvatar(jid.String(), url)
-			log.WithSession(sessionID).Debug("avatar_success label=%s jid=%s url=%s", label, jid.String(), url)
-			return url, true
-		}
-		log.WithSession(sessionID).Debug("avatar_try_empty label=%s jid=%s", label, jid.String())
+	if !isWhatsAppConnected(cli) {
 		return "", false
 	}
-	// Try immediate attempts
-	if url, ok := try("default", nil); ok {
-		return url, true
-	}
-	if url, ok := try("preview", &whatsmeow.GetProfilePictureParams{Preview: true}); ok {
-		return url, true
-	}
-	// Communities (not regular groups) require a different parameter
-	if isCommunityJID(jid) {
-		if url, ok := try("community_preview", &whatsmeow.GetProfilePictureParams{IsCommunity: true, Preview: true}); ok {
-			return url, true
+
+	value, _, _ := avatarLookupGroup.Do(key, func() (any, error) {
+		if cached, ok := cacheGetAvatar(key); ok {
+			return cached, nil
 		}
-		if url, ok := try("community", &whatsmeow.GetProfilePictureParams{IsCommunity: true}); ok {
-			return url, true
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		info, err := fetchProfilePictureInfo(ctx, cli, jid, &whatsmeow.GetProfilePictureParams{Preview: true})
+		if err != nil || info == nil || strings.TrimSpace(info.URL) == "" {
+			cachePutAvatarMissing(key)
+			log.WithSession(sessionID).Debug("avatar_not_available jid=%s err=%v", jid.String(), err)
+			return avatarMissingSentinel, nil
 		}
-	}
-	// One quick retry after a short delay in case metadata just loaded
-	time.Sleep(150 * time.Millisecond)
-	if url, ok := try("preview_retry", &whatsmeow.GetProfilePictureParams{Preview: true}); ok {
-		return url, true
-	}
-	cachePutAvatarMissing(jid.String())
-	log.WithSession(sessionID).Debug("avatar_not_available jid=%s", jid.String())
-	return "", false
+		url := strings.TrimSpace(info.URL)
+		cachePutAvatar(key, url)
+		log.WithSession(sessionID).Debug("avatar_success jid=%s url=%s", jid.String(), url)
+		return url, nil
+	})
+	url, ok := value.(string)
+	return url, ok && url != "" && url != avatarMissingSentinel
 }
 
 func buildCloudProfile(sessionID string, cli *whatsmeow.Client, avatarJID types.JID, displayName string, messageID string) map[string]any {
@@ -2728,7 +2720,7 @@ func (m *ClientManager) groupParticipantsPayload(sessionID string, cli *whatsmeo
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	info, err := cli.GetGroupInfo(ctx, groupJID)
+	info, err := fetchGroupInfo(ctx, cli, groupJID)
 	cancel()
 	if err != nil || info == nil {
 		log.WithSession(sessionID).Debug("group_participants fetch failed group=%s err=%v", groupJID.String(), err)

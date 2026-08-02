@@ -32,9 +32,9 @@ var (
 	syntheticCache   = map[string]time.Time{}
 
 	// Tuned TTLs: names/avatars can change, but not frequently.
-	avatarTTL         = 10 * time.Minute
-	avatarNegativeTTL = 2 * time.Minute
-	groupNameTTL      = 10 * time.Minute
+	avatarTTL         = time.Hour
+	avatarNegativeTTL = 6 * time.Hour
+	groupNameTTL      = time.Hour
 	contactNameTTL    = 10 * time.Minute
 	lidMapTTL         = 30 * time.Minute
 	// Keep receipt dedupe entries long enough to collapse repeated WA receipt

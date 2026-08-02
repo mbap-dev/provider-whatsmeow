@@ -16,6 +16,22 @@ type pnCacheItem struct {
 	exp time.Time
 }
 
+var isOnWhatsApp = func(ctx context.Context, cli *whatsmeow.Client, phones []string) ([]types.IsOnWhatsAppResponse, error) {
+	return cli.IsOnWhatsApp(ctx, phones)
+}
+
+func canonicalPrivateRecipient(info types.IsOnWhatsAppResponse) (types.JID, bool) {
+	if !info.IsIn || info.JID.User == "" {
+		return types.EmptyJID, false
+	}
+	switch info.JID.Server {
+	case types.DefaultUserServer, types.HiddenUserServer:
+		return info.JID, true
+	default:
+		return types.EmptyJID, false
+	}
+}
+
 // resolvePNtoJID queries WhatsApp for the canonical JID of a phone number, trying BR candidates.
 // Returns (jid, true) if resolved, otherwise (empty, false).
 func (m *ClientManager) resolvePNtoJID(ctx context.Context, cli *whatsmeow.Client, phone string) (types.JID, bool) {
@@ -32,14 +48,13 @@ func (m *ClientManager) resolvePNtoJID(ctx context.Context, cli *whatsmeow.Clien
 	candidates := candidatesBR(e164)
 	for _, cand := range candidates {
 		// whatsmeow provides IsOnWhatsApp to check registration and canonical JID
-		res, err := cli.IsOnWhatsApp(ctx, []string{cand})
+		res, err := isOnWhatsApp(ctx, cli, []string{cand})
 		if err != nil || len(res) == 0 {
 			continue
 		}
-		info := res[0]
-		if info.IsIn && info.JID.Server == types.DefaultUserServer && info.JID.User != "" {
-			m.pnCache[e164] = pnCacheItem{val: info.JID.String(), exp: time.Now().Add(24 * time.Hour)}
-			return info.JID, true
+		if jid, ok := canonicalPrivateRecipient(res[0]); ok {
+			m.pnCache[e164] = pnCacheItem{val: jid.String(), exp: time.Now().Add(24 * time.Hour)}
+			return jid, true
 		}
 	}
 	return types.EmptyJID, false
@@ -69,7 +84,7 @@ func (m *ClientManager) checkUserExistsOnWhatsApp(ctx context.Context, cli *what
 	candidates := candidatesBR(e164)
 	var lastErr error
 	for _, cand := range candidates {
-		res, err := cli.IsOnWhatsApp(ctx, []string{cand})
+		res, err := isOnWhatsApp(ctx, cli, []string{cand})
 		if err != nil {
 			lastErr = fmt.Errorf("failed to check if number %s exists on WhatsApp: %w", cand, err)
 			continue
@@ -83,9 +98,9 @@ func (m *ClientManager) checkUserExistsOnWhatsApp(ctx context.Context, cli *what
 			// Explicitly not registered for this candidate; try next, if any.
 			continue
 		}
-		if info.JID.Server == types.DefaultUserServer && info.JID.User != "" {
-			m.pnCache[cacheKey] = pnCacheItem{val: info.JID.String(), exp: time.Now().Add(24 * time.Hour)}
-			return info.JID, true, nil
+		if jid, ok := canonicalPrivateRecipient(info); ok {
+			m.pnCache[cacheKey] = pnCacheItem{val: jid.String(), exp: time.Now().Add(24 * time.Hour)}
+			return jid, true, nil
 		}
 	}
 

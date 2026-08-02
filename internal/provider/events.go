@@ -1065,11 +1065,6 @@ func (m *ClientManager) emitCloudMessage(sessionID string, client *whatsmeow.Cli
 	profile := buildCloudProfile(sessionID, client, profileAvatar, dispName, e.Info.ID)
 	contactObj := buildCloudContactObject(profile, contactPhone, chatJID, groupSubject, groupPicture)
 	if isGroupJID(chatJID) {
-		if participants := m.groupParticipantsPayload(sessionID, client, chatJID); len(participants) > 0 {
-			contactObj["group_participants"] = participants
-		}
-	}
-	if isGroupJID(chatJID) {
 		log.WithSession(sessionID).WithMessageID(e.Info.ID).Debug(
 			"contact_group built group_id=%s subject=%q wa_id=%s sender_name=%q", chatJID.String(), groupSubject, contactPhone, dispName,
 		)

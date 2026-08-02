@@ -256,7 +256,9 @@ Compatibilidade de destinatário no payload: o endpoint aceita `to` (preferencia
 
 Mensagens para grupo também aceitam `mention_all`/`mentionAll` no payload para expandir `ContextInfo.MentionedJID` com todos os participantes. Como fallback compatível com Chatwoot, o provider também ativa esse comportamento quando o texto ou caption começa com `@todos`, `@all` ou `@everyone`.
 
-Nos webhooks de grupos, `contacts[0]` inclui `group_participants` com a relação atual de participantes quando o WhatsApp disponibilizar essa informação. Alterações de participantes emitem uma mensagem `type: "group_event"` com `contacts[0].group_event.action` (`add`, `remove`, `promote`, `demote`) e a lista `participants` afetada.
+### Contatos em mensagens de grupo
+
+Webhooks de mensagens recebidas em grupos incluem o autor atual em `contacts[0]`, junto com `group_id`, `group_subject` e `group_picture`. O provider não envia `group_participants` antecipadamente; o Chatwoot associa os autores ao grupo de forma incremental conforme eles enviam mensagens. As fotos do autor e do grupo são enriquecimentos opcionais com cache e nunca impedem a entrega da mensagem.
 
 Exemplo de geração de código de pareamento:
 

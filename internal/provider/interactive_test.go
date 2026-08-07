@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 )
 
 func TestBuildInteractiveListMessageFromCloudPayload(t *testing.T) {
@@ -30,6 +31,9 @@ func TestBuildInteractiveListMessageFromCloudPayload(t *testing.T) {
 	list := wire.GetListMessage()
 	if list == nil {
 		t.Fatal("expected list message")
+	}
+	if got := list.GetListType(); got != waE2E.ListMessage_SINGLE_SELECT {
+		t.Fatalf("list type = %s (%d), want SINGLE_SELECT (%d)", got, got, waE2E.ListMessage_SINGLE_SELECT)
 	}
 	if got := list.GetTitle(); got != "" {
 		t.Fatalf("title = %q", got)
